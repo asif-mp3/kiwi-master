@@ -143,13 +143,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             setGoogleSheetUrl(status.sheet_url);
           }
 
-          // Mark current chat as having sheet loaded
+          // Mark current chat as having sheet loaded AND set connected state
           if (activeChatId && !chatSheetMap[activeChatId]) {
             setChatSheetMap(prev => ({
               ...prev,
               [activeChatId]: true
             }));
           }
+
+          // CRITICAL: Mark as connected so we don't reconnect unnecessarily
+          setIsSheetConnected(true);
         } else {
           // Backend doesn't have sheet loaded - clear frontend state
           console.log('✓ Backend has no sheet loaded - ready for new connection');
@@ -183,18 +186,25 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     if (activeChatId) {
       if (!sheetUrl) {
         // No sheet associated with this chat yet -> FORCE MODAL
+        console.log('📋 New chat detected - showing sheet connection modal');
         setIsModalOpen(true);
         setIsSheetConnected(false);
-      } else if (!isSheetConnected && !isLoadingSheet) {
-        // Sheet associated (persisted) but not connected to backend -> SILENT RECONNECT
-        console.log('🔄 Auto-connecting to persisted sheet:', sheetUrl);
-        handleSaveSheet();
-      } else if (isSheetConnected) {
-        // Already connected
-        setIsModalOpen(false);
+      } else {
+        // Sheet URL exists for this chat
+        // Check if backend already has it loaded (from verifyBackendState)
+        if (chatSheetMap[activeChatId]) {
+          // Backend already has this sheet loaded - mark as connected
+          console.log('✅ Sheet already loaded in backend for this chat');
+          setIsSheetConnected(true);
+          setIsModalOpen(false);
+        } else if (!isSheetConnected && !isLoadingSheet) {
+          // Sheet URL exists but backend doesn't have it -> SILENT RECONNECT
+          console.log('🔄 Auto-connecting to persisted sheet:', sheetUrl);
+          handleSaveSheet();
+        }
       }
     }
-  }, [activeChatId, sheetUrl, isSheetConnected, isLoadingSheet, isInitializing]);
+  }, [activeChatId, sheetUrl, isSheetConnected, isLoadingSheet, isInitializing, chatSheetMap]);
 
 
   const handleSendMessage = async (content: string, language?: string) => {

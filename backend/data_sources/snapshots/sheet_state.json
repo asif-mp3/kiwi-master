@@ -1,0 +1,35 @@
+{
+  "spreadsheet_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4",
+  "sheets": {
+    "pincode sales": {
+      "hash": "01301a194705cba03ae326bfab74836c608f2545f01a98e00c2a6d2c5b77eb7a",
+      "table_count": 1,
+      "source_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4#pincode sales",
+      "last_synced": "2025-12-30T23:53:25.951474"
+    },
+    "sales": {
+      "hash": "7069066300ec01317628451c6bdaee600de47113e73638b4abaa71a24c89159b",
+      "table_count": 16,
+      "source_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4#sales",
+      "last_synced": "2025-12-30T23:53:25.951474"
+    },
+    "sales by cat": {
+      "hash": "2bc0b757ec20082295365c58e8909b91bcb1d7cdab267624fade61d7938a6a7f",
+      "table_count": 2,
+      "source_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4#sales by cat",
+      "last_synced": "2025-12-30T23:53:25.951474"
+    },
+    "Month": {
+      "hash": "bbed3621cf551c6967f2f489d6613b23208c887b4c050ce51bd000b1182dcee1",
+      "table_count": 1,
+      "source_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4#Month",
+      "last_synced": "2025-12-30T23:53:25.951474"
+    },
+    "Profit": {
+      "hash": "014109166cd6b80e0087be8be15c391817faa26a72068fe6977949b2245292da",
+      "table_count": 5,
+      "source_id": "1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4#Profit",
+      "last_synced": "2025-12-30T23:53:25.951474"
+    }
+  }
+}

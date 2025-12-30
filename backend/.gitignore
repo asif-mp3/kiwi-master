@@ -1,68 +1,32 @@
-
-
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+
+# Environment files (SENSITIVE)
+.env
+.env.local
+
+# Credentials (SENSITIVE)
+credentials/*.json
+!credentials/.gitkeep
+
+# Database files (GENERATED)
+*.duckdb
+*.duckdb.wal
+
+# ChromaDB (GENERATED)
+chroma_db/
+schema_store/
 
 # IDEs
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# Database files
-*.duckdb
-*.duckdb.wal
-
-
-# ChromaDB
-chroma_db/
-*.chromadb/
 
 # Logs
 *.log
 
-# Testing files
-test/
+# Testing/Debug scripts
 test_*.py
 debug_*.py
-compare_*.py
 verify_*.py
-analyze_*.py
-rebuild_embeddings.py
-
-
-# Schema Store (ChromaDB persistence)
-schema_store/
-
-# Environment files
-.env
-.env.local
-.env.*.local
-*.env
-
-# Credentials
-*.json
-!package.json
-!package-lock.json
-!tsconfig.json
-credentials/
