@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+backend/.env
+api/.env
+frontend/.env.local
+
+# Credentials
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!**/tsconfig*.json
+credentials/
+service_account.json
+google_credentials.json
+
+# Database files
+*.duckdb
+*.duckdb.wal
+
+# ChromaDB
+chroma_db/
+*.chromadb/
+schema_store/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

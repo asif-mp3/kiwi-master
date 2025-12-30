@@ -1,0 +1,15 @@
+google_sheets:
+  credentials_path: "../config/google_credentials.json"
+  spreadsheet_id: "your_sheet_id_here"  # UPDATE THIS WITH YOUR ACTUAL SHEET ID
+
+llm:
+  model: "gemini-2.0-flash-exp"
+  temperature: 0.0
+  api_key_env: "GEMINI_API_KEY"
+
+duckdb:
+  snapshot_path: "data_sources/snapshots/latest.duckdb"
+
+chromadb:
+  persist_directory: "chroma_db"
+  collection_name: "kiwi_schema"
