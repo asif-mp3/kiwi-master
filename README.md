@@ -1,356 +1,125 @@
-# 🥝 Kiwi - Integrated Frontend & Backend
+# Kiwi-RAG: AI-Powered Analytics for Google Sheets
 
-**AI-Powered Google Sheets Analytics with Natural Language Interface**
+**Current Version:** 1.0.0
+**Architecture:** FastAPI (Backend) + Next.js 15 (Frontend) + DuckDB (In-Memory Analytics) + Gemini (LLM)
 
-This is the integrated version combining:
-- **Frontend**: Next.js 15 + React 19 (Kiwi-frontend)
-- **Backend**: Python RAG system with FastAPI (kiwi-rag)
+Kiwi-RAG is a specialized RAG (Retrieval-Augmented Generation) system designed to perform structured analytics on Google Sheets data using natural language. Unlike generic RAG systems that chunk text, Kiwi-RAG treats spreadsheets as relational databases, performing deterministic SQL execution for accuracy while using LLMs for planning, translation, and explanation.
 
 ---
 
-## 🚀 Quick Start
+## 🏗️ System Architecture
 
-### Prerequisites
-- **Python 3.9+**
-- **Node.js 18+** (or Bun)
-- **Google Cloud Project** with Sheets API enabled
-- **Gemini API Key**
-- **ElevenLabs API Key** (optional, for voice features)
+The system is split into two distinct services:
 
-### 1. Backend Setup
+### 1. Backend (`kiwi-rag`)
+A **FastAPI** application that serves as the brain of the operation. It does NOT use LangChain or LlamaIndex orchestrators; instead, it uses a custom functional pipeline defined in `api/services.py`.
 
+**Core Components:**
+*   **Orchestrator (`api/services.py`)**: The central nervous system. It manages the linear pipeline: `Ingest -> Translate -> Plan -> Validate -> Execute -> Explain`.
+*   **Data Engine (`data_sources/gsheet/`)**:
+    *   **Connector**: Uses `gspread` to fetch raw data.
+    *   **Table Detector**: Custom logic (`table_detection.py`) to verify and split single sheets into multiple logical tables based on empty rows/headers.
+    *   **Type Inference**: Aggressive logic (`connector.py`) that forces columns to Numeric if >30% of values are numbers, to enable SQL aggregation.
+    *   **Storage**: **DuckDB** (In-Memory). Data is not persisted to disk across restarts (except for optional snapshots).
+*   **Planner (`planning_layer/`)**: Uses **Gemini 1.5 Flash** to convert Natural Language -> JSON Query Plan.
+*   **Executor (`execution_layer/`)**: Compiles JSON Plans -> SQL and runs them against DuckDB. *This is where the math happens.*
+*   **Translation (`utils/translation.py`)**: Dedicated layer for Tamil <-> English conversion. Enforces **Strict Number-to-Words** formatting for TTS.
+
+### 2. Frontend (`frontend`)
+A **Next.js 15** (App Router) application serving the Chat UI.
+*   **State Management**: `useAppState` global hook.
+*   **Protocol**: REST API communication with Backend (`api.ts`).
+*   **Voice**: Captures audio (Web Audio API) -> Sends Blob to Backend -> Plays returned MP3.
+
+---
+
+## 🔄 End-to-End Workflows
+
+### 1. Data Ingestion Flow
+**Endpoint:** `POST /api/load-dataset`
+1.  **Fetch**: Backend pulls ALL cells from the Google Sheet.
+2.  **Hash**: Computes SHA-256 of the raw sheet content to detect changes.
+3.  **Detect**: Splits the sheet into logical tables (handling multiple tables per sheet).
+4.  **Infer**: Converts string data to proper types (Int, Float, Date). *Critical for SQL math.*
+5.  **Index**: Generates embeddings for Table Schemas (Column Names, Descriptions) and stores in **ChromaDB**.
+6.  **Load**: Inserts cleaned data into **DuckDB** tables.
+
+### 2. Query Execution Flow (Text)
+**Endpoint:** `POST /api/query`
+1.  **Pre-Process**:
+    *   Checks for "Greetings" (regex).
+    *   **Translate**: If Tamil detected, translates to English (`utils/translation.py`).
+2.  **Retrieve Schema**: Fetches top-50 relevant table schemas from ChromaDB (`top_k=50` hardcoded for high recall).
+3.  **Plan**: LLM (Gemini) generates a **JSON Query Plan** (Intent, Table, Columns, Filters).
+4.  **Validate**: `plan_validator.py` checks if tables/columns actually exist and if the query type is valid.
+5.  **Execute**: `sql_compiler.py` converts JSON -> SQL. DuckDB executes it.
+6.  **Explain**: LLM generates a natural language answer based on the SQL result.
+7.  **Post-Process**:
+    *   If original query was Tamil, translate explanation to Tamil.
+    *   **Strict Rule**: Convert "6450" -> "six thousand..." (or Tamil equivalent) for TTS.
+
+### 3. Voice Workflow
+**Endpoint:** `POST /api/transcribe` & `POST /api/text-to-speech`
+1.  **ASR**: Frontend sends WAV blob -> Backend uses **ElevenLabs Scribe v2** -> Returns Text.
+2.  **Query**: Frontend sends Text -> Backend processes (see above).
+3.  **TTS**: Frontend sends Response Text -> Backend uses **ElevenLabs** (Turbo v2.5 for English, Multilingual v2 for Tamil) -> Returns MP3.
+
+---
+
+## 🛠️ Configuration & Setup
+
+### Environment Variables
+Required in `kiwi-rag/.env`:
 ```bash
-cd kiwi-rag
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment variables
-cp .env.example .env
-# Edit .env and add your API keys:
-#   GEMINI_API_KEY=your_key
-#   ELEVENLABS_API_KEY=your_key (optional)
-
-# Add Google Sheets credentials
-# Place your service_account.json in credentials/
-
-# Start the API server
-uvicorn api.main:app --reload --port 8000
+GOOGLE_API_KEY=...          # For Gemini
+ELEVENLABS_API_KEY=...      # For Voice
 ```
-
-The backend API will be available at `http://localhost:8000`
-
-### 2. Frontend Setup
-
+Required in `frontend/.env.local`:
 ```bash
-cd Kiwi-frontend
-
-# Install dependencies
-bun install  # or npm install
-
-# Start the development server
-bun run dev  # or npm run dev
-```
-
-The frontend will be available at `http://localhost:3000`
-
----
-
-## 📐 Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Frontend (Next.js)                      │
-│                   http://localhost:3000                     │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │ Chat Screen  │  │ Voice Input  │  │ Data Display │     │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘     │
-│         │                 │                 │              │
-│         └─────────────────┴─────────────────┘              │
-│                           │                                │
-│                    src/services/api.ts                     │
-│                           │                                │
-└───────────────────────────┼────────────────────────────────┘
-                            │ HTTP/REST
-                            │
-┌───────────────────────────┼────────────────────────────────┐
-│                           ▼                                │
-│                  FastAPI Server                            │
-│                http://localhost:8000                       │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              API Endpoints                           │  │
-│  │  POST /api/load-dataset                              │  │
-│  │  POST /api/query                                     │  │
-│  │  POST /api/transcribe                                │  │
-│  │  GET  /api/auth/check                                │  │
-│  └──────────────┬───────────────────────────────────────┘  │
-│                 │                                          │
-│  ┌──────────────▼───────────────────────────────────────┐  │
-│  │           Service Layer (api/services.py)            │  │
-│  └──────────────┬───────────────────────────────────────┘  │
-│                 │                                          │
-│  ┌──────────────▼───────────────────────────────────────┐  │
-│  │          Core RAG Pipeline (Preserved)               │  │
-│  │                                                       │  │
-│  │  Schema Retrieval → Planning → Validation →          │  │
-│  │  Execution → Explanation                             │  │
-│  │                                                       │  │
-│  │  ┌─────────────┐  ┌──────────┐  ┌──────────┐        │  │
-│  │  │  ChromaDB   │  │ DuckDB   │  │  Gemini  │        │  │
-│  │  │  (Schemas)  │  │ (Data)   │  │  (AI)    │        │  │
-│  │  └─────────────┘  └──────────┘  └──────────┘        │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                                                             │
-│                  Backend (kiwi-rag)                         │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🔌 API Endpoints
-
-### 1. Load Dataset
-**POST** `/api/load-dataset`
-
-```json
-// Request
-{
-  "url": "https://docs.google.com/spreadsheets/d/YOUR_ID/edit"
-}
-
-// Response
-{
-  "success": true,
-  "stats": {
-    "totalTables": 25,
-    "totalRecords": 1305,
-    "sheetCount": 5,
-    "sheets": ["Sheet1", "Sheet2"],
-    "detectedTables": [...]
-  }
-}
-```
-
-### 2. Process Query
-**POST** `/api/query`
-
-```json
-// Request
-{
-  "text": "What is the total sales?"
-}
-
-// Response
-{
-  "success": true,
-  "explanation": "The total sales is $45,230...",
-  "data": [...],
-  "plan": {...},
-  "schema_context": [...],
-  "data_refreshed": false
-}
-```
-
-### 3. Transcribe Audio
-**POST** `/api/transcribe`
-
-```
-Content-Type: multipart/form-data
-audio: <audio file blob>
-
-// Response
-{
-  "success": true,
-  "text": "What is the total sales?"
-}
-```
-
-### 4. Check Authentication
-**GET** `/api/auth/check`
-
-```json
-// Response
-{
-  "authenticated": true
-}
-```
-
----
-
-## 🎯 Features
-
-### Core Capabilities
-- ✅ **Natural Language Queries** - Ask questions in plain English, Tamil, Hindi, etc.
-- ✅ **Google Sheets Integration** - Direct connection with automatic change detection
-- ✅ **Voice Input/Output** - Speech-to-text and text-to-speech
-- ✅ **Multilingual Support** - Works with any language
-- ✅ **Smart Analytics** - Aggregations, filters, lookups, rankings
-- ✅ **Real-time Updates** - Automatic data refresh on sheet changes
-
-### Technical Features
-- ⚡ **FastAPI Backend** - High-performance REST API
-- 🎯 **RAG Pipeline** - Retrieval-Augmented Generation for accurate answers
-- 🤖 **AI Planning** - Gemini 2.5 Pro for query understanding
-- 💾 **DuckDB** - Fast in-memory analytics
-- 🧠 **ChromaDB** - Vector store for semantic schema search
-- 🎤 **ElevenLabs** - Professional voice transcription
-
----
-
-## 🛠️ Development
-
-### Backend Development
-
-```bash
-cd kiwi-rag
-
-# Run API server with auto-reload
-uvicorn api.main:app --reload --port 8000
-
-# Run original Streamlit app (optional)
-streamlit run app/streamlit_app.py
-
-# Run CLI query tool
-python run_query.py
-```
-
-### Frontend Development
-
-```bash
-cd Kiwi-frontend
-
-# Development server
-bun run dev
-
-# Build for production
-bun run build
-
-# Start production server
-bun run start
-```
-
----
-
-## 📝 Environment Variables
-
-### Backend (.env in kiwi-rag/)
-```env
-GEMINI_API_KEY=your_gemini_api_key
-ELEVENLABS_API_KEY=your_elevenlabs_api_key  # Optional
-SUPABASE_URL=your_supabase_url  # Optional
-SUPABASE_KEY=your_supabase_key  # Optional
-```
-
-### Frontend (.env.local in Kiwi-frontend/)
-```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
----
+### Credentials
+*   **Service Account**: Google Cloud Service Account JSON must be placed at `kiwi-rag/credentials/service_account.json`. *This file is git-ignored.*
 
-## 🧪 Testing
-
-### Test Backend API
-```bash
-# Health check
-curl http://localhost:8000
-
-# Test load dataset
-curl -X POST http://localhost:8000/api/load-dataset \
-  -H "Content-Type: application/json" \
-  -d '{"url": "YOUR_GOOGLE_SHEETS_URL"}'
-
-# Test query
-curl -X POST http://localhost:8000/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"text": "What is the total sales?"}'
-```
-
-### Test Frontend
-1. Open http://localhost:3000
-2. Paste Google Sheets URL
-3. Click "Analyze Dataset"
-4. Ask questions in the chat
+### Running the System
+1.  **Backend**:
+    ```bash
+    cd kiwi-rag
+    pip install -r requirements.txt
+    python -m uvicorn api.main:app --reload --port 8000
+    ```
+2.  **Frontend**:
+    ```bash
+    cd frontend
+    npm install
+    npm run dev
+    ```
 
 ---
 
-## 📂 Project Structure
+## ⚠️ Limitations & Known Constraints
 
-```
-kiwio/
-├── kiwi-rag/                    # Backend
-│   ├── api/                     # FastAPI server (NEW)
-│   │   ├── main.py             # API application
-│   │   ├── models.py           # Pydantic models
-│   │   └── services.py         # Service layer
-│   ├── app/                     # Streamlit app (original)
-│   ├── data_sources/            # Google Sheets connector
-│   ├── schema_intelligence/     # RAG schema retrieval
-│   ├── planning_layer/          # Query planning
-│   ├── execution_layer/         # SQL execution
-│   ├── explanation_layer/       # Natural language generation
-│   └── requirements.txt
-│
-└── Kiwi-frontend/               # Frontend
-    ├── src/
-    │   ├── app/                # Next.js pages
-    │   ├── components/         # React components
-    │   ├── services/           # API integration
-    │   └── lib/                # Types and utilities
-    └── package.json
-```
+1.  **In-Memory Database**: DuckDB runs in-memory. If the backend restarts, data must be re-fetched from Google Sheets.
+2.  **Single Tenant**: The `app_state` singleton in `services.py` means all users share the same loaded dataset. Not multi-user safe.
+3.  **High Latency (Initial)**: The first load of a large sheet takes time due to embedding generation.
+4.  **Paranoid Refresh Disabled**: Auto-refresh on every query is currently **DISABLED** in `services.py` to improve query latency. You must manually reload the dataset to see sheet updates.
+5.  **Hardcoded Models**:
+    *   Translation: `gemini-1.5-flash`
+    *   Planner: `gemini-1.5-flash` (via `settings.yaml` default)
+6.  **Tamil Support**:
+    *   Relies on Translation Layer. SQL queries run in English.
+    *   Entity matching (e.g., matching a Tamil name to an English DB record) is probabilistic and depends on the LLM's translation accuracy.
 
----
+## 🛑 Anti-Patterns (Do Not Do This)
 
-## 🔒 Security Notes
+*   **Do NOT push `service_account.json`**: It is ignored for a reason.
+*   **Do NOT use `gemini-pro`**: It is deprecated/404. Use `gemini-1.5-flash`.
+*   **Do NOT expect persistent sessions**: Refreshing the browser resets the chat UI State (though backend might keep data).
+*   **Do NOT modify `plan_schema.json`**: This breaks the strict validation contract between Planner and Executor.
 
-- API keys stored in `.env` (not committed to git)
-- Google credentials in separate JSON file (not committed)
-- Read-only access to Google Sheets
-- CORS configured for localhost only
-- Optional Supabase authentication
+## 🔌 Integration Points
 
----
-
-## 🐛 Troubleshooting
-
-### Backend won't start
-- Check Python version (3.9+)
-- Verify all dependencies installed: `pip install -r requirements.txt`
-- Check `.env` file exists with API keys
-- Verify Google credentials file exists
-
-### Frontend can't connect to backend
-- Ensure backend is running on port 8000
-- Check `.env.local` has correct `NEXT_PUBLIC_API_BASE_URL`
-- Verify CORS is configured correctly in `api/main.py`
-
-### Voice features not working
-- Add `ELEVENLABS_API_KEY` to backend `.env`
-- System falls back to gTTS if ElevenLabs unavailable
-- Check browser microphone permissions
-
----
-
-## 📚 Documentation
-
-- [Frontend README](Kiwi-frontend/README.md) - Frontend-specific docs
-- [Backend README](kiwi-rag/README.md) - Backend-specific docs
-- [Implementation Plan](implementation_plan.md) - Integration details
-
----
-
-## 🙏 Credits
-
-- **Gemini AI** - Query planning and explanation
-- **ElevenLabs** - Voice input/output
-- **ChromaDB** - Vector storage
-- **DuckDB** - Fast analytics
-- **FastAPI** - API framework
-- **Next.js** - Frontend framework
-
----
-
-**Built with ❤️ for multilingual data analytics**
+*   **Adding a Metric**: Update `analytics_engine/metric_registry.py`.
+*   **New Sheet Logic**: Update `data_sources/gsheet/table_detection.py`.
+*   **Voice Config**: `utils/voice_utils.py` contains the hardcoded Voice IDs.
