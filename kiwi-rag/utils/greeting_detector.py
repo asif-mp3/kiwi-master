@@ -166,9 +166,16 @@ def is_greeting(text: str) -> bool:
                     
     # Also check for generic Tamil text that is short
     if re.search(r'[\u0B80-\u0BFF]', text_lower):
-        if len(text_lower.split()) <= 10: # Allow reasonable length Tamil casual talk
+        # Same logic as category detector - prevent blocking queries
+        words = text_lower.split()
+        
+        # Keywords that mean it's a QUERY, not a greeting
+        query_keywords = ['sales', 'revenue', 'profit', 'total', 'count', 'list', 'show', 'எவ்வளவு', 'என்ன', 'sales', 'gross']
+        is_query = any(keyword in text_lower for keyword in query_keywords)
+        
+        if len(words) <= 6 and not re.search(r'\d', text_lower) and not is_query: 
             return True
-    
+            
     return False
 
 
@@ -223,6 +230,26 @@ def _detect_greeting_category(text: str) -> str:
     # Check for generic Tamil text (if not caught by specific greetings)
     # Tamil Unicode range: \u0B80-\u0BFF
     if re.search(r'[\u0B80-\u0BFF]', text_lower):
+        # BLOCKER FIX: Do NOT trap actual queries!
+        # Only treat as generic chat if:
+        # 1. It is short (<= 5 words)
+        # 2. AND it does NOT contain numbers (often used in queries like 'Dec 1st')
+        # 3. AND it seems conversational
+        
+        words = text_lower.split()
+        if len(words) > 6:
+            # Likely a detailed query like "What is the sales for..."
+            return 'casual' # Let it fall through to RAG pipeline (or return None to skip greeting)
+            
+        # Check for numbers which usually indicate a data query
+        if re.search(r'\d', text_lower):
+            return 'casual' # Let it fall through
+            
+        # Check for query keywords (even in English mixed)
+        query_keywords = ['sales', 'revenue', 'profit', 'total', 'count', 'list', 'show', 'எவ்வளவு', 'என்ன']
+        if any(keyword in text_lower for keyword in query_keywords):
+            return 'casual' # Let it fall through
+            
         return 'tamil_generic'
     
     # Check other categories

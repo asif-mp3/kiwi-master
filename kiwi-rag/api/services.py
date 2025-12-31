@@ -18,6 +18,7 @@ from validation_layer.plan_validator import validate_plan
 from execution_layer.executor import execute_plan
 from explanation_layer.explainer_client import explain_results
 from data_sources.gsheet.connector import fetch_sheets_with_tables
+from utils.translation import translate_to_english, translate_to_tamil
 from data_sources.gsheet.change_detector import needs_refresh
 from data_sources.gsheet.snapshot_loader import load_snapshot
 from schema_intelligence.chromadb_client import SchemaVectorStore
@@ -211,6 +212,10 @@ def process_query_service(question: str) -> Dict[str, Any]:
     Returns ProcessQueryResponse-compatible dict.
     """
     try:
+        # Phonetic corrections for common STT errors (Hardcoded)
+        # Matches "fresh geese", "fresh cheese", "fresh keys", etc.
+        question = re.sub(r'fresh\s+(geese|cheese|keys|piece|peace|bees)', 'Freshggies', question, flags=re.IGNORECASE)
+
         # Check for greetings first
         if is_greeting(question):
             greeting_response = get_greeting_response(question)
@@ -249,21 +254,38 @@ def process_query_service(question: str) -> Dict[str, Any]:
                     'error': 'Failed to store memory'
                 }
         
-        # Automatic change detection
-        data_refreshed = check_and_refresh_data()
+        # Automatic change detection (DISABLED for performance - manual refresh required)
+        # data_refreshed = check_and_refresh_data()
+        data_refreshed = False
         
-        # Schema retrieval
-        schema_context = retrieve_schema(question)
+        # --- TRANSLATION LAYER (PRE-PROCESS) ---
+        processing_query = question
+        is_tamil_query = bool(re.search(r'[\u0B80-\u0BFF]', question))
         
-        # Planning
-        plan = generate_plan(question, schema_context)
+        if is_tamil_query:
+            print(f"🈯 Tamil Query Detected: {question}")
+            processing_query = translate_to_english(question)
+            print(f"🇬🇧 Translated to English: {processing_query}")
+            
+        # Schema retrieval (use English query)
+        # FORCE FULL CONTEXT: User has ~25 tables, so top_k=50 ensures retrieval never filters out the correct table.
+        schema_context = retrieve_schema(processing_query, top_k=50)
+        
+        # Planning (use English query)
+        plan = generate_plan(processing_query, schema_context)
         validate_plan(plan)
         
         # Execution
         result = execute_plan(plan)
         
-        # Explanation
-        explanation = explain_results(result, query_plan=plan, original_question=question)
+        # Explanation (use English query context)
+        explanation = explain_results(result, query_plan=plan, original_question=processing_query)
+        
+        # --- TRANSLATION LAYER (POST-PROCESS) ---
+        if is_tamil_query:
+            print(f"🇬🇧 English Explanation: {explanation}")
+            explanation = translate_to_tamil(explanation)
+            print(f"🈯 Translated Explanation: {explanation}")
         
         # Convert result to list of dicts for JSON serialization
         data_list = None

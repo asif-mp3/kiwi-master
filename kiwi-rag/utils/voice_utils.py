@@ -56,7 +56,7 @@ def transcribe_audio(audio_file_path: str) -> str:
         print(f"❌ STT Error: {error_msg}")
         raise Exception(error_msg)
 
-def text_to_speech(text: str, voice_id: str = "OUBMjq0LvBjb07bhwD3H") -> bytes:
+def text_to_speech(text: str, voice_id: str = "AoUGsFgc3Skx8oW3rd42") -> bytes:
     """
     Convert text to speech using ElevenLabs with user's preferred voice.
     Uses Turbo v2.5 for fastest, lowest-latency playback.
@@ -80,15 +80,24 @@ def text_to_speech(text: str, voice_id: str = "OUBMjq0LvBjb07bhwD3H") -> bytes:
         tamil_pattern = re.compile(r'[\u0B80-\u0BFF]')
         has_tamil = bool(tamil_pattern.search(text))
         
-        print(f"🔊 TTS: Using voice ID {voice_id} (Turbo v2.5)")
-        print(f"🔊 TTS: Detected {'Tamil' if has_tamil else 'English'} text")
+        print(f"🔊 TTS: Using voice ID {voice_id}")
         
-        # Use Turbo v2.5 for fastest, lowest-latency TTS
+        # Select model based on language for best balance of speed vs accuracy
+        if has_tamil:
+            # Multilingual v2 is significantly better at Tamil pronunciation than Turbo
+            model_id = "eleven_multilingual_v2"
+            print("🔊 TTS: Detected Tamil text - Switching to High-Accuracy Model (Multilingual v2)")
+        else:
+            # Turbo v2.5 is fastest for English
+            model_id = "eleven_turbo_v2_5" 
+            print("🔊 TTS: English text - Using Low-Latency Model (Turbo v2.5)")
+        
+        # Generate audio
         audio_stream = client.text_to_speech.convert(
             voice_id=voice_id,
             text=text,
-            model_id="eleven_turbo_v2_5",  # Fastest model with lowest latency
-            output_format="mp3_44100_128",  # High quality
+            model_id=model_id,
+            output_format="mp3_44100_128", 
         )
         
         # Collect audio chunks

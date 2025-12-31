@@ -56,8 +56,11 @@ def infer_and_convert_types(df):
                 # Try converting to numeric
                 numeric_values = pd.to_numeric(cleaned, errors='coerce')
                 
-                # If >80% of non-null values are numeric, convert the column
-                if numeric_values.notna().sum() / len(non_null) > 0.8:
+                # If >30% of non-null values are numeric, convert the column
+                # AGGRESSIVE STRATEGY: Prefer Numeric to avoid SQL Binder Errors
+                ratio = numeric_values.notna().sum() / len(non_null)
+                print(f"      DEBUG: Column '{col}' numeric ratio: {ratio:.2f}")
+                if ratio > 0.3:
                     # Check if all numeric values are integers
                     if numeric_values.dropna().apply(lambda x: x == int(x)).all():
                         df[col] = pd.to_numeric(df[col].astype(str).str.strip().str.replace(',', '').str.replace('$', '').str.replace('₹', '').str.replace('%', ''), errors='coerce').astype('Int64')
@@ -75,8 +78,8 @@ def infer_and_convert_types(df):
                     warnings.filterwarnings('ignore', category=FutureWarning)
                     date_values = pd.to_datetime(non_null, errors='coerce')
                 
-                # If >80% of non-null values are valid dates, convert
-                if date_values.notna().sum() / len(non_null) > 0.8:
+                # If >50% of non-null values are valid dates, convert
+                if date_values.notna().sum() / len(non_null) > 0.5:
                     df[col] = pd.to_datetime(df[col], errors='coerce')
                     continue
             except:
@@ -351,7 +354,8 @@ def fetch_sheets_with_tables() -> Dict[str, List[Dict[str, Any]]]:
             
             # STEP 1: Compute raw sheet hash BEFORE any processing
             # This hash represents the complete state of the sheet
-            sheet_hash = compute_sheet_hash(all_values)
+            # FORCE INVALIDATION: Append version to force rebuild with new type inference logic
+            sheet_hash = compute_sheet_hash(all_values) + "_v3_force_numeric"
             source_id = get_source_id(spreadsheet_id, sheet_name)
             
             # Create DataFrame with RAW string data (no type inference yet)

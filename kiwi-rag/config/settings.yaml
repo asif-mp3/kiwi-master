@@ -6,7 +6,7 @@ google_sheets:
 llm:
   api_key_env: GEMINI_API_KEY
   max_retries: 3
-  model: gemini-2.5-pro
+  model: gemini-1.5-flash
   provider: gemini
   temperature: 0.0
 project:
