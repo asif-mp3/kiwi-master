@@ -21,3 +21,8 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# Credentials
+kiwi-rag/credentials/
+*.json
+!package.json
+!tsconfig.json
