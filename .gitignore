@@ -42,3 +42,6 @@ credentials/
 # Snapshots (generated data)
 backend/data_sources/snapshots/
 backend/schema_store/
+
+# Claude Code plans
+.claude/
