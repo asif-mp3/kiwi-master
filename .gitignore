@@ -23,6 +23,22 @@ yarn-debug.log*
 yarn-error.log*
 # Credentials
 kiwi-rag/credentials/
+backend/credentials/
+credentials/
+
+# JSON files (except config files)
 *.json
 !package.json
+!package-lock.json
 !tsconfig.json
+!backend/planning_layer/plan_schema.json
+!backend/config/*.yaml
+
+# Environment files
+.env
+.env.local
+.env.*
+
+# Snapshots (generated data)
+backend/data_sources/snapshots/
+backend/schema_store/
