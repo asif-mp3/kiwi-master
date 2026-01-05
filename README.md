@@ -1,4 +1,4 @@
-# Kiwi - Voice-Enabled Google Sheets Analytics Platform
+# Voice-Enabled Google Sheets Analytics Platform
 
 An AI-powered conversational analytics system that transforms Google Sheets into a queryable database through natural language (voice or text). Built with a sophisticated RAG (Retrieval-Augmented Generation) architecture supporting **10 query types**, multi-language support (English/Tamil), and real-time voice interaction.
 
