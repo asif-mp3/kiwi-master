@@ -145,7 +145,7 @@ def validate_filter_values(filters: list, table_name: str):
             )
         
         # Validate operator
-        allowed_ops = ["=", ">", "<", ">=", "<=", "LIKE"]
+        allowed_ops = ["=", ">", "<", ">=", "<=", "!=", "LIKE"]
         if operator not in allowed_ops:
             raise ValueError(f"Unsafe operator: {operator}. Allowed: {allowed_ops}")
         
@@ -172,7 +172,9 @@ def validate_no_unknown_keys(plan: dict):
         "query_type", "table", "metrics", "select_columns", 
         "filters", "group_by", "order_by", "limit",
         "aggregation_function", "aggregation_column", 
-        "subset_filters", "subset_order_by", "subset_limit"
+        "subset_filters", "subset_order_by", "subset_limit",
+        # Advanced query type keys (comparison, percentage, trend)
+        "comparison", "percentage", "trend"
     }
     
     unknown_keys = set(plan.keys()) - allowed_keys
@@ -355,5 +357,35 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
         subset_filters = plan.get("subset_filters", [])
         if subset_filters:
             validate_filter_values(subset_filters, table)
+
+    elif query_type == "comparison":
+        # Comparison queries require the comparison config object
+        comparison_config = plan.get("comparison")
+        if not comparison_config:
+            raise ValueError("Comparison queries must have a 'comparison' configuration")
+        
+        # Validate required nested structure
+        if not comparison_config.get("period_a") or not comparison_config.get("period_b"):
+            raise ValueError("Comparison queries must specify both 'period_a' and 'period_b'")
+
+    elif query_type == "percentage":
+        # Percentage queries require the percentage config object
+        percentage_config = plan.get("percentage")
+        if not percentage_config:
+            raise ValueError("Percentage queries must have a 'percentage' configuration")
+        
+        # Validate required nested structure
+        if not percentage_config.get("numerator") or not percentage_config.get("denominator"):
+            raise ValueError("Percentage queries must specify both 'numerator' and 'denominator'")
+
+    elif query_type == "trend":
+        # Trend queries require the trend config object
+        trend_config = plan.get("trend")
+        if not trend_config:
+            raise ValueError("Trend queries must have a 'trend' configuration")
+        
+        # Validate required fields
+        if not trend_config.get("date_column") or not trend_config.get("value_column"):
+            raise ValueError("Trend queries must specify 'date_column' and 'value_column'")
 
     return True

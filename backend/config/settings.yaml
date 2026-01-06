@@ -17,8 +17,10 @@ google_sheets:
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
+  explainer_max_tokens: 300
   max_retries: 3
-  model: gemini-2.5-pro
+  model: gemini-2.0-flash-exp
+  planner_max_tokens: 500
   provider: gemini
   request_timeout_seconds: 90
   temperature: 0.0

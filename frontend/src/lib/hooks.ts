@@ -224,6 +224,20 @@ export function useAppState() {
     return chatTabs.find((tab) => tab.id === activeChatId);
   };
 
+  const clearCurrentChat = () => {
+    if (!activeChatId) return;
+
+    // Clear messages but keep the chat tab and dataset connection
+    setMessages([]);
+    setChatTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeChatId
+          ? { ...tab, messages: [], updatedAt: Date.now() }
+          : tab
+      )
+    );
+  };
+
   const setGoogleSheetUrl = (url: string | null) => {
     setConfig((prev) => ({ ...prev, googleSheetUrl: url }));
   };
@@ -247,5 +261,6 @@ export function useAppState() {
     setDatasetForChat,
     getCurrentChat,
     updateMessage,
+    clearCurrentChat,
   };
 }

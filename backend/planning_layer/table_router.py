@@ -8,6 +8,17 @@ from schema_intelligence.profile_store import ProfileStore
 from planning_layer.entity_extractor import EntityExtractor
 
 
+def _get_actual_duckdb_tables() -> List[str]:
+    """Get list of tables that actually exist in DuckDB (not just in profiles)."""
+    try:
+        from analytics_engine.duckdb_manager import DuckDBManager
+        db = DuckDBManager()
+        return db.list_tables()
+    except Exception as e:
+        print(f"[TableRouter] Warning: Could not get DuckDB tables: {e}")
+        return []
+
+
 class TableRouter:
     """
     Routes queries to the correct table using intelligent scoring.
@@ -55,6 +66,20 @@ class TableRouter:
         if entities.get('explicit_table'):
             explicit_match = self._find_explicit_table(entities['explicit_table'])
             if explicit_match:
+                # Validate that table actually exists in DuckDB
+                actual_tables = _get_actual_duckdb_tables()
+                if actual_tables:
+                    actual_tables_lower = {t.lower(): t for t in actual_tables}
+                    if explicit_match not in actual_tables:
+                        # Try case-insensitive match
+                        if explicit_match.lower() in actual_tables_lower:
+                            explicit_match = actual_tables_lower[explicit_match.lower()]
+                        else:
+                            # Table doesn't exist, skip explicit match
+                            explicit_match = None
+                            print(f"[TableRouter] Explicit table reference not found in DuckDB")
+
+            if explicit_match:
                 self._last_routing_debug = {
                     'method': 'explicit_reference',
                     'table': explicit_match,
@@ -69,6 +94,29 @@ class TableRouter:
 
         # Get candidate tables with scores
         candidates = self.profile_store.find_best_table_for_query(entities)
+
+        # CRITICAL: Filter candidates to only include tables that actually exist in DuckDB
+        # This prevents errors from stale profiles referencing non-existent tables
+        actual_tables = _get_actual_duckdb_tables()
+        if actual_tables:
+            # Build case-insensitive lookup map
+            actual_tables_lower = {t.lower(): t for t in actual_tables}
+
+            validated_candidates = []
+            for table_name, score in candidates:
+                # Try exact match first
+                if table_name in actual_tables:
+                    validated_candidates.append((table_name, score))
+                # Try case-insensitive match
+                elif table_name.lower() in actual_tables_lower:
+                    # Use the actual table name from DuckDB (correct casing)
+                    actual_name = actual_tables_lower[table_name.lower()]
+                    validated_candidates.append((actual_name, score))
+                    print(f"[TableRouter] Fixed table name casing: {table_name} -> {actual_name}")
+                else:
+                    print(f"[TableRouter] Filtered out non-existent table: {table_name}")
+
+            candidates = validated_candidates
 
         if not candidates:
             # No tables matched - return None and let planner handle with fallback
@@ -89,6 +137,12 @@ class TableRouter:
         # Calculate confidence based on score distribution
         confidence = self._calculate_confidence(candidates)
 
+        # Boost confidence for cross-table queries when we found a table with aggregate data
+        # This prevents unnecessary clarification for "across all months" type queries
+        if entities.get('cross_table_intent') and best_score >= 40:
+            # High score with cross-table intent means we found a good aggregate table
+            confidence = min(1.0, confidence + 0.25)
+
         # Store debug info for transparency
         self._last_routing_debug = {
             'method': 'scoring',
@@ -96,7 +150,8 @@ class TableRouter:
             'candidates': candidates[:5],  # Top 5
             'selected': best_table,
             'score': best_score,
-            'confidence': confidence
+            'confidence': confidence,
+            'cross_table_intent': entities.get('cross_table_intent', False)
         }
 
         return RoutingResult(

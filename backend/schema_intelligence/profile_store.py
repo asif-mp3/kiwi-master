@@ -257,6 +257,17 @@ class ProfileStore:
                     score += 50  # VERY strong boost for category tables
                     match_reasons.append(f"table_name_has_category")
 
+            # --- Location table name matching (parallel to category matching) ---
+            # PRIORITY: Check if table NAME contains location keywords (e.g., "Pincode_Sales", "Area_Breakdown")
+            # These are the best tables for location/area-specific queries
+            location_table_keywords = ['area', 'pincode', 'zone', 'region', 'location', 'branch', 'zip']
+            for loc_kw in location_table_keywords:
+                if loc_kw in table_name.lower():
+                    score += 50  # Same bonus as category tables
+                    match_reasons.append(f"table_name_has_location:{loc_kw}")
+                    break
+
+            if entities.get('category'):
                 # Check if any column NAME matches the category (e.g., "Batter & Dough" as column)
                 # This is CRITICAL for pivoted category tables
                 for col_name in columns.keys():
@@ -353,6 +364,28 @@ class ProfileStore:
                         score += 30
                         match_reasons.append(f"dimension_table_match:{keyword}")
                         scored_table_keywords.add(keyword_lower)
+
+                # --- Fix 4: Strengthen location column matching ---
+                # When user explicitly mentions "area" and table has "Area Name" column, VERY strong boost
+                location_dims = ['area', 'zone', 'region', 'pincode', 'zip', 'city', 'location', 'branch']
+                asking_about_location = any(kw.lower() in location_dims for kw in dimension_keywords)
+
+                if asking_about_location:
+                    for keyword in dimension_keywords:
+                        keyword_lower = keyword.lower()
+                        if keyword_lower in location_dims:
+                            for col_name in columns.keys():
+                                if keyword_lower in col_name.lower():
+                                    score += 100  # VERY strong - exact dimension match
+                                    match_reasons.append(f"exact_location_column_match:{col_name}")
+                                    break
+
+                    # --- Fix 3: Penalize wrong dimension type ---
+                    # User wants location data - penalize category tables HEAVILY
+                    table_lower = table_name.lower()
+                    if 'category' in table_lower or profile.get('table_type') == 'category_breakdown':
+                        score -= 80  # Heavy penalty - location query should NOT go to category table
+                        match_reasons.append("PENALTY:location_query_on_category_table")
 
             # Only include tables with positive score
             if score > 0:
