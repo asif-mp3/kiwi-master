@@ -13,7 +13,7 @@ google_sheets:
   credentials_path: credentials/service_account.json
   date_conversion_threshold: 0.5
   numeric_conversion_threshold: 0.8
-  spreadsheet_id: 1DhmCWjVr_L0frgQDzEqqo79ScwMUDs_buVymRKUcfVQ
+  spreadsheet_id: 1mRcD-apkPVAUU_HPZ8KBzMxdct7zdKMp2qPoivSBpl4
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true

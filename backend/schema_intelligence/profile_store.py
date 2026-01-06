@@ -140,8 +140,74 @@ class ProfileStore:
             score = 0
             match_reasons = []
 
-            # --- Month matching ---
-            if entities.get('month'):
+            # --- Cross-table intent: Boost tables with aggregate columns ---
+            # When user asks for "across all months" or "overall total", prefer tables
+            # that have pre-computed aggregate columns or are summary tables
+            # BUT: If dimension keywords are present, user wants DIMENSIONAL breakdown
+            #      not just aggregates - reduce cross-table boost in that case
+            dimension_keywords = entities.get('dimension_keywords', [])
+            has_dimension_request = len(dimension_keywords) > 0
+
+            if entities.get('cross_table_intent'):
+                columns = profile.get('columns', {})
+                table_type = profile.get('table_type', 'unknown')
+
+                # Only give full aggregate boost if user isn't asking for specific dimension
+                aggregate_boost = 40 if not has_dimension_request else 15
+                summary_boost = 25 if not has_dimension_request else 10
+
+                # Check for aggregate columns (total, grand total, sum, etc.)
+                has_aggregate_col = False
+                for col_name in columns.keys():
+                    col_lower = col_name.lower()
+                    if any(term in col_lower for term in ['total', 'grand', 'sum', 'overall', 'aggregate']):
+                        has_aggregate_col = True
+                        score += aggregate_boost
+                        match_reasons.append(f"has_aggregate_col:{col_name}")
+                        break
+
+                # Boost summary tables for cross-table queries
+                if table_type == 'summary':
+                    score += summary_boost
+                    match_reasons.append("type:summary_boost_cross_table")
+
+                # If no month specified but cross-table intent, don't require month match
+                # (the whole point is to get data across all months)
+
+            # --- Multi-month comparison: PENALIZE month-specific tables ---
+            # When comparing multiple months, we need tables with columns for ALL months,
+            # NOT tables named after a single month (like "September_Detailed_Breakdown")
+            all_months = entities.get('all_months', [])
+            is_multi_month = entities.get('multi_month_comparison', False)
+
+            if is_multi_month and len(all_months) >= 2:
+                table_lower = table_name.lower()
+                # Check if table name contains a specific month
+                month_names = ['january', 'february', 'march', 'april', 'may', 'june',
+                              'july', 'august', 'september', 'october', 'november', 'december']
+                table_has_single_month = any(m in table_lower for m in month_names)
+
+                if table_has_single_month:
+                    # HEAVILY penalize month-specific tables for multi-month comparisons
+                    score -= 100
+                    match_reasons.append("PENALTY:month_specific_table_for_multi_month_query")
+
+                # BOOST tables with columns for multiple months
+                columns = profile.get('columns', {})
+                months_in_cols = set()
+                for col_name in columns.keys():
+                    col_lower = col_name.lower()
+                    for m in month_names:
+                        if m in col_lower:
+                            months_in_cols.add(m)
+
+                if len(months_in_cols) >= 2:
+                    # Table has multiple month columns - BOOST heavily
+                    score += 80
+                    match_reasons.append(f"BOOST:multi_month_columns:{len(months_in_cols)}")
+
+            # --- Month matching (for single-month queries) ---
+            if entities.get('month') and not is_multi_month:
                 month_lower = entities['month'].lower()
 
                 # Check table name
@@ -188,34 +254,47 @@ class ProfileStore:
                 # PRIORITY: Check if table NAME contains "category" (e.g., "By_Category")
                 # These are the best tables for category-specific queries
                 if 'category' in table_name.lower() or 'by_cat' in table_name.lower():
-                    score += 30  # Strong boost for category tables
+                    score += 50  # VERY strong boost for category tables
                     match_reasons.append(f"table_name_has_category")
 
+                # Check if any column NAME matches the category (e.g., "Batter & Dough" as column)
+                # This is CRITICAL for pivoted category tables
+                for col_name in columns.keys():
+                    if category_lower in col_name.lower():
+                        score += 60  # VERY strong boost - exact column name match
+                        match_reasons.append(f"category_as_column_name:{col_name}")
+                        break
+
+                # Check ALL dimension columns, not just the first one
+                category_value_found = False
+                category_col_found = False
                 for col_name, col_info in columns.items():
                     if col_info.get('role') == 'dimension':
                         unique_values = col_info.get('unique_values', [])
                         # Check if category value exists in column
-                        if any(category_lower in str(v).lower() for v in unique_values):
+                        if not category_value_found and any(category_lower in str(v).lower() for v in unique_values):
                             score += 15
                             match_reasons.append(f"category_match:{col_name}")
-                            break
-                        # Check if column name suggests categories
-                        if 'category' in col_name.lower():
+                            category_value_found = True
+                        # Check if column name suggests categories (only if value not found)
+                        elif not category_value_found and not category_col_found and 'category' in col_name.lower():
                             score += 10
                             match_reasons.append(f"has_category_col:{col_name}")
-                            break
+                            category_col_found = True
 
             # --- Location matching ---
             if entities.get('location'):
                 columns = profile.get('columns', {})
+                location_lower = entities['location'].lower()
+                location_found = False
                 for col_name, col_info in columns.items():
                     if col_info.get('role') in ['dimension', 'identifier']:
                         unique_values = col_info.get('unique_values', [])
-                        location_lower = entities['location'].lower()
                         if any(location_lower in str(v).lower() for v in unique_values):
                             score += 15
                             match_reasons.append(f"location_match:{col_name}")
-                            break
+                            location_found = True
+                            break  # Location match found, can stop
 
             # --- Table type scoring ---
             table_type = profile.get('table_type', 'unknown')
@@ -246,6 +325,34 @@ class ProfileStore:
             if quality_bonus > 0:
                 score += quality_bonus
                 match_reasons.append(f"quality:{quality_bonus}")
+
+            # --- Dimension keyword matching (DYNAMIC - works with any dataset) ---
+            # When question mentions keywords like "area", "pincode", "zone", etc.,
+            # boost tables that have columns containing those keywords
+            # This is CRITICAL for routing - user wants to GROUP BY or FILTER BY this dimension
+            # Note: dimension_keywords already defined above for cross_table_intent logic
+            if dimension_keywords:
+                columns = profile.get('columns', {})
+                scored_columns = set()  # Track columns already scored to prevent duplicates
+                scored_table_keywords = set()  # Track table name keywords already scored
+                for keyword in dimension_keywords:
+                    keyword_lower = keyword.lower()
+                    for col_name, col_info in columns.items():
+                        col_lower = col_name.lower()
+                        # Check if column name contains the dimension keyword
+                        # Only score if this column hasn't been scored yet
+                        if keyword_lower in col_lower and col_name not in scored_columns:
+                            # VERY strong boost - user explicitly asked about this dimension
+                            # Must beat cross_table aggregate boosts (40+25=65)
+                            score += 70
+                            match_reasons.append(f"dimension_col_match:{col_name}:{keyword}")
+                            scored_columns.add(col_name)  # Mark column as scored
+                            break  # Only count once per keyword
+                    # Also check table name (only once per keyword)
+                    if keyword_lower in table_name.lower() and keyword_lower not in scored_table_keywords:
+                        score += 30
+                        match_reasons.append(f"dimension_table_match:{keyword}")
+                        scored_table_keywords.add(keyword_lower)
 
             # Only include tables with positive score
             if score > 0:

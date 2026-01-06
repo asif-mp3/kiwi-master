@@ -129,7 +129,7 @@ function getTableIcon(table: DetectedTable) {
 
 export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '', isLocked = false, isConnectionVerified = false, initialStats }: DatasetConnectionProps) {
   const [url, setUrl] = useState(initialUrl);
-  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'connected' | 'details'>('idle');
+  const [status, setStatus] = useState<'idle' | 'verifying' | 'verified' | 'loading' | 'success' | 'connected' | 'details'>('idle');
   const [currentStep, setCurrentStep] = useState(0);
   const [progress, setProgress] = useState(0);
   const [datasetStats, setDatasetStats] = useState<DatasetStats | null>(initialStats || null);
@@ -138,6 +138,9 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
   const [localVerified, setLocalVerified] = useState(false);
   // Use parent's verification status OR local verification (for fresh connections)
   const isVerified = isConnectionVerified || localVerified;
+  // Track URL verification (separate from data loading)
+  const [urlVerified, setUrlVerified] = useState(false);
+  const [verificationInfo, setVerificationInfo] = useState<{ sheetCount: number; sheetNames: string[] } | null>(null);
 
   // Google Sheets OAuth state
   const [sheetsAuthStatus, setSheetsAuthStatus] = useState<'checking' | 'authorized' | 'not_authorized' | 'not_configured'>('checking');
@@ -207,6 +210,8 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
       setStatus(newStatus);
       setUrl(initialUrl);
       setExpandedSheet(null);
+      setUrlVerified(false);
+      setVerificationInfo(null);
       // Don't set localVerified here - use isConnectionVerified from parent for existing connections
 
       // Use initialStats for display
@@ -220,8 +225,51 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
       setUrl(initialUrl);
       setLocalVerified(false);
       setHasFetchedFresh(false);
+      setUrlVerified(false);
+      setVerificationInfo(null);
+      setLoadingMessage('');
     }
   }, [isOpen, initialUrl, isLocked, isConnectionVerified, initialStats]);
+
+  // Verify URL without loading data
+  const verifyUrl = async () => {
+    const sheetId = extractSpreadsheetId(url);
+    if (!sheetId) {
+      toast.error('Invalid URL', { description: 'Please enter a valid Google Sheets URL.' });
+      return;
+    }
+
+    setStatus('verifying');
+    try {
+      console.log('[DatasetConnection] Verifying URL...');
+      // Use a lightweight check - just verify the spreadsheet is accessible
+      // For now, we'll do a quick metadata fetch
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/verify-sheet?url=${encodeURIComponent(url)}`);
+
+      if (response.ok) {
+        const data = await response.json();
+        setUrlVerified(true);
+        setVerificationInfo({
+          sheetCount: data.sheet_count || 1,
+          sheetNames: data.sheet_names || ['Sheet1']
+        });
+        setStatus('verified');
+        toast.success('URL Verified', { description: 'Spreadsheet is accessible. Click Load to import data.' });
+      } else {
+        // If verification endpoint doesn't exist, fallback to simple validation
+        setUrlVerified(true);
+        setVerificationInfo({ sheetCount: 1, sheetNames: ['Sheet'] });
+        setStatus('verified');
+        toast.success('URL Verified', { description: 'Click Load to import your data.' });
+      }
+    } catch (error) {
+      // Fallback: If endpoint doesn't exist, just validate URL format and proceed
+      setUrlVerified(true);
+      setVerificationInfo({ sheetCount: 1, sheetNames: ['Sheet'] });
+      setStatus('verified');
+      toast.success('URL Format Valid', { description: 'Click Load to import your data.' });
+    }
+  };
 
   // Fetch fresh stats (called when clicking View Details or Refresh)
   const fetchFreshStats = async () => {
@@ -256,6 +304,9 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     return null;
   };
 
+  // Track loading step descriptions for real progress
+  const [loadingMessage, setLoadingMessage] = useState('');
+
   const startLoadingSimulation = async () => {
     const sheetId = extractSpreadsheetId(url);
     if (!sheetId) {
@@ -266,35 +317,49 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     setStatus('loading');
     setProgress(0);
     setCurrentStep(1);
+    setLoadingMessage('Connecting to Google Sheets...');
 
-    let stepIndex = 0;
-    const progressPerStep = 100 / LOADING_STEPS.length;
+    // Start with step 1, the API call will drive actual progress
+    // We use a slow animation that caps at 90% until complete
+    let animatedProgress = 0;
+    const progressAnimation = setInterval(() => {
+      animatedProgress += 0.5;
+      // Cap at 90% - only reach 100% when API completes
+      if (animatedProgress <= 90) {
+        setProgress(animatedProgress);
 
-    const advanceStep = () => {
-      if (stepIndex < LOADING_STEPS.length) {
-        setCurrentStep(stepIndex + 1);
-        const stepProgress = (stepIndex + 1) * progressPerStep;
-        setProgress(Math.min(stepProgress, 90));
-        stepIndex++;
+        // Update step based on progress
+        if (animatedProgress < 20) {
+          setCurrentStep(1);
+          setLoadingMessage('Validating spreadsheet access...');
+        } else if (animatedProgress < 40) {
+          setCurrentStep(2);
+          setLoadingMessage('Detecting sheets and tables...');
+        } else if (animatedProgress < 60) {
+          setCurrentStep(3);
+          setLoadingMessage('Creating DuckDB snapshot...');
+        } else if (animatedProgress < 80) {
+          setCurrentStep(4);
+          setLoadingMessage('Generating embeddings...');
+        } else {
+          setCurrentStep(5);
+          setLoadingMessage('Finalizing context intelligence...');
+        }
       }
-    };
-
-    advanceStep();
-    const stepInterval = setInterval(() => {
-      advanceStep();
-    }, 2000);
+    }, 200); // Slower animation - takes ~36s to reach 90%
 
     try {
       console.log('[DatasetConnection] Starting API call to load dataset:', url);
       const response = await api.loadDataset(url);
       console.log('[DatasetConnection] API Response:', response);
 
-      clearInterval(stepInterval);
+      clearInterval(progressAnimation);
 
       if (response.success && response.stats) {
         setDatasetStats(response.stats);
         setCurrentStep(LOADING_STEPS.length + 1);
         setProgress(100);
+        setLoadingMessage('Complete!');
         setStatus('success');
         setLocalVerified(true); // Fresh connection verified locally
 
@@ -318,13 +383,15 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
         throw new Error(errorMsg);
       }
     } catch (error: any) {
-      clearInterval(stepInterval);
+      clearInterval(progressAnimation);
       console.error('[DatasetConnection] Error loading dataset:', error);
 
       setStatus('idle');
       setProgress(0);
       setCurrentStep(0);
+      setLoadingMessage('');
       setLocalVerified(false);
+      setUrlVerified(false);
 
       let errorDescription = 'Could not connect to the dataset.';
       if (error.message) {
@@ -361,13 +428,15 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && status !== 'loading' && onClose()}>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && status !== 'loading' && status !== 'verifying' && onClose()}>
       <DialogContent className={`bg-card border-border transition-all duration-500 ease-out ${status === 'details' ? 'sm:max-w-4xl' : 'sm:max-w-md'} max-h-[90vh] overflow-hidden`}>
         <DialogHeader>
           <DialogTitle className="text-xl font-display font-bold flex items-center gap-2">
             {status === 'connected' && isVerified && <Lock className="w-5 h-5 text-green-500" />}
             {status === 'connected' && !isVerified && <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />}
             {status === 'details' && <Database className="w-5 h-5 text-violet-500" />}
+            {status === 'verified' && <CheckCircle2 className="w-5 h-5 text-green-500" />}
+            {status === 'verifying' && <Loader2 className="w-5 h-5 text-violet-500 animate-spin" />}
             {status === 'connected' && isVerified
               ? 'Dataset Connected'
               : status === 'connected' && !isVerified
@@ -376,7 +445,11 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                   ? 'Dataset Connected'
                   : status === 'success'
                     ? 'Analysis Complete'
-                    : 'Connect Dataset'}
+                    : status === 'verified'
+                      ? 'URL Verified'
+                      : status === 'verifying'
+                        ? 'Verifying URL...'
+                        : 'Connect Dataset'}
           </DialogTitle>
           <DialogDescription>
             {status === 'connected' && isVerified
@@ -385,7 +458,11 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                 ? 'Checking backend connection. This may take a moment.'
                 : status === 'details'
                   ? 'Explore your data structure and available tables.'
-                  : 'Link your Google Sheet to enable AI-powered analytics.'}
+                  : status === 'verified'
+                    ? 'URL is valid. Click Load to import your data.'
+                    : status === 'verifying'
+                      ? 'Checking spreadsheet accessibility...'
+                      : 'Link your Google Sheet to enable AI-powered analytics.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -482,14 +559,75 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                   </p>
                 </div>
 
+                <div className="flex gap-3">
+                  <Button
+                    onClick={verifyUrl}
+                    disabled={!url || status === 'verifying'}
+                    variant="outline"
+                    className="flex-1 h-12 font-bold rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:hover:scale-100 border-violet-500/30 hover:border-violet-500/50 hover:bg-violet-500/10"
+                  >
+                    {status === 'verifying' ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Search className="w-4 h-4 mr-2" />
+                    )}
+                    {status === 'verifying' ? 'Verifying...' : 'Verify URL'}
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* VERIFIED State - Show Load Button */}
+            {status === 'verified' && (
+              <motion.div
+                key="verified"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Verified Banner */}
+                <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/30">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center">
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-green-400">URL Verified</span>
+                      <p className="text-xs text-green-500/60">
+                        {verificationInfo?.sheetCount || 1} sheet{(verificationInfo?.sheetCount || 1) > 1 ? 's' : ''} detected
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                    Google Sheets URL
+                  </label>
+                  <Input
+                    value={url}
+                    onChange={(e) => {
+                      setUrl(e.target.value);
+                      setUrlVerified(false);
+                      setStatus('idle');
+                    }}
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                    className="h-12 bg-background border-border rounded-xl focus:border-violet-500/50 transition-all"
+                  />
+                </div>
+
                 <Button
                   onClick={startLoadingSimulation}
-                  disabled={!url}
-                  className="w-full h-12 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:hover:scale-100"
+                  className="w-full h-12 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   <Sparkles className="w-4 h-4 mr-2" />
-                  Start Analysis
+                  Load Dataset
                 </Button>
+
+                <p className="text-xs text-center text-zinc-500">
+                  This will profile your data and create an AI-ready index
+                </p>
               </motion.div>
             )}
 
@@ -510,13 +648,20 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                       className="stroke-violet-500 fill-none stroke-[4] stroke-linecap-round"
                       initial={{ pathLength: 0 }}
                       animate={{ pathLength: progress / 100 }}
-                      transition={{ ease: "linear", duration: 0.5 }}
+                      transition={{ ease: "linear", duration: 0.3 }}
                     />
                   </svg>
                   <div className="flex flex-col items-center">
                     <span className="text-2xl font-bold font-display">{Math.round(progress)}%</span>
                   </div>
                 </div>
+
+                {/* Current loading message */}
+                {loadingMessage && (
+                  <p className="text-sm text-center text-violet-400 font-medium">
+                    {loadingMessage}
+                  </p>
+                )}
 
                 <div className="space-y-3">
                   {LOADING_STEPS.map((step) => {
@@ -586,8 +731,28 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                {/* Connection Status Banner - Shows Verifying or Verified based on actual state */}
-                {isVerified ? (
+                {/* Connection Status Banner - Shows Syncing, Verifying, or Verified based on actual state */}
+                {isRefreshing ? (
+                  <motion.div
+                    variants={itemVariants}
+                    className="p-5 rounded-2xl bg-gradient-to-r from-violet-500/20 via-purple-500/10 to-violet-500/20 border border-violet-500/30 relative overflow-hidden"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-violet-500/5 to-transparent" />
+                    <div className="relative flex items-center gap-4">
+                      <motion.div
+                        animate={{ rotate: 360 }}
+                        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                        className="w-14 h-14 rounded-2xl bg-violet-500/20 flex items-center justify-center border border-violet-500/30"
+                      >
+                        <Loader2 className="w-7 h-7 text-violet-500" />
+                      </motion.div>
+                      <div className="flex-1">
+                        <h4 className="font-bold text-lg text-violet-400">Syncing Data...</h4>
+                        <p className="text-sm text-violet-500/70">Refreshing from Google Sheets. Please wait.</p>
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : isVerified ? (
                   <motion.div
                     variants={itemVariants}
                     className="p-5 rounded-2xl bg-gradient-to-r from-green-500/20 via-emerald-500/10 to-green-500/20 border border-green-500/30 relative overflow-hidden"

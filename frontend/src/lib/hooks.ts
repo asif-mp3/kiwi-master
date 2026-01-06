@@ -160,6 +160,17 @@ export function useAppState() {
     }
   };
 
+  const renameChat = (chatId: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    setChatTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === chatId
+          ? { ...tab, title: newTitle.trim(), updatedAt: Date.now() }
+          : tab
+      )
+    );
+  };
+
   const setDatasetForChat = (
     url: string | null,
     status: ChatTab['datasetStatus'] = 'unconnected',
@@ -232,6 +243,7 @@ export function useAppState() {
     createNewChat,
     switchChat,
     deleteChat,
+    renameChat,
     setDatasetForChat,
     getCurrentChat,
     updateMessage,

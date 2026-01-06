@@ -9,3 +9,7 @@ class DuckDBManager:
 
     def query(self, sql: str):
         return self.conn.execute(sql).fetchdf()
+
+    def get_connection(self):
+        """Return the underlying DuckDB connection for advanced queries."""
+        return self.conn

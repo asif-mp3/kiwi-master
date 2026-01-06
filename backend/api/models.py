@@ -26,19 +26,23 @@ class OrderByModel(BaseModel):
 
 class QueryPlan(BaseModel):
     """Query plan schema matching frontend QueryPlan interface"""
-    query_type: Literal['metric', 'lookup', 'filter', 'extrema_lookup', 'rank', 'list', 'aggregation_on_subset']
+    query_type: Literal['metric', 'lookup', 'filter', 'extrema_lookup', 'rank', 'list', 'aggregation_on_subset', 'comparison', 'percentage', 'trend']
     table: str
     select_columns: Optional[List[str]] = None
     metrics: Optional[List[str]] = None
     filters: Optional[List[FilterModel]] = None
     group_by: Optional[List[str]] = None
-    order_by: Optional[List[OrderByModel]] = None
+    order_by: Optional[List[Any]] = None  # Changed to Any to support flexible formats
     limit: Optional[int] = None
     aggregation_function: Optional[str] = None
     aggregation_column: Optional[str] = None
     subset_filters: Optional[List[Any]] = None
     subset_order_by: Optional[List[Any]] = None
     subset_limit: Optional[int] = None
+    # Advanced query type configs
+    comparison: Optional[dict] = None  # For comparison queries
+    percentage: Optional[dict] = None  # For percentage queries
+    trend: Optional[dict] = None  # For trend queries
 
 
 # ============================================================================
