@@ -540,6 +540,29 @@ async def startup_event():
     print(f"  CORS: {', '.join(ALLOWED_ORIGINS[:2])}...")
     print(f"  Auth: {'DISABLED (dev mode)' if os.getenv('SKIP_AUTH', 'false').lower() == 'true' else 'ENABLED'}")
     print()
+
+    # Pre-load spreadsheet_id from config to enable caching
+    try:
+        from utils.config_loader import get_config
+        from api.services import app_state
+        config = get_config()
+        spreadsheet_id = config.google_sheets.spreadsheet_id
+        if spreadsheet_id:
+            app_state.current_spreadsheet_id = spreadsheet_id
+            print(f"  Spreadsheet ID: {spreadsheet_id[:25]}... (from config)")
+            print(f"  Cache: 300s TTL enabled")
+        else:
+            print("  WARNING: No spreadsheet_id in config - cache disabled")
+    except Exception as e:
+        print(f"  WARNING: Could not pre-load spreadsheet_id: {e}")
+
+    # Ensure snapshots directory exists (prevents confusing DuckDB errors)
+    from pathlib import Path
+    snapshots_dir = Path("data_sources/snapshots")
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Snapshots dir: OK")
+
+    print()
     print("=" * 60)
 
 

@@ -521,28 +521,48 @@ class RoutingResult:
         """
         Check if we should ask user for clarification.
 
-        Only ask for clarification when there's GENUINE ambiguity:
-        - Confidence is between 0.3 and 0.5 (very narrow range)
-        - Multiple alternatives with VERY close scores (within 10%)
-        - At least 2 alternatives to choose from
-        """
-        if self.confidence >= 0.5 or self.confidence < 0.3:
-            return False
+        GENUINE CONFUSION only - not all the time. We ask when:
+        1. Multiple tables have VERY close scores (within 10% of each other)
+        2. Both tables have meaningful scores (>= 30) - not random low matches
+        3. Neither table has an explicit phrase match (300+ score)
 
+        Don't ask when:
+        - One table clearly wins (>15% score gap)
+        - Scores are too low to be meaningful
+        - There's an explicit table name match
+        """
         if len(self.alternatives) < 2:
             return False
 
-        # Check if top candidates have very close scores (genuine ambiguity)
-        if len(self.alternatives) >= 2:
-            best_score = self.alternatives[0][1]
-            second_score = self.alternatives[1][1]
-            if best_score > 0:
-                score_gap_ratio = (best_score - second_score) / best_score
-                # Only clarify if scores are within 15% of each other
-                if score_gap_ratio > 0.15:
-                    return False
+        best_table, best_score = self.alternatives[0]
+        second_table, second_score = self.alternatives[1]
 
-        return True
+        if best_score <= 0:
+            return False
+
+        # NEVER ask if there's an explicit table phrase match (high score)
+        # This means user explicitly mentioned a table by name
+        if best_score >= 200:
+            return False
+
+        # NEVER ask if scores are too low - neither is a good match anyway
+        if best_score < 30 or second_score < 25:
+            return False
+
+        # Calculate score gap ratio
+        score_gap_ratio = (best_score - second_score) / best_score if best_score > 0 else 1
+
+        # GENUINE CONFUSION: Scores are VERY close (within 10%)
+        # Both tables are plausible matches - user should choose
+        if score_gap_ratio < 0.10:
+            return True
+
+        # BORDERLINE: Scores within 15% AND both have decent scores (>40)
+        # This catches cases like 85 vs 75 where both are reasonable
+        if score_gap_ratio < 0.15 and best_score >= 40 and second_score >= 35:
+            return True
+
+        return False
 
     @property
     def should_fallback(self) -> bool:
@@ -553,4 +573,12 @@ class RoutingResult:
         """Get table options for user clarification"""
         if not self.needs_clarification:
             return []
-        return [t for t, _ in self.alternatives[:3]]
+
+        # Return tables with significant scores (>= 40% of best score)
+        best_score = self.alternatives[0][1] if self.alternatives else 0
+        threshold = best_score * 0.4
+
+        options = [t for t, score in self.alternatives if score >= threshold]
+
+        # Limit to 5 options max
+        return options[:5]

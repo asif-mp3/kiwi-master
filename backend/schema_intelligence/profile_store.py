@@ -142,11 +142,63 @@ class ProfileStore:
         # Get significant words (>= 4 chars, exclude common words)
         stop_words = {'what', 'where', 'when', 'which', 'how', 'tell', 'show', 'give', 'find',
                      'the', 'and', 'for', 'from', 'with', 'about', 'this', 'that', 'have', 'does'}
-        query_keywords = [w for w in raw_question.split() if len(w) >= 4 and w not in stop_words]
+
+        # Important short keywords that should ALWAYS be included even if < 4 chars
+        # These are domain-specific terms that often appear in table/column names
+        important_short_keywords = {'sku', 'id', 'hr', 'upi', 'qty', 'atm', 'pos', 'cod', 'emi',
+                                   'tax', 'gst', 'mrp', 'avg', 'sum', 'min', 'max', 'top', 'kpi'}
+
+        query_keywords = []
+        for w in raw_question.split():
+            w_lower = w.lower().strip('?.,!:;')
+            # Include if: (1) important short keyword, OR (2) >= 4 chars and not stop word
+            if w_lower in important_short_keywords:
+                query_keywords.append(w_lower)
+            elif len(w_lower) >= 4 and w_lower not in stop_words:
+                query_keywords.append(w_lower)
+
+        # --- CRITICAL: EXPLICIT TABLE NAME PHRASE MATCHING ---
+        # When query contains a phrase like "top 20 branches", it should STRONGLY match
+        # table "Top_20_Branches_Table1". This is a direct table reference, not keyword matching.
+        # Pre-compute table name match scores for phrase matching
+        table_phrase_scores = {}
+        for table_name, profile in self._profiles.items():
+            # Normalize table name: replace underscores/numbers with spaces, lowercase
+            table_name_normalized = table_name.lower().replace('_', ' ')
+            # Remove common suffixes like "table1", "sheet1" for cleaner matching
+            for suffix in ['table1', 'table2', 'table3', 'sheet1', 'sheet2', 'sheet3']:
+                table_name_normalized = table_name_normalized.replace(suffix, '').strip()
+
+            # Check if query contains a multi-word phrase matching the table name
+            # e.g., "top 20 branches" matches "top 20 branches" from "Top_20_Branches_Table1"
+            if table_name_normalized and len(table_name_normalized) >= 5:
+                # Check if the normalized table name appears as a phrase in the query
+                if table_name_normalized in raw_question:
+                    # VERY strong match - explicit table name reference
+                    table_phrase_scores[table_name] = 300
+                else:
+                    # Check word-by-word overlap for partial phrase matching
+                    table_words = [w for w in table_name_normalized.split() if len(w) >= 2]
+                    if len(table_words) >= 2:
+                        # Count consecutive matching words
+                        matched_words = sum(1 for tw in table_words if tw in raw_question)
+                        if matched_words >= 2:
+                            # Multiple words from table name found in query
+                            match_ratio = matched_words / len(table_words)
+                            if match_ratio >= 0.6:  # At least 60% of table name words match
+                                table_phrase_scores[table_name] = int(200 * match_ratio)
 
         for table_name, profile in self._profiles.items():
             score = 0
             match_reasons = []
+
+            # --- APPLY EXPLICIT TABLE NAME PHRASE MATCHING ---
+            # This is the HIGHEST priority - if user mentions "top 20 branches",
+            # table "Top_20_Branches_Table1" should almost always win
+            if table_name in table_phrase_scores:
+                phrase_score = table_phrase_scores[table_name]
+                score += phrase_score
+                match_reasons.append(f"EXPLICIT_TABLE_PHRASE_MATCH:+{phrase_score}")
 
             # --- CRITICAL: Table name keyword match ---
             # Strong boost when table name contains keywords from the query
@@ -157,6 +209,146 @@ class ProfileStore:
                     score += 50  # Strong boost for keyword match
                     match_reasons.append(f"table_name_keyword_match:{keyword}")
                     break  # One keyword match is enough
+
+            # --- DIMENSION COLUMN NAME MATCHING ---
+            # Strong boost when query keywords match dimension column names
+            # e.g., "payment modes" query should match "Payment_Mode" column
+            columns = profile.get('columns', {})
+            for keyword in query_keywords:
+                keyword_lower = keyword.lower()
+                # Skip common non-specific words
+                if keyword_lower in {'used', 'data', 'this', 'that', 'show', 'list', 'types'}:
+                    continue
+                for col_name, col_info in columns.items():
+                    col_name_lower = col_name.lower().replace('_', ' ')
+                    # Check if keyword matches the column name (handling underscores)
+                    if keyword_lower in col_name_lower:
+                        col_role = col_info.get('role', '')
+                        if col_role == 'dimension':
+                            # VERY strong boost - query asking about a specific dimension
+                            score += 100
+                            match_reasons.append(f"dimension_col_name_match:{col_name}:{keyword}")
+                            break
+                        elif col_role in ['identifier', 'metric']:
+                            score += 30
+                            match_reasons.append(f"col_name_match:{col_name}:{keyword}")
+                            break
+
+            # --- COMPOUND METRIC COLUMN MATCHING ---
+            # Match compound terms like "sale amount" to "Sale_Amount" column
+            # This is CRITICAL for queries like "total sale amount"
+            for col_name, col_info in columns.items():
+                if col_info.get('role') == 'metric':
+                    col_name_lower = col_name.lower()
+                    col_parts = col_name_lower.replace('_', ' ').split()
+                    # Count how many query keywords match column name parts
+                    matches = sum(1 for kw in query_keywords if kw.lower() in col_parts)
+                    if matches >= 2:
+                        # Strong match - multiple keywords match column name
+                        score += 120
+                        match_reasons.append(f"compound_metric_match:{col_name}:matches={matches}")
+                    elif matches == 1 and len(col_parts) <= 2:
+                        # Single keyword match on short column name
+                        score += 40
+                        match_reasons.append(f"metric_keyword_match:{col_name}")
+
+            # --- TRANSACTIONAL TABLE PREFERENCE ---
+            # When query asks for "across all transactions", prefer transactional tables
+            # with actual amounts over summary tables with counts
+            table_type = profile.get('table_type', 'unknown')
+            if 'transaction' in raw_question or 'across all' in raw_question:
+                if table_type == 'transactional':
+                    # Check if table has actual amount/value columns (not just counts)
+                    has_amount_col = any(
+                        'amount' in col.lower() or 'value' in col.lower() or 'revenue' in col.lower()
+                        for col, info in columns.items() if info.get('role') == 'metric'
+                    )
+                    if has_amount_col:
+                        score += 80
+                        match_reasons.append("transactional_with_amounts")
+                    else:
+                        score += 30
+                        match_reasons.append("transactional_table")
+                elif table_type == 'summary':
+                    # Penalize summary tables when asking about "all transactions"
+                    score -= 40
+                    match_reasons.append("PENALTY:summary_for_all_transactions")
+
+            # --- TIME PERIOD GRANULARITY MATCHING ---
+            # When query asks about "months", "quarterly", etc., boost tables with matching granularity
+            granularity = profile.get('granularity', 'unknown')
+            time_period_keywords = {
+                'month': 'monthly', 'months': 'monthly', 'monthly': 'monthly',
+                'quarter': 'quarterly', 'quarters': 'quarterly', 'quarterly': 'quarterly',
+                'year': 'yearly', 'years': 'yearly', 'yearly': 'yearly', 'annual': 'yearly',
+                'week': 'weekly', 'weeks': 'weekly', 'weekly': 'weekly',
+                'day': 'daily', 'days': 'daily', 'daily': 'daily'
+            }
+
+            for keyword in query_keywords:
+                if keyword in time_period_keywords:
+                    expected_granularity = time_period_keywords[keyword]
+                    if granularity == expected_granularity:
+                        score += 100  # Strong boost for matching granularity
+                        match_reasons.append(f"granularity_match:{keyword}→{granularity}")
+                    # Also check if table name contains the time period
+                    if keyword in table_name_lower or expected_granularity in table_name_lower:
+                        score += 50
+                        match_reasons.append(f"time_period_in_name:{keyword}")
+                    # Check for Month/Quarter/Year column
+                    for col_name, col_info in columns.items():
+                        col_lower = col_name.lower()
+                        if col_info.get('role') == 'date' and keyword in col_lower:
+                            score += 60
+                            match_reasons.append(f"time_column_match:{col_name}")
+                            break
+
+            # --- Value matching in sample_values ---
+            # Check if query words match sample_values (IDs, names, etc.)
+            columns = profile.get('columns', {})
+            synonym_map = profile.get('synonym_map', {})
+            for keyword in query_keywords:
+                keyword_upper = keyword.upper()
+                keyword_lower = keyword.lower()
+
+                # Skip common words that shouldn't trigger value matching
+                skip_words = {'the', 'and', 'for', 'what', 'which', 'how', 'does', 'belong', 'state', 'department'}
+                if keyword_lower in skip_words:
+                    continue
+
+                for col_name, col_info in columns.items():
+                    sample_values = col_info.get('sample_values', [])
+                    col_role = col_info.get('role', '')
+
+                    # Check if keyword matches any sample value
+                    for sample in sample_values:
+                        sample_str = str(sample).upper()
+                        if keyword_upper == sample_str or keyword_upper in sample_str:
+                            # ID patterns (EMP_004, TXN_001) get highest boost
+                            if '_' in keyword or keyword.upper() == keyword:
+                                score += 150  # VERY strong - exact ID match
+                                match_reasons.append(f"id_value_match:{col_name}:{keyword}")
+                            # Person names in identifier columns get strong boost
+                            elif col_role == 'identifier' and keyword[0].isupper():
+                                score += 120  # Strong - name match in identifier column
+                                match_reasons.append(f"name_value_match:{col_name}:{keyword}")
+                            else:
+                                score += 80  # Moderate - general value match
+                                match_reasons.append(f"value_match:{col_name}:{keyword}")
+                            break
+                    else:
+                        continue
+                    break  # Found match in this column, move to next keyword
+
+            # --- Synonym map keyword match ---
+            # If query mentions "employee", "department", "designation" etc.
+            # and table has these in synonym_map, boost the table
+            hr_keywords = ['employee', 'staff', 'department', 'designation', 'salary', 'payroll']
+            for keyword in query_keywords:
+                keyword_lower = keyword.lower()
+                if keyword_lower in hr_keywords and keyword_lower in synonym_map:
+                    score += 60  # Strong boost for synonym match
+                    match_reasons.append(f"synonym_map_match:{keyword_lower}")
 
             # --- Cross-table intent: Boost tables with aggregate columns ---
             # When user asks for "across all months" or "overall total", prefer tables
@@ -404,6 +596,48 @@ class ProfileStore:
                     if 'category' in table_lower or profile.get('table_type') == 'category_breakdown':
                         score -= 80  # Heavy penalty - location query should NOT go to category table
                         match_reasons.append("PENALTY:location_query_on_category_table")
+
+            # --- CRITICAL: "Who is..." / "Which person..." queries ---
+            # These questions ask about SPECIFIC INDIVIDUALS, not aggregates
+            # BOOST tables with individual row data (First_Name, Last_Name, Emp_ID)
+            # PENALIZE summary tables that only have department/category aggregates
+            individual_query_patterns = [
+                'who is', 'who are', 'who has', 'who was',
+                'which employee', 'which person', 'which staff',
+                'name of the', 'names of the',
+                'highest paid employee', 'lowest paid employee',
+                'highest-paid employee', 'lowest-paid employee',
+                'most experienced', 'least experienced',
+                'oldest employee', 'newest employee', 'youngest employee'
+            ]
+            is_individual_query = any(pattern in raw_question for pattern in individual_query_patterns)
+
+            if is_individual_query:
+                columns = profile.get('columns', {})
+                table_type = profile.get('table_type', 'unknown')
+
+                # Check if table has individual person identifier columns
+                person_cols = ['first_name', 'last_name', 'emp_id', 'employee_id',
+                               'name', 'full_name', 'employee_name', 'staff_name']
+                has_person_data = False
+                for col_name in columns.keys():
+                    if any(pc in col_name.lower() for pc in person_cols):
+                        has_person_data = True
+                        break
+
+                if has_person_data:
+                    # VERY strong boost - this table has individual person data
+                    score += 150
+                    match_reasons.append("BOOST:individual_person_data")
+                else:
+                    # HEAVY penalty - table doesn't have individual person data
+                    score -= 100
+                    match_reasons.append("PENALTY:no_individual_person_data")
+
+                # Additional penalty for summary tables on individual queries
+                if table_type == 'summary':
+                    score -= 80
+                    match_reasons.append("PENALTY:summary_table_for_individual_query")
 
             # Only include tables with positive score
             if score > 0:

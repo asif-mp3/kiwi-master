@@ -9,10 +9,12 @@ import { MessageBubble } from '../MessageBubble';
 interface MessageListProps {
   messages: Message[];
   isSpeaking: boolean;
-  onPlayMessage: (text: string) => void;
+  speakingMessageId?: string | null;
+  onPlayMessage: (text: string, messageId: string) => void;
+  onStopMessage?: () => void;
 }
 
-export function MessageList({ messages, isSpeaking, onPlayMessage }: MessageListProps) {
+export function MessageList({ messages, isSpeaking, speakingMessageId, onPlayMessage, onStopMessage }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,7 +36,12 @@ export function MessageList({ messages, isSpeaking, onPlayMessage }: MessageList
         </div>
       ) : (
         messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} onPlay={onPlayMessage} />
+          <MessageBubble
+            key={msg.id}
+            message={{ ...msg, isSpeaking: speakingMessageId === msg.id }}
+            onPlay={onPlayMessage}
+            onStop={onStopMessage}
+          />
         ))
       )}
       {isSpeaking && (

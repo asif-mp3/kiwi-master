@@ -19,7 +19,11 @@ def quote_identifier(name: str) -> str:
         '"Sales Amount"'
         >>> quote_identifier("simple_col")
         'simple_col'
+        >>> quote_identifier("Profit_Margin_%")
+        '"Profit_Margin_%"'
     """
-    if ' ' in name or any(char in name for char in ['-', '.', '(', ')']) or (name and name[0].isdigit()):
+    # Special characters that require quoting in SQL identifiers
+    special_chars = [' ', '-', '.', '(', ')', '%', '#', '@', '/', '\\', '+', '*', '&', '$']
+    if any(char in name for char in special_chars) or (name and name[0].isdigit()):
         return f'"{name}"'
     return name

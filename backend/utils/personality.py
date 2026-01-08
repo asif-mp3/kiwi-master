@@ -268,6 +268,12 @@ class TharaPersonality:
                 return f"I'm having trouble connecting to the data, {name}. Please check the data source connection and try again."
             return "I'm having trouble connecting to the data. Please check the data source connection and try again."
 
+        elif error_type == 'general' and details:
+            # Use provided details message for general errors
+            if name:
+                return f"{name}, {details}"
+            return details
+
         else:
             if self.language == 'ta':
                 if name:

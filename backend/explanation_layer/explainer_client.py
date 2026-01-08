@@ -182,75 +182,47 @@ Context:
     
     prompt += f"""
 Instructions:
-1. **IMPORTANT: Respond in {question_language} language**
-2. **INSIGHT-FIRST**: Lead with the KEY FINDING or PATTERN, not raw data listing
-3. Write numbers as spoken words (e.g., "fifteen thousand" not "15,000") - this is for voice output
-4. Be CONCISE - give the answer directly in 2-3 sentences MAX, no greetings, no filler phrases
-5. **DO NOT** add greetings like "Of course", "Sure", "Great question", etc. - just state the insight directly
-6. **DO NOT** address the user by name or reference previous conversation - just answer the data question
+1. **Respond in {question_language} language**
+2. **ROUND BIG NUMBERS for natural speech** (CRITICAL for TTS):
+   - 328421 → "about 3.3 lakhs" (NOT "three lakh twenty eight thousand...")
+   - 45678 → "around 46 thousand"
+   - 12.47% → "about 12 percent"
+   - Round to 1-2 significant digits. Nobody says exact decimals in conversation.
+3. **Be casual & crispy**: Start with "So...", "Looking at this...", "Alright..."
+4. **2-3 sentences MAX**: One key insight + one supporting detail
+5. **Sound human**: Use contractions (it's, that's), natural pauses, confident endings
 
-**For time-series/trend data (multiple rows across time periods):**
-- Start with the overall trend: "Sales showed strong growth through November, then pulled back in December"
-- Highlight peaks and valleys: "November was the strongest month across most areas"
-- Note interesting patterns or outliers
-- Cite 2-3 specific examples as EVIDENCE supporting your insight
-- NEVER enumerate every single data point row by row
+**NUMBER ROUNDING RULES:**
+- Lakhs: round to 1 decimal → 3.28 lakhs = "about 3.3 lakhs"
+- Thousands: round to nearest thousand → 45678 = "around 46 thousand"
+- Percentages: round to whole number → 12.47% = "about 12 percent"
+- Small numbers (<100): can spell out → 89 = "eighty nine"
 
-**For aggregation queries (AVG, SUM, MIN, MAX, COUNT):**
-- State the result clearly with context
-- For MIN/MAX, mention which item had that value
+BAD (robotic): "three lakh twenty eight thousand four hundred twenty one point four seven"
+GOOD (natural): "about 3.3 lakhs"
 
-**For comparison queries:**
-- Use emojis: 📈 increase, 📉 decrease
-- State percentage change and direction clearly
+**For TREND data:**
+- Overall direction first: "Sales are pretty stable" or "There's a clear upward trend"
+- Peak/low with rounded values: "peaked around 4.6 lakhs"
+- Keep it to 2-3 sentences
 
-**For seasonal/pattern questions:**
-- Identify if certain months consistently perform higher (e.g., "November appears to be the peak month")
-- Note any recurring patterns visible in the data
-- Compare early months vs later months performance
-- Highlight any area or category that bucks the trend
+**For AGGREGATION (sum, avg, count):**
+- Direct answer: "Total sales is about 12.5 lakhs"
 
-**For "consistent increase/growth" questions:**
-- Look for areas where values increase month over month (Aug < Sep < Oct < Nov < Dec)
-- Identify the best example of consistent growth
-- Also mention if most areas show growth but with some dips
+**For COMPARISON:**
+- Lead with winner: "Tamil Nadu's on top with about 4.2 lakhs"
+- Relative language: "almost double", "slightly ahead"
 
-**For "drop/decline" questions (e.g., "where did sales drop"):**
-- Compare the two months mentioned (e.g., Nov vs Dec)
-- Identify areas where the later month is LOWER than the earlier month
-- Highlight the biggest drop as the main finding
-- Example: "Velachery showed the steepest decline, dropping from four hundred in November to two hundred in December"
+**For EXTREMA (max, min, top N):**
+- Direct: "Velachery leads with around 85 thousand"
 
-**For "category dominance" questions (e.g., "where does X category dominate"):**
-- Look at each area's category breakdown
-- Find the area where the specified category has the HIGHEST proportion relative to other categories
-- Example: "In Adyar, Dairy & Homemade makes up over sixty percent of total sales, far exceeding other categories"
+**AVOID (CRITICAL):**
+- DON'T spell out large numbers word by word (sounds robotic)
+- DON'T list every data point
+- DON'T be verbose
+- DON'T add filler ("Great question", "I'd be happy to help")
 
-**For category comparison questions (e.g., "compare X and Y categories for location Z"):**
-- State which category has higher sales
-- Give the actual values for both categories
-- Calculate the difference or ratio if helpful
-- Example: "In Koyambedu, Snacks & Sweets leads with twelve thousand five hundred, nearly double Batter & Dough's six thousand eight hundred."
-
-**For "share/proportion" questions (e.g., "which month has highest shipping share"):**
-- Calculate or compare proportions (e.g., Shipping Cost / Gross Sales)
-- Identify the month or item with the highest proportion
-- Express as percentage or ratio
-- Example: "December shows shipping costs taking the largest bite at around twelve percent of gross sales"
-
-**For location-specific month comparisons (e.g., "compare Sep vs Oct for Velachery"):**
-- Focus only on the specified location
-- Compare the two months clearly
-- Use emojis: 📈 if later month is higher, 📉 if lower
-- State the difference in both absolute and percentage terms
-
-**CRITICAL - AVOID THESE MISTAKES:**
-- DON'T list every data point when there are many rows (bad: "For area A the value is X, for area B the value is Y, for area C...")
-- DON'T just read back the table as text
-- DON'T use digits (write numbers as words for voice)
-- DON'T be verbose or repetitive
-
-Generate a conversational, insight-focused response:"""
+Generate a crispy, TTS-friendly response:"""
     
     try:
         # Get singleton LLM (saves 2-4s per query)

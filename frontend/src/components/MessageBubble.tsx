@@ -3,25 +3,68 @@
 import { motion } from 'framer-motion';
 import { Message } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Play, Copy, Check, Volume2, Database } from 'lucide-react';
-import { useState } from 'react';
+import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { QueryPlanViewer } from './QueryPlanViewer';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 interface MessageBubbleProps {
   message: Message;
-  onPlay?: (text: string) => void;
+  onPlay?: (text: string, messageId: string) => void;
+  onStop?: () => void;
 }
 
-export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
+export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
   const isAssistant = message.role === 'assistant';
   const isSystem = message.role === 'system';
   const [copied, setCopied] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+
+  // Check if this message is currently being spoken
+  const isSpeaking = message.isSpeaking || false;
+
+  const handlePlayStop = () => {
+    if (isSpeaking) {
+      // Currently speaking - stop it
+      onStop?.();
+    } else {
+      // Not speaking - start playing (will stop any other playing audio)
+      onPlay?.(message.content, message.id);
+    }
+  };
+
+  // Check if this message has data to display
+  const hasData = message.metadata?.data && Array.isArray(message.metadata.data) && message.metadata.data.length > 0;
+  const dataRows = message.metadata?.data || [];
+  const dataColumns = hasData ? Object.keys(dataRows[0]) : [];
+
+  // Auto-show data table for "list" type queries (user asked to "list" or "show all")
+  const queryType = message.metadata?.plan?.query_type;
+  const isListQuery = queryType === 'list' || queryType === 'filter' || queryType === 'rank';
+  const shouldAutoShowData = hasData && isListQuery && dataRows.length > 1;
+
+  const [showDataTable, setShowDataTable] = useState(false);
+  const hasAutoShown = useRef(false);
+
+  // Auto-expand data table for list queries (only once when message renders with data)
+  useEffect(() => {
+    if (shouldAutoShowData && !hasAutoShown.current) {
+      setShowDataTable(true);
+      hasAutoShown.current = true;
+    }
+  }, [shouldAutoShowData]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -101,7 +144,33 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
           </div>
         </motion.div>
 
-        {/* Action Buttons */}
+        {/* Action Buttons for User Messages - Copy only */}
+        {!isAssistant && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="mt-1.5 sm:mt-2 flex items-center gap-1 sm:gap-2"
+          >
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleCopy}
+              aria-label="Copy message"
+              className={cn(
+                "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
+                copied
+                  ? "bg-green-500/20 text-green-400"
+                  : "bg-white/10 text-violet-100 hover:bg-white/20 hover:text-white"
+              )}
+            >
+              {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
+            </motion.button>
+          </motion.div>
+        )}
+
+        {/* Action Buttons for Assistant Messages */}
         {isAssistant && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
@@ -109,27 +178,39 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
             transition={{ duration: 0.2 }}
             className="mt-1.5 sm:mt-2 flex items-center gap-1 sm:gap-2 flex-wrap"
           >
-            {[
-              { icon: Volume2, label: 'Play', ariaLabel: 'Play message audio', onClick: () => onPlay?.(message.content) },
-              { icon: copied ? Check : Copy, label: copied ? 'Copied!' : 'Copy', ariaLabel: 'Copy message', onClick: handleCopy },
-            ].map((action, i) => (
-              <motion.button
-                key={i}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={action.onClick}
-                aria-label={action.ariaLabel}
-                className={cn(
-                  "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
-                  copied && action.label === 'Copied!'
-                    ? "bg-green-500/20 text-green-400"
-                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <action.icon className="w-3 h-3" />
-                <span className="hidden sm:inline">{action.label}</span>
-              </motion.button>
-            ))}
+            {/* Play/Stop Button */}
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handlePlayStop}
+              aria-label={isSpeaking ? 'Stop audio' : 'Play message audio'}
+              className={cn(
+                "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
+                isSpeaking
+                  ? "bg-red-500/20 text-red-400"
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              {isSpeaking ? <Square className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+              <span className="hidden sm:inline">{isSpeaking ? 'Stop' : 'Play'}</span>
+            </motion.button>
+
+            {/* Copy Button */}
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={handleCopy}
+              aria-label="Copy message"
+              className={cn(
+                "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
+                copied
+                  ? "bg-green-500/20 text-green-400"
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
+            </motion.button>
 
             {message.metadata?.plan && (
               <Popover>
@@ -149,6 +230,79 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
                 </PopoverContent>
               </Popover>
             )}
+
+            {/* View Data Button - Show when data is available */}
+            {hasData && (
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setShowDataTable(!showDataTable)}
+                aria-label={showDataTable ? "Hide data table" : "View data table"}
+                className={cn(
+                  "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
+                  showDataTable
+                    ? "bg-violet-500/20 text-violet-400"
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <TableIcon className="w-3 h-3" />
+                <span className="hidden sm:inline">
+                  {showDataTable ? 'Hide Data' : `View Data (${dataRows.length})`}
+                </span>
+                {showDataTable ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              </motion.button>
+            )}
+          </motion.div>
+        )}
+
+        {/* Data Table - Expandable section below message */}
+        {hasData && showDataTable && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="mt-3 w-full"
+          >
+            <div className="bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 rounded-xl overflow-hidden">
+              <div className="px-4 py-2 border-b border-zinc-800 flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-400">
+                  Data Results ({dataRows.length} rows)
+                </span>
+              </div>
+              <div className="max-h-80 overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent border-zinc-800">
+                      {dataColumns.map((col, i) => (
+                        <TableHead
+                          key={i}
+                          className="text-xs font-semibold text-zinc-300 bg-zinc-800/50"
+                        >
+                          {col}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dataRows.map((row: Record<string, unknown>, rowIdx: number) => (
+                      <TableRow key={rowIdx} className="border-zinc-800 hover:bg-zinc-800/30">
+                        {dataColumns.map((col, colIdx) => (
+                          <TableCell
+                            key={colIdx}
+                            className="text-xs text-zinc-300 py-2"
+                          >
+                            {row[col] !== null && row[col] !== undefined
+                              ? String(row[col])
+                              : '-'}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
           </motion.div>
         )}
       </div>

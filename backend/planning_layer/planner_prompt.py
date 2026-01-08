@@ -45,8 +45,8 @@ You must output ONLY valid JSON matching this exact schema:
 - **metric**: Aggregation queries (COUNT, AVG, MAX, MIN, SUM). Requires "metrics" field.
 - **lookup**: Find specific row by identifier. Requires "filters" and "limit": 1.
 - **filter**: Filter rows by conditions. Requires "filters".
-- **extrema_lookup**: Find row with min/max value. Requires "order_by" and "limit": 1.
-- **rank**: Return all rows ordered. Requires "order_by".
+- **extrema_lookup**: Find the SINGLE row with min/max value. Use for "Who is the highest/lowest?", "Which employee has the most/least?", "What is the top/bottom item?". Returns ONE specific entity (person, item, row). Requires "order_by" and "limit": 1. DO NOT group by any column - return the actual row data.
+- **rank**: Return MULTIPLE rows ordered by a value. Use for "top 10 categories", "rank all departments", "list areas by sales". Returns a ranked list. Requires "order_by". Often uses "group_by" for aggregated rankings.
 - **list**: Show all rows. No special requirements.
 - **aggregation_on_subset**: Calculate aggregation (AVG, SUM, etc.) on a filtered or ranked subset. Requires "aggregation_function", "aggregation_column". Use "subset_filters" for filtering, "subset_order_by" for ranking, and "subset_limit" ONLY when the question explicitly asks for "top N", "first N", "bottom N", etc. If aggregating ALL matching data, set "subset_limit" to null or omit it.
 - **comparison**: Compare two time periods or values. Use for questions like "How did X compare to Y?", "Did sales go up or down?", "August vs December". Requires "comparison" object with period_a, period_b, and compare_type.
@@ -99,20 +99,47 @@ When multiple tables with similar schemas are available in the schema context:
         - Exact numeric comparisons on actual numeric columns (e.g., quantity = 5, price > 100)
         - When the user explicitly asks for "exact match" or "equals exactly"
     - **CRITICAL**: For text columns, LIKE with wildcards handles variations, partial matches, and is more robust than =
-9. **For date/time queries**: ALWAYS use TIMESTAMP columns (e.g., "Time") instead of string date columns (e.g., "Date") when available
-    - When filtering by date, use timestamp comparisons (>=, <=) with ISO format: "YYYY-MM-DD HH:MM:SS"
-    - **CRITICAL DATE FORMAT**: Parse dates as DD/MM/YYYY (day first, then month)
-        - "1/11/2025" = November 1, 2025 → "2025-11-01"
-        - "15/3/2024" = March 15, 2024 → "2024-03-15"
-        - "02/01/2017" = January 2, 2017 → "2017-01-02"
+9. **For date/time queries**:
+    - **CRITICAL**: Date columns store data in ISO format (YYYY-MM-DD). ALWAYS use ISO format in filter values!
+    - When user says "15-Nov-2025" or "15/11/2025", convert to ISO: "2025-11-15"
+    - **Parse user dates as DD/MM/YYYY** (day first, then month), then convert to ISO for filtering:
+        - "1/11/2025" = November 1, 2025 → filter value: "2025-11-01"
+        - "15/3/2024" = March 15, 2024 → filter value: "2024-03-15"
+        - "15-Nov-2025" = November 15, 2025 → filter value: "2025-11-15"
+    - For datetime columns (dtype: datetime64), use >= and <= comparisons with ISO format
+    - For exact date match, use LIKE with ISO format: {"column": "Date", "operator": "LIKE", "value": "%2025-11-15%"}
     - For date ranges, use two filters: one with >= for start, one with <= for end
-    - String Date columns are for display only, NOT for filtering
+    - **NEVER** use DD/MM/YYYY format in filter values - always convert to ISO (YYYY-MM-DD)
 10. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
 11. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
 12. **Pivoted Date Columns**: If the table has columns formatted like 'Metric-Date' (e.g., "Gross sales-01/11/2025"), and the user asks for a specific date (e.g., "Nov 1st"), you MUST select the exact column name that matches the date (e.g., "Gross sales-01/11/2025"). Do not look for a generic "Date" column in these tables.
 13. **GRAND TOTAL Columns**: If a pivoted table has columns ending with '-GRAND TOTAL' (e.g., "Gross sales-GRAND TOTAL", "Orders-GRAND TOTAL"), and the user asks for "total", "overall", or "entire month" aggregation, you MUST use the GRAND TOTAL column. Do NOT try to use a generic column name like "Gross sales" - use the exact column name with "-GRAND TOTAL" suffix.
     - For summing across all categories: Use query_type "aggregation_on_subset" with aggregation_function "SUM" and aggregation_column "Gross sales-GRAND TOTAL"
     - For a single category: Use query_type "lookup" with filters on the category and select_columns ["Gross sales-GRAND TOTAL"]
+14. **"Who is..." / "Which person..." Questions**: When the user asks about a SPECIFIC individual (employee, customer, person):
+    - Use query_type "extrema_lookup" with limit: 1
+    - Include name columns (First_Name, Last_Name, Name, etc.) in select_columns
+    - DO NOT use group_by - the goal is to return the actual person's details, not aggregated groups
+    - Examples: "Who is the highest-paid employee?" → extrema_lookup with order_by Salary DESC, limit 1
+    - "Which employee has the most sales?" → extrema_lookup with order_by Sales DESC, limit 1
+15. **Complex Comparative Queries (above/below average, percentile, etc.)**: When the user asks for comparisons against computed values like "above average", "below median", "top 10%":
+    - These require subqueries which are NOT supported
+    - Use query_type "list" to show all relevant data with the comparison column
+    - Include the columns needed for manual comparison (e.g., Salary, Department)
+    - The explanation layer will note this limitation
+    - Example: "Employees whose salary is above department average" → list query with Salary, Department columns
+16. **"How many..." / Count Queries**: When the user asks "How many...", "Count of...", "Total number of...":
+    - Use query_type "aggregation_on_subset" with aggregation_function "COUNT"
+    - Use aggregation_column as any column (e.g., the ID column or "*")
+    - Apply subset_filters if the question specifies a condition (e.g., "active employees" → filter Status = Active)
+    - DO NOT use query_type "list" - that would limit results and give wrong count
+    - Example: "How many active employees?" → aggregation_on_subset with COUNT, filter on Status
+17. **"What X are used/available" / Distinct Value Queries**: When the user asks "What X are used?", "What types of X?", "List all X options", "Show available X":
+    - Use query_type "list" to show all distinct values of that dimension
+    - Select the relevant dimension column (e.g., Payment_Mode, Category, Department)
+    - No filters unless user specifies a condition
+    - Example: "What payment modes are used?" → list query selecting Payment_Mode column
+    - Example: "What categories are available?" → list query selecting Category column
 
 ### YOU MUST NOT:
 
@@ -288,6 +315,96 @@ When multiple tables with similar schemas are available in the schema context:
   "period_b": {"label": "Weekends", "table": "Day_Wise_Sales_Table1", "column": "Gross sales", "filters": [{"column": "Day", "operator": "LIKE", "value": "%Saturday%"}, {"column": "Day", "operator": "LIKE", "value": "%Sunday%"}], "aggregation": "AVG"},
   "compare_type": "difference"
 }
+}
+
+**Question:** "Who is the highest-paid employee, and which department do they belong to?"
+**Schema context:** Table "Staff_Table" with columns ["Emp_ID", "First_Name", "Last_Name", "Department", "Salary", "Join_Date"]
+**Output:**
+{
+"query_type": "extrema_lookup",
+"table": "Staff_Table",
+"select_columns": ["First_Name", "Last_Name", "Department", "Salary"],
+"order_by": [["Salary", "DESC"]],
+"limit": 1
+}
+
+**Question:** "Which employee has the most experience (earliest join date)?"
+**Schema context:** Table "Staff_Table" with columns ["Emp_ID", "First_Name", "Last_Name", "Department", "Salary", "Join_Date"]
+**Output:**
+{
+"query_type": "extrema_lookup",
+"table": "Staff_Table",
+"select_columns": ["First_Name", "Last_Name", "Department", "Join_Date"],
+"order_by": [["Join_Date", "ASC"]],
+"limit": 1
+}
+
+**Question:** "How many employees are currently active?"
+**Schema context:** Table "Staff_Table" with columns ["Emp_ID", "First_Name", "Last_Name", "Department", "Status"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Staff_Table",
+"aggregation_function": "COUNT",
+"aggregation_column": "Emp_ID",
+"subset_filters": [{"column": "Status", "operator": "LIKE", "value": "%Active%"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
+**Question:** "How many employees are in the Sales department?"
+**Schema context:** Table "Staff_Table" with columns ["Emp_ID", "First_Name", "Department", "Salary"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Staff_Table",
+"aggregation_function": "COUNT",
+"aggregation_column": "Emp_ID",
+"subset_filters": [{"column": "Department", "operator": "LIKE", "value": "%Sales%"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
+**Question:** "What is the sales amount recorded on 15-Nov-2025?"
+**Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "filter",
+"table": "Daily_Sales",
+"select_columns": ["Date", "Sale_Amount"],
+"filters": [{"column": "Date", "operator": "LIKE", "value": "%2025-11-15%"}],
+"limit": 100
+}
+
+**Question:** "Show all transactions from August 2025"
+**Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "filter",
+"table": "Daily_Sales",
+"select_columns": ["Date", "Sale_Amount", "Category"],
+"filters": [{"column": "Date", "operator": "LIKE", "value": "%2025-08%"}],
+"limit": 100
+}
+
+**Question:** "What payment modes are used in this data?"
+**Schema context:** Table "Payment_Mode_Analysis" with columns ["Payment_Mode", "Transaction_Count", "Total_Revenue"]
+**Output:**
+{
+"query_type": "list",
+"table": "Payment_Mode_Analysis",
+"select_columns": ["Payment_Mode", "Transaction_Count", "Total_Revenue"],
+"limit": 100
+}
+
+**Question:** "What categories are available?"
+**Schema context:** Table "Category_Performance" with columns ["Category", "Total_Sales", "Profit_Margin"]
+**Output:**
+{
+"query_type": "list",
+"table": "Category_Performance",
+"select_columns": ["Category"],
+"limit": 100
 }
 
 **Question:** "Which area has the highest total sales?"

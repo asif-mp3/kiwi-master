@@ -148,7 +148,16 @@ def parse_json_response(response_text: str) -> dict:
 
     # Parse JSON
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+
+        # Handle compound questions - LLM may return a list of plans
+        # e.g., "Which category sold the most AND which has highest profit"
+        # Take the first plan to answer the primary question
+        if isinstance(parsed, list) and len(parsed) > 0:
+            print(f"  [Planner] Compound question detected - LLM returned {len(parsed)} plans, using first")
+            return parsed[0]
+
+        return parsed
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
 

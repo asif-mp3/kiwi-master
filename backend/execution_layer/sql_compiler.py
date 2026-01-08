@@ -198,6 +198,10 @@ def _compile_rank(plan):
     order_by = plan.get("order_by", [])
     limit = plan.get("limit", 100)
 
+    # Get aggregation function from plan (COUNT, SUM, AVG, etc.)
+    # Default varies based on context
+    agg_func = plan.get("aggregation_function", "").upper()
+
     # Build WHERE clause if filters exist
     where_clause = _build_where_clause(plan.get("filters", []))
 
@@ -206,17 +210,46 @@ def _compile_rank(plan):
         # Build SELECT with grouped columns + aggregated metrics
         select_parts = [quote_identifier(col) for col in group_by]
 
-        # Add aggregated metrics (default to SUM if metric column exists in order_by)
-        for metric in metrics:
-            quoted_metric = quote_identifier(metric)
-            select_parts.append(f"SUM({quoted_metric}) AS {quoted_metric}")
+        # Check if this is a COUNT query (counting items per group)
+        # Keywords that indicate counting: "number", "count", "how many"
+        is_count_query = agg_func == "COUNT"
 
-        # If no explicit metrics but order_by has a column not in group_by, aggregate it
+        # Also detect count intent from order_by column names
+        # If ordering by an ID column (like Emp_ID), it's likely a count query
+        if not is_count_query and order_by:
+            for col, _ in order_by:
+                col_lower = col.lower()
+                if '_id' in col_lower or col_lower.endswith('id') or col_lower == 'count':
+                    is_count_query = True
+                    break
+
+        # Add aggregated metrics
+        if metrics:
+            for metric in metrics:
+                quoted_metric = quote_identifier(metric)
+                if is_count_query or agg_func == "COUNT":
+                    select_parts.append(f"COUNT(*) AS {quoted_metric}")
+                elif agg_func and agg_func in ("SUM", "AVG", "MIN", "MAX"):
+                    select_parts.append(f"{agg_func}({quoted_metric}) AS {quoted_metric}")
+                else:
+                    select_parts.append(f"SUM({quoted_metric}) AS {quoted_metric}")
+
+        # If no explicit metrics but order_by has a column not in group_by
         if not metrics:
             for col, _ in order_by:
                 if col not in group_by:
-                    quoted_col = quote_identifier(col)
-                    select_parts.append(f"SUM({quoted_col}) AS {quoted_col}")
+                    # For count queries or ID columns, use COUNT(*)
+                    if is_count_query:
+                        select_parts.append(f"COUNT(*) AS count")
+                        # Update order_by to use "count" instead of the original column
+                        order_by = [("count", direction) for _, direction in order_by]
+                    else:
+                        quoted_col = quote_identifier(col)
+                        if agg_func and agg_func in ("SUM", "AVG", "MIN", "MAX", "COUNT"):
+                            select_parts.append(f"{agg_func}({quoted_col}) AS {quoted_col}")
+                        else:
+                            select_parts.append(f"SUM({quoted_col}) AS {quoted_col}")
+                    break  # Only need one aggregation
 
         columns = ", ".join(select_parts)
 

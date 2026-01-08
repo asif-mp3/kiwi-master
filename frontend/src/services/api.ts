@@ -23,6 +23,33 @@ const getAuthHeaders = (): Record<string, string> => {
 };
 
 /**
+ * Fetch with timeout - prevents indefinite waits on slow API calls
+ */
+const fetchWithTimeout = async (
+  url: string,
+  options: RequestInit,
+  timeoutMs: number = 60000  // 60 second default
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Request timed out. Please try again.');
+    }
+    throw error;
+  }
+};
+
+/**
  * Handle API response - check for 401 errors and redirect to login
  */
 const handleResponse = async (response: Response): Promise<Response> => {
@@ -79,19 +106,24 @@ export const api = {
   /**
    * Process a user query (text).
    * Backend endpoint: POST /api/query
+   * 60s timeout for LLM calls during clarification flows
    */
   sendMessage: async (text: string): Promise<ProcessQueryResponse> => {
     console.log('Sending query:', text);
 
     const response = await handleResponse(
-      await fetch(`${API_BASE_URL}/api/query`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
+      await fetchWithTimeout(
+        `${API_BASE_URL}/api/query`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({ text }),
         },
-        body: JSON.stringify({ text }),
-      })
+        60000  // 60 second timeout
+      )
     );
 
     if (!response.ok) {
@@ -322,7 +354,8 @@ export const api = {
     );
 
     return await response.json();
-  }
+  },
+
 };
 
 

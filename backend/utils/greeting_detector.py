@@ -402,6 +402,13 @@ def detect_schema_inquiry(text: str) -> Optional[Dict]:
         r'\b(what)\s+(is|are|was|were)\s+(the\s+)?\w+\s+(for|in)\s+',
         # "show me X sales/data for Y"
         r'\b(show|get|find)\s+(me\s+)?\w+\s+(sales|data|value|profit)',
+        # Aggregation queries - asking for max/min/most/least are DATA queries, not schema
+        r'\b(maximum|minimum|max|min|most|least|highest|lowest)\s+(number|count|amount|value)',
+        r'\b(which|what)\s+\w+\s+(has|have)\s+(the\s+)?(maximum|minimum|max|min|most|least|highest|lowest)',
+        # "state/category with maximum/most" type queries
+        r'\bwith\s+(the\s+)?(maximum|minimum|max|min|most|least|highest|lowest)\b',
+        # "has the maximum/most employees/sales" type queries
+        r'\bhas\s+(the\s+)?(maximum|minimum|max|min|most|least|highest|lowest)\s+(number|count|employees|sales|profit)',
     ]
     for pattern in data_query_patterns:
         if re.search(pattern, q_lower, re.IGNORECASE):

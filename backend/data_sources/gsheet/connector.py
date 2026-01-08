@@ -40,7 +40,7 @@ class SheetCache:
         """Initialize cache state."""
         self._data: Optional[Dict] = None
         self._last_check: float = 0
-        self._check_interval: int = 60  # Only check changes every 60s
+        self._check_interval: int = 300  # Only check changes every 5 minutes (was 60s)
         self._spreadsheet_id: Optional[str] = None
         self._cache_lock = threading.RLock()
 
@@ -293,15 +293,100 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
             
             # Try date/datetime conversion
             try:
-                # Common date formats - use default parsing without deprecated parameter
                 import warnings
                 with warnings.catch_warnings():
-                    warnings.filterwarnings('ignore', category=FutureWarning)
-                    date_values = pd.to_datetime(non_null, errors='coerce')
-                
+                    warnings.simplefilter('ignore')  # Suppress all warnings during date inference
+
+                    # Debug: Log sample values for date-like columns
+                    col_lower = col.lower()
+                    if 'date' in col_lower or 'joining' in col_lower or 'dob' in col_lower:
+                        sample = non_null.head(3).tolist()
+                        print(f"\n      [DATE DEBUG] Column '{col}' samples: {sample}")
+
+                    # Check for Google Sheets serial date numbers (e.g., 44941 = 2023-01-15)
+                    # Serial dates are typically between 1 and 100000 (covers 1900-2173)
+                    try:
+                        numeric_vals = pd.to_numeric(non_null, errors='coerce')
+                        if numeric_vals.notna().sum() / len(non_null) >= 0.5:
+                            # Check if values are in valid serial date range
+                            valid_serial = numeric_vals.between(1, 100000)
+                            if valid_serial.sum() / len(non_null) >= 0.5:
+                                # Convert Google Sheets serial dates (epoch: Dec 30, 1899)
+                                from datetime import datetime, timedelta
+                                serial_epoch = datetime(1899, 12, 30)
+                                date_values = numeric_vals.apply(
+                                    lambda x: serial_epoch + timedelta(days=int(x)) if pd.notna(x) and 1 <= x <= 100000 else pd.NaT
+                                )
+                                if date_values.notna().sum() / len(non_null) >= date_threshold:
+                                    df[col] = df[col].apply(
+                                        lambda x: serial_epoch + timedelta(days=int(float(x)))
+                                        if pd.notna(x) and str(x).replace('.', '').isdigit() and 1 <= float(x) <= 100000
+                                        else pd.NaT
+                                    )
+                                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                                    continue
+                    except:
+                        pass
+
+                    # Detect date format first (DD/MM/YYYY vs MM/DD/YYYY)
+                    detected_format = detect_date_format(non_null)
+
+                    # Map to pandas format string
+                    if detected_format == 'DD/MM/YYYY':
+                        fmt = '%d/%m/%Y'
+                    elif detected_format == 'MM/DD/YYYY':
+                        fmt = '%m/%d/%Y'
+                    else:
+                        fmt = None  # Let pandas infer
+
+                    # Try parsing with detected format first (FAST)
+                    if fmt:
+                        date_values = pd.to_datetime(non_null, format=fmt, errors='coerce')
+                        # If format didn't work well, fall back to inference
+                        if date_values.notna().sum() / len(non_null) < 0.5:
+                            date_values = pd.to_datetime(non_null, errors='coerce')
+                    else:
+                        # Try common date formats in order
+                        date_formats = [
+                            '%Y-%m-%d',           # ISO: 2023-01-15
+                            '%d-%m-%Y',           # 15-01-2023
+                            '%d-%b-%Y',           # 15-Jan-2023
+                            '%d %b %Y',           # 15 Jan 2023
+                            '%b %d, %Y',          # Jan 15, 2023
+                            '%B %d, %Y',          # January 15, 2023
+                            '%d/%m/%Y',           # 15/01/2023
+                            '%m/%d/%Y',           # 01/15/2023
+                            '%Y/%m/%d',           # 2023/01/15
+                            '%d.%m.%Y',           # 15.01.2023
+                        ]
+
+                        date_values = None
+                        for date_fmt in date_formats:
+                            try:
+                                test_values = pd.to_datetime(non_null, format=date_fmt, errors='coerce')
+                                if test_values.notna().sum() / len(non_null) >= 0.5:
+                                    date_values = test_values
+                                    fmt = date_fmt
+                                    break
+                            except:
+                                continue
+
+                        # Fall back to pandas inference if no format matched
+                        if date_values is None or date_values.notna().sum() / len(non_null) < 0.5:
+                            date_values = pd.to_datetime(non_null, errors='coerce', dayfirst=True)
+
                 # Convert if ratio exceeds threshold (default 50% from config)
-                if date_values.notna().sum() / len(non_null) >= date_threshold:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                if date_values is not None and date_values.notna().sum() / len(non_null) >= date_threshold:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        if fmt:
+                            df[col] = pd.to_datetime(df[col], format=fmt, errors='coerce')
+                        else:
+                            df[col] = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
+                    # Debug: confirm successful date parsing
+                    valid_count = df[col].notna().sum()
+                    sample_dates = df[col].dropna().head(2).tolist()
+                    print(f"      ✓ [DATE SUCCESS] Column '{col}': {valid_count}/{len(df)} valid dates. Samples: {sample_dates}")
                     continue
             except:
                 pass
@@ -315,44 +400,80 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
 
 def detect_date_format(date_series):
     """
-    Detect whether dates are in DD/MM/YYYY or MM/DD/YYYY format.
-    
+    Detect date format including separator and order.
+
     Strategy:
-    1. Look for dates where day > 12 (unambiguous)
-    2. If found, determine format based on position
-    3. Default to DD/MM/YYYY if ambiguous
-    
+    1. Detect separator (/, -, ., space)
+    2. Check for ISO format (YYYY-MM-DD) - return None to use comprehensive format list
+    3. For ambiguous dates, detect DD/MM vs MM/DD order
+
     Returns:
-        str: 'DD/MM/YYYY' or 'MM/DD/YYYY'
+        str: 'DD/MM/YYYY', 'MM/DD/YYYY', or None for ISO/other formats
     """
     # Get non-null string values
     non_null = date_series.dropna().astype(str)
-    
+
     if len(non_null) == 0:
-        return 'DD/MM/YYYY'  # Default
-    
-    # Look for unambiguous dates (where one part is > 12)
-    for date_str in non_null.head(100):  # Check first 100 dates
-        parts = date_str.split('/')
-        if len(parts) != 3:
-            continue
-        
-        try:
-            first = int(parts[0])
-            second = int(parts[1])
-            
-            # If first part > 12, it must be day (DD/MM/YYYY)
-            if first > 12:
-                return 'DD/MM/YYYY'
-            
-            # If second part > 12, it must be day (MM/DD/YYYY)
-            if second > 12:
-                return 'MM/DD/YYYY'
-        except ValueError:
-            continue
-    
-    # Default to DD/MM/YYYY (international standard)
-    return 'DD/MM/YYYY'
+        return None  # Let pandas infer
+
+    # Check first few values to detect format
+    for date_str in non_null.head(20):
+        date_str = date_str.strip()
+
+        # Check for ISO format (YYYY-MM-DD or YYYY/MM/DD)
+        # ISO dates start with 4-digit year
+        if len(date_str) >= 10:
+            # Check if starts with 4-digit year
+            first_part = date_str[:4]
+            if first_part.isdigit() and 1900 <= int(first_part) <= 2100:
+                # This is ISO format - return None to use comprehensive format list
+                print(f"      [DATE] Detected ISO format: {date_str}")
+                return None
+
+        # Check for month names (Jan, January, etc.)
+        month_names = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                       'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+        if any(month in date_str.lower() for month in month_names):
+            print(f"      [DATE] Detected month name format: {date_str}")
+            return None  # Use comprehensive format list
+
+        # Try to detect separator and order for DD/MM/YYYY style dates
+        for sep in ['/', '-', '.']:
+            parts = date_str.split(sep)
+            if len(parts) == 3:
+                try:
+                    first = int(parts[0])
+                    second = int(parts[1])
+                    third = int(parts[2])
+
+                    # If first part is 4 digits, it's YYYY-... format
+                    if first > 1900:
+                        print(f"      [DATE] Detected YYYY-first format: {date_str}")
+                        return None
+
+                    # If first part > 12, it must be day (DD/MM/YYYY or DD-MM-YYYY)
+                    if first > 12 and first <= 31:
+                        fmt = 'DD/MM/YYYY' if sep == '/' else None
+                        print(f"      [DATE] Detected DD-first format: {date_str} -> {fmt}")
+                        return fmt
+
+                    # If second part > 12, it must be day (MM/DD/YYYY or MM-DD-YYYY)
+                    if second > 12 and second <= 31:
+                        fmt = 'MM/DD/YYYY' if sep == '/' else None
+                        print(f"      [DATE] Detected MM-first format: {date_str} -> {fmt}")
+                        return fmt
+                except ValueError:
+                    continue
+
+    # If we found "/" separator but couldn't determine order, default to DD/MM/YYYY
+    for date_str in non_null.head(5):
+        if '/' in date_str:
+            print(f"      [DATE] Defaulting to DD/MM/YYYY for: {date_str}")
+            return 'DD/MM/YYYY'
+
+    # For other separators or unknown formats, return None to use comprehensive list
+    print(f"      [DATE] Unknown format, using comprehensive list")
+    return None
 
 
 def combine_date_time_columns(df):

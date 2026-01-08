@@ -1,8 +1,75 @@
 import json
+import re
 from jsonschema import validate, ValidationError
 from analytics_engine.metric_registry import MetricRegistry
 from analytics_engine.duckdb_manager import DuckDBManager
 from utils.sql_utils import quote_identifier
+
+
+def normalize_date_format_in_value(value: str) -> str:
+    """
+    Convert date values from DD/MM/YYYY to ISO format (YYYY-MM-DD).
+    This handles common date format issues from LLM output.
+
+    Examples:
+        "%15/11/2025%" -> "%2025-11-15%"
+        "15/11/2025" -> "2025-11-15"
+        "%01/03/2024%" -> "%2024-03-01%"
+    """
+    if not isinstance(value, str):
+        return value
+
+    # Pattern to match DD/MM/YYYY or D/M/YYYY format (with optional surrounding wildcards)
+    # Captures the wildcards separately to preserve them
+    pattern = r'(%?)(\d{1,2})/(\d{1,2})/(\d{4})(%?)'
+
+    def replace_date(match):
+        prefix = match.group(1)  # Leading %
+        day = match.group(2).zfill(2)  # DD
+        month = match.group(3).zfill(2)  # MM
+        year = match.group(4)  # YYYY
+        suffix = match.group(5)  # Trailing %
+
+        # Validate it's a reasonable date
+        try:
+            d = int(day)
+            m = int(month)
+            if 1 <= d <= 31 and 1 <= m <= 12:
+                # Convert to ISO format: YYYY-MM-DD
+                return f"{prefix}{year}-{month}-{day}{suffix}"
+        except ValueError:
+            pass
+
+        # Return original if not a valid date
+        return match.group(0)
+
+    return re.sub(pattern, replace_date, value)
+
+
+def normalize_date_formats_in_plan(plan: dict) -> dict:
+    """
+    Normalize date formats in filter values from DD/MM/YYYY to ISO format.
+    This is a safety net for when the LLM generates wrong date formats.
+    """
+    # Normalize filters
+    for filter_item in plan.get("filters", []):
+        if "value" in filter_item and isinstance(filter_item["value"], str):
+            original = filter_item["value"]
+            normalized = normalize_date_format_in_value(original)
+            if original != normalized:
+                print(f"  [Validator] Normalized date format: '{original}' -> '{normalized}'")
+                filter_item["value"] = normalized
+
+    # Normalize subset_filters
+    for filter_item in plan.get("subset_filters", []):
+        if "value" in filter_item and isinstance(filter_item["value"], str):
+            original = filter_item["value"]
+            normalized = normalize_date_format_in_value(original)
+            if original != normalized:
+                print(f"  [Validator] Normalized date format: '{original}' -> '{normalized}'")
+                filter_item["value"] = normalized
+
+    return plan
 
 
 def get_table_schema(table_name: str) -> dict:
@@ -118,52 +185,131 @@ def validate_columns_exist(columns: list, table_name: str):
 
 
 
-def validate_metric_table_mapping(metrics: list, table_name: str):
+def validate_metric_table_mapping(metrics: list, table_name: str, plan: dict = None):
     """
     Validate that metrics are used with their correct base table.
 
     IMPORTANT: This function is lenient to handle LLM confusion between metrics and columns.
     - If metric is actually a column name in the table, allow it (LLM put column in wrong field)
+    - If metric is similar to a column name (fuzzy match), map it to the column
     - If no metrics are registered, skip validation entirely
     - Only raise error for truly invalid metrics that aren't columns either
+
+    Returns: List of corrected metrics (may be modified from input)
     """
     if not metrics:
-        return
+        return metrics
 
     registry = MetricRegistry()
-
-    # If no metrics are defined in the registry, skip validation entirely
-    if not registry.metrics:
-        return
 
     # Get table columns for fallback check (LLM might confuse columns with metrics)
     try:
         table_schema = get_table_schema(table_name)
-        column_names_lower = [col.lower() for col in table_schema.keys()]
+        column_names = list(table_schema.keys())
+        column_names_lower = [col.lower() for col in column_names]
     except Exception:
+        column_names = []
         column_names_lower = []
 
+    corrected_metrics = []
+    columns_to_add = []  # Metrics that should be moved to select_columns
+
     for metric in metrics:
-        # FIRST: Check if this "metric" is actually a column name (LLM confusion)
-        # This is common for lookup queries where LLM puts "Hours" in metrics instead of select_columns
-        if metric.lower() in column_names_lower:
-            # It's a column name, not a metric - allow it (will be handled by SQL compiler)
+        metric_lower = metric.lower()
+
+        # FIRST: Check if this "metric" is actually a column name (exact match)
+        if metric_lower in column_names_lower:
+            # It's a column name - move to select_columns instead
+            idx = column_names_lower.index(metric_lower)
+            columns_to_add.append(column_names[idx])
             continue
 
-        # SECOND: Check if it's a registered metric
-        if not registry.is_valid_metric(metric):
-            # Not a registered metric AND not a column - this is an error
-            raise ValueError(f"Invalid metric requested: {metric}. It's not a registered metric or a column in the table.")
+        # SECOND: Try fuzzy matching to find similar column names
+        # e.g., "Total_Revenue" might match "Sale_Amount" or "Revenue"
+        from difflib import SequenceMatcher
+        best_match = None
+        best_ratio = 0
 
-        # Validate metric-table mapping
-        metric_def = registry.get_metric(metric)
-        expected_table = metric_def.get("base_table")
+        # Semantic mappings for common business terms
+        semantic_map = {
+            'revenue': ['sale', 'sales', 'amount', 'income', 'total'],
+            'sales': ['sale', 'revenue', 'amount', 'total'],
+            'profit': ['profit', 'margin', 'earnings', 'net'],
+            'cost': ['cost', 'expense', 'amount'],
+            'total': ['sum', 'amount', 'total', 'gross'],
+            'quantity': ['qty', 'quantity', 'count', 'units'],
+            'price': ['price', 'rate', 'unit_price', 'amount'],
+        }
 
-        if expected_table and expected_table != table_name:
-            raise ValueError(
-                f"Metric '{metric}' can only be used with table '{expected_table}', "
-                f"not '{table_name}'"
-            )
+        # Also check for keyword-based matching
+        metric_keywords = set(metric_lower.replace('_', ' ').split())
+
+        for actual_col in column_names:
+            actual_lower = actual_col.lower()
+            actual_keywords = set(actual_lower.replace('_', ' ').split())
+
+            # Check string similarity
+            ratio = SequenceMatcher(None, metric_lower, actual_lower).ratio()
+            if ratio > best_ratio and ratio >= 0.5:
+                best_ratio = ratio
+                best_match = actual_col
+
+            # Check keyword overlap
+            common_keywords = metric_keywords & actual_keywords
+            if common_keywords:
+                if ratio > 0.3:
+                    best_match = actual_col
+                    best_ratio = max(ratio, 0.6)
+
+            # Check semantic similarity (e.g., "revenue" semantically matches "sale_amount")
+            for metric_kw in metric_keywords:
+                if metric_kw in semantic_map:
+                    for semantic_match in semantic_map[metric_kw]:
+                        if semantic_match in actual_lower:
+                            best_match = actual_col
+                            best_ratio = max(best_ratio, 0.7)
+                            break
+
+        if best_match and best_ratio >= 0.5:
+            # Found a similar column - use it instead of the invalid metric
+            columns_to_add.append(best_match)
+            continue
+
+        # THIRD: Check if it's a registered metric
+        if registry.is_valid_metric(metric):
+            # Valid registered metric - validate table mapping
+            metric_def = registry.get_metric(metric)
+            expected_table = metric_def.get("base_table")
+
+            if expected_table and expected_table != table_name:
+                raise ValueError(
+                    f"Metric '{metric}' can only be used with table '{expected_table}', "
+                    f"not '{table_name}'"
+                )
+            corrected_metrics.append(metric)
+            continue
+
+        # If no metrics are defined in the registry, be lenient
+        if not registry.metrics:
+            # No registry - just use wildcard to get all columns
+            columns_to_add.append("*")
+            continue
+
+        # FOURTH: Not found anywhere - be lenient and use wildcard instead of erroring
+        # This prevents query failures for vague questions like "are we meeting our targets?"
+        print(f"  [Validator] Warning: Metric '{metric}' not found, using all columns instead")
+        columns_to_add.append("*")
+        continue
+
+    # Move column-like metrics to select_columns
+    if columns_to_add and plan is not None:
+        existing_cols = plan.get("select_columns") or []
+        for col in columns_to_add:
+            if col not in existing_cols:
+                existing_cols.append(col)
+        plan["select_columns"] = existing_cols
+
+    return corrected_metrics
 
 
 def validate_filter_values(filters: list, table_name: str):
@@ -322,7 +468,10 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     
     # 4. Normalize column names (case-insensitive matching)
     plan = normalize_column_names(plan, table)
-    
+
+    # 4b. Normalize date formats in filter values (DD/MM/YYYY -> YYYY-MM-DD)
+    plan = normalize_date_formats_in_plan(plan)
+
     # 5. Validate columns exist
     select_columns = plan.get("select_columns", [])
     validate_columns_exist(select_columns, table)
@@ -349,30 +498,50 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
         metrics = plan.get("metrics", [])
         if not metrics:
             raise ValueError("Metric queries must specify at least one metric")
-        
-        validate_metric_table_mapping(metrics, table)
+
+        # Validate and possibly correct metrics (LLM might use wrong column names)
+        # This may move column-like metrics to select_columns
+        corrected_metrics = validate_metric_table_mapping(metrics, table, plan)
+        plan["metrics"] = corrected_metrics  # Update with corrected metrics
+
+        # If all metrics were moved to select_columns, change query type to "list"
+        # This prevents SQL compiler from trying to look up non-existent metrics
+        if not corrected_metrics and plan.get("select_columns"):
+            plan["query_type"] = "list"
+            print(f"  [Validator] Converted 'metric' to 'list' (metrics were column names)")
     
     elif query_type == "lookup":
-        # Lookup queries cannot use metrics
+        # Lookup queries cannot use metrics - move to select_columns if present
         if plan.get("metrics"):
-            raise ValueError("Lookup queries cannot use aggregation metrics")
-        
-        # Must have LIMIT 1
+            metrics = plan.get("metrics", [])
+            select_cols = plan.get("select_columns", [])
+            for m in metrics:
+                if m not in select_cols:
+                    select_cols.append(m)
+            plan["select_columns"] = select_cols
+            plan["metrics"] = []
+            print(f"  [Validator] Moved metrics to select_columns for lookup query")
+
+        # Auto-fix: Set LIMIT 1 for lookup queries
         if plan.get("limit") != 1:
-            raise ValueError("Lookup queries must have LIMIT 1")
-        
-        # Must have filters
+            plan["limit"] = 1
+            print(f"  [Validator] Auto-set limit=1 for lookup query")
+
+        # Must have filters - if not, try to use "*" as wildcard
         if not plan.get("filters"):
-            raise ValueError("Lookup queries must have filters")
+            print(f"  [Validator] Warning: Lookup query without filters, may return first row")
     
     elif query_type == "filter":
         # Filter queries cannot use metrics
         if plan.get("metrics"):
             raise ValueError("Filter queries cannot use aggregation metrics")
-        
-        # Must have filters
+
+        # Must have filters - if missing, convert to 'list' query as fallback
+        # This handles complex queries like "employees above average" that can't be expressed as filters
         if not plan.get("filters"):
-            raise ValueError("Filter queries must have filters")
+            print(f"  [Validator] Warning: Filter query without filters - converting to 'list' query")
+            plan["query_type"] = "list"
+            # Continue validation as list query (no special requirements)
     
     elif query_type == "extrema_lookup":
         # Extrema lookup must have order_by

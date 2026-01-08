@@ -37,7 +37,7 @@ def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str,
         - dataframe: Cleaned table data with proper headers
         - title: Optional table title if detected
         - sheet_name: Source sheet name
-    """
+    """ 
     try:
         # Step 1: Detect tables using custom detector
         detected_tables = detect_tables_custom(df)
@@ -47,8 +47,8 @@ def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str,
             print(f"      ⚠️  No tables detected in '{sheet_name}', using entire sheet")
             return [{
                 'table_id': 'table_0',
-                'row_range': (0, len(df)),
-                'col_range': (0, len(df.columns)),
+                'row_range': (0, int(len(df))),
+                'col_range': (0, int(len(df.columns))),
                 'dataframe': df,
                 'sheet_name': sheet_name
             }]
@@ -69,8 +69,8 @@ def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str,
         # Fallback: treat entire sheet as one table
         return [{
             'table_id': 'table_0',
-            'row_range': (0, len(df)),
-            'col_range': (0, len(df.columns)),
+            'row_range': (0, int(len(df))),
+            'col_range': (0, int(len(df.columns))),
             'dataframe': df,
             'sheet_name': sheet_name
         }]

@@ -196,6 +196,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   // Audio ref to control TTS playback (stop functionality)
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Track which message is currently speaking
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+
   // Timeout refs for cleanup (prevent memory leaks)
   const voiceModeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -292,19 +295,42 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         } else {
           console.log('⚠️ TTS disabled (flag not set)');
         }
+
       } else {
-        addMessage(response.error || "Sorry, I encountered an error extracting that information.", 'assistant');
+        // Use explanation (user-friendly) with fallback to error message
+        const errorMsg = response.explanation || response.error || "Sorry, I encountered an error extracting that information.";
+        addMessage(errorMsg, 'assistant');
       }
 
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Send message error:', error);
-      addMessage("Network connection error. Please try again.", 'assistant');
+      // Provide more specific error messages
+      let errorMessage = "Network connection error. Please try again.";
+      if (error instanceof Error) {
+        if (error.message.includes('timeout') || error.message.includes('abort')) {
+          errorMessage = "Request timed out. The server might be busy. Please try again.";
+        } else if (error.message.includes('Failed to fetch')) {
+          errorMessage = "Cannot reach the server. Please check if the backend is running.";
+        } else if (error.name === 'TypeError') {
+          errorMessage = "Connection issue. Please refresh and try again.";
+        }
+      }
+      addMessage(errorMessage, 'assistant');
     }
   };
 
-  const playTextToSpeech = async (text: string) => {
+  const playTextToSpeech = async (text: string, messageId?: string) => {
     try {
+      // Stop any currently playing audio first
+      if (audioRef.current) {
+        console.log('⏹️ Stopping previous TTS before starting new one');
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        audioRef.current = null;
+      }
+
       setIsSpeaking(true);
+      setSpeakingMessageId(messageId || null);
       console.log('🔊 Playing TTS for:', text.substring(0, 50) + '...');
 
       // Call TTS endpoint via API service
@@ -321,6 +347,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       audio.onended = () => {
         console.log('✅ TTS playback finished');
         setIsSpeaking(false);
+        setSpeakingMessageId(null);
         audioRef.current = null;
         URL.revokeObjectURL(audioUrl);
       };
@@ -328,16 +355,19 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       audio.onerror = (e) => {
         console.error('❌ Audio playback error:', e);
         setIsSpeaking(false);
+        setSpeakingMessageId(null);
         audioRef.current = null;
         URL.revokeObjectURL(audioUrl);
       };
 
       await audio.play();
-      console.log('▶️ TTS playback started');
+      audio.playbackRate = 1.3;  // 50% faster playback
+      console.log('▶️ TTS playback started at 1.5x speed');
 
     } catch (error) {
       console.error('❌ TTS error:', error);
       setIsSpeaking(false);
+      setSpeakingMessageId(null);
       audioRef.current = null;
       toast.error('Voice playback failed', {
         description: 'Could not play audio response'
@@ -353,6 +383,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       audioRef.current.currentTime = 0;
       audioRef.current = null;
       setIsSpeaking(false);
+      setSpeakingMessageId(null);
     }
   };
 
@@ -1280,7 +1311,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                       </div>
                     ) : (
                       messages.map((msg) => (
-                        <MessageBubble key={msg.id} message={msg} onPlay={playTextToSpeech} />
+                        <MessageBubble
+                          key={msg.id}
+                          message={{ ...msg, isSpeaking: speakingMessageId === msg.id }}
+                          onPlay={playTextToSpeech}
+                          onStop={stopTextToSpeech}
+                        />
                       ))
                     )}
                     {/* Show skeleton while processing voice or waiting for response */}

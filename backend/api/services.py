@@ -47,6 +47,50 @@ from utils.query_cache import get_query_cache, cache_query_result, get_cached_qu
 from utils.config_loader import get_config
 from analytics_engine.duckdb_manager import DuckDBManager
 import yaml
+import numpy as np
+import math
+
+
+def _sanitize_for_json(data):
+    """
+    Convert numpy/pandas types to native Python types for JSON serialization.
+    Pydantic/FastAPI can't serialize numpy.float64, numpy.int64, pandas.Timestamp, etc.
+    Also handles NaN/Inf which aren't valid JSON.
+    """
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        return {k: _sanitize_for_json(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_sanitize_for_json(item) for item in data]
+    # Handle numpy integer types
+    if isinstance(data, (np.integer,)):
+        return int(data)
+    # Handle numpy float types (check for NaN/Inf)
+    if isinstance(data, (np.floating,)):
+        val = float(data)
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return val
+    # Handle native float NaN/Inf
+    if isinstance(data, float):
+        if math.isnan(data) or math.isinf(data):
+            return None
+        return data
+    if isinstance(data, np.ndarray):
+        return _sanitize_for_json(data.tolist())
+    if isinstance(data, np.bool_):
+        return bool(data)
+    # Handle pandas Timestamp
+    if hasattr(data, 'isoformat'):
+        return data.isoformat()
+    # Handle pandas NA/NaT
+    if str(type(data).__name__) in ('NAType', 'NaTType') or str(data) in ('NA', 'NaT', '<NA>'):
+        return None
+    # Generic numpy scalar with .item() method
+    if hasattr(data, 'item'):
+        return _sanitize_for_json(data.item())
+    return data
 
 
 class AppState:
@@ -62,6 +106,7 @@ class AppState:
         self.data_loaded: bool = False
         self.current_spreadsheet_id: Optional[str] = None
         self._user_name_loaded: bool = False
+        self.last_sync_time: Optional[str] = None  # ISO format timestamp of last sync
 
         # Lazy-initialized heavy components (use underscore prefix)
         self._vector_store: Optional[SchemaVectorStore] = None
@@ -74,6 +119,44 @@ class AppState:
         self.personality: TharaPersonality = TharaPersonality()
         self.onboarding: OnboardingManager = OnboardingManager()
         self.entity_extractor: EntityExtractor = EntityExtractor()
+
+        # Check if data already exists in DuckDB (persists across restarts)
+        self._check_existing_data()
+
+    def _check_existing_data(self):
+        """
+        Check if DuckDB already has data from a previous session.
+        This prevents reloading data after backend restarts.
+
+        Checks:
+        1. DuckDB file exists with tables
+        2. Profile file exists with profiles
+        """
+        try:
+            from analytics_engine.duckdb_manager import DuckDBManager
+            from pathlib import Path
+
+            db_path = Path("data_sources/snapshots/latest.duckdb")
+            profiles_path = Path("data_sources/table_profiles.json")
+
+            # Check DuckDB has data
+            has_duckdb_data = False
+            if db_path.exists() and db_path.stat().st_size > 0:
+                db = DuckDBManager()
+                tables = db.list_tables()
+                if tables and len(tables) > 0:
+                    has_duckdb_data = True
+
+            # Check profiles exist
+            has_profiles = profiles_path.exists() and profiles_path.stat().st_size > 100
+
+            # Only mark as loaded if BOTH exist
+            if has_duckdb_data and has_profiles:
+                self.data_loaded = True
+                print(f"  ✓ Found existing data (DuckDB + profiles) - no reload needed")
+        except Exception as e:
+            # Silently fail - will load data normally
+            pass
 
     @property
     def vector_store(self) -> SchemaVectorStore:
@@ -165,6 +248,11 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
     try:
         print(f"[Dataset] Starting load for URL: {url}")
 
+        # FORCE RELOAD: Reset data_loaded flag so we fetch fresh data
+        # This is called when user explicitly syncs (new URL or re-sync)
+        app_state.data_loaded = False
+        print(f"[Dataset] Reset data_loaded flag - will fetch fresh data")
+
         # Set current user for OAuth credentials
         if user_id:
             from data_sources.gsheet.connector import set_current_user
@@ -203,7 +291,7 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         from data_sources.gsheet.connector import get_sheet_cache
         sheet_cache = get_sheet_cache()
         sheet_cache.set_cached_data(spreadsheet_id, sheets_with_tables)
-        print(f"[Dataset] Populated sheet cache for 60s TTL")
+        print(f"[Dataset] Populated sheet cache for 300s TTL")
 
         # Clear and rebuild vector store
         print(f"[Dataset] Clearing vector store...")
@@ -289,6 +377,11 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         app_state.data_loaded = True
         app_state.current_spreadsheet_id = spreadsheet_id
 
+        # Record sync time for change detection
+        from datetime import datetime
+        app_state.last_sync_time = datetime.now().isoformat()
+        print(f"[Dataset] Sync time recorded: {app_state.last_sync_time}")
+
         # Invalidate query cache for this spreadsheet (data has changed)
         invalidate_spreadsheet_cache(spreadsheet_id)
         print(f"[Cache] Invalidated query cache for new dataset")
@@ -327,18 +420,37 @@ def check_and_refresh_data() -> bool:
     Automatically check for data changes and refresh if needed.
     Returns True if data was refreshed.
 
-    OPTIMIZATION: Uses SheetCache to skip redundant downloads.
-    If cache is valid (within 60s TTL), skip the expensive fetch entirely.
+    OPTIMIZATION: Session-based caching.
+    If data already loaded in this session, skip entirely.
+    User must explicitly sync to reload data.
     """
     try:
+        # FAST PATH: If data already loaded in session, skip entirely
+        # This ensures data loads ONCE after sync, never again until explicit re-sync
+        if app_state.data_loaded:
+            print("  ✓ Data already loaded in session - skipping refresh check")
+            return False
+
         from data_sources.gsheet.connector import get_sheet_cache
 
-        # FAST PATH: Check if sheet cache is still valid (saves 10-25s)
+        # Secondary check: If sheet cache is still valid (saves 10-25s)
         cache = get_sheet_cache()
-        spreadsheet_id = app_state.current_spreadsheet_id or ""
+
+        # Get spreadsheet_id from app_state or fallback to config
+        spreadsheet_id = app_state.current_spreadsheet_id
+        if not spreadsheet_id:
+            try:
+                config = get_config()
+                spreadsheet_id = config.google_sheets.spreadsheet_id  # Typed config access
+                if spreadsheet_id:
+                    app_state.current_spreadsheet_id = spreadsheet_id  # Cache for future use
+                    print(f"  [Cache] Loaded spreadsheet_id from config: {spreadsheet_id[:20]}...")
+            except Exception as e:
+                print(f"  [Cache] Failed to load from config: {e}")
+                spreadsheet_id = ""
 
         # Debug: Show cache status
-        print(f"  [Cache] Checking spreadsheet_id: '{spreadsheet_id[:20] if spreadsheet_id else 'EMPTY'}...'")
+        print(f"  [Cache] Using spreadsheet_id: '{spreadsheet_id[:20] if spreadsheet_id else 'EMPTY'}...'")
 
         if not spreadsheet_id:
             print("  [Cache] WARNING: No spreadsheet_id set, cannot use cache")
@@ -354,7 +466,7 @@ def check_and_refresh_data() -> bool:
         # Store in cache for future queries
         if spreadsheet_id:
             cache.set_cached_data(spreadsheet_id, sheets_with_tables)
-            print(f"  [Cache] Stored sheets data in cache for 60s")
+            print(f"  [Cache] Stored sheets data in cache for 300s")
 
         needs_refresh_flag, full_reset, changed_sheets = needs_refresh(sheets_with_tables)
 
@@ -453,51 +565,71 @@ def _execute_with_forced_table(
     This function is called when the user has responded to a clarification
     request and we need to resume the query with their selected table.
     """
+    import time
+    step_start = time.time()
+
     try:
         print("\n[EXECUTE] Running with forced table...")
         print(f"  Table: {forced_table}")
+        print(f"  Original question: {(original_question or '')[:80]}...")
+        print(f"  Processing query: {(processing_query or '')[:80]}...")
 
-        # Get schema for the forced table
+        # Step 1: Get schema
+        print("  [Step 1/5] Getting table schema...")
         schema_context = app_state.table_router.get_table_schema(forced_table)
+        print(f"    ✓ Schema retrieved ({time.time() - step_start:.2f}s)")
 
-        # Generate plan
-        print("  → Generating query plan...")
+        # Step 2: Generate plan
+        print("  [Step 2/5] Generating query plan (LLM call)...")
+        step_start = time.time()
         from planning_layer.planner_client import generate_plan
         from validation_layer.plan_validator import validate_plan
         from execution_layer.sql_compiler import compile_sql
         from execution_layer.executor import execute_plan, ADVANCED_QUERY_TYPES
 
         plan = generate_plan(processing_query, schema_context, entities=entities)
+        print(f"    ✓ Plan generated ({time.time() - step_start:.2f}s)")
+
+        # Step 3: Validate plan
+        print("  [Step 3/5] Validating plan...")
+        step_start = time.time()
         validate_plan(plan)
+        print(f"    ✓ Plan validated ({time.time() - step_start:.2f}s)")
 
         # Override table in plan if needed
         plan['table'] = forced_table
 
         print(f"  ✓ Plan generated for table: {plan.get('table')}")
 
-        # Execute - route advanced query types to specialized executor
+        # Step 4: Execute SQL
+        print("  [Step 4/5] Executing query...")
+        step_start = time.time()
         query_type = plan.get('query_type')
         if query_type in ADVANCED_QUERY_TYPES:
-            print(f"  → Executing advanced query type: {query_type}")
+            print(f"    → Advanced query type: {query_type}")
             result = execute_plan(plan)
-            final_sql = f"[Advanced {query_type} query - see analysis]"  # No SQL for advanced types
+            final_sql = f"[Advanced {query_type} query - see analysis]"
         else:
             sql = compile_sql(plan)
-            print(f"  → Executing SQL...")
+            print(f"    → SQL: {sql[:100]}...")
             result, final_sql = app_state.query_healer.execute_with_healing(sql, plan)
+        print(f"    ✓ Query executed ({time.time() - step_start:.2f}s)")
 
         # Check for empty results
         no_results = False
         row_count = len(result) if result is not None and hasattr(result, '__len__') else 0
         if result is None or row_count == 0:
             no_results = True
-            print(f"  ! Query returned 0 rows")
+            print(f"    ! Query returned 0 rows")
         else:
-            print(f"  ✓ Query returned {row_count} rows")
+            print(f"    ✓ Query returned {row_count} rows")
 
-        # Generate explanation
+        # Step 5: Generate explanation
+        print("  [Step 5/5] Generating explanation (LLM call)...")
+        step_start = time.time()
         from explanation_layer.explainer_client import explain_results
         explanation = explain_results(result, query_plan=plan, original_question=processing_query)
+        print(f"    ✓ Explanation generated ({time.time() - step_start:.2f}s)")
 
         if no_results and explanation:
             no_data_hint = app_state.personality.handle_error('empty_result',
@@ -528,15 +660,16 @@ def _execute_with_forced_table(
         )
         ctx.add_turn(turn)
 
-        # Build response
+        # Build response - sanitize numpy types for JSON serialization
         data_list = None
         if result is not None and hasattr(result, 'to_dict'):
-            data_list = result.to_dict('records')
+            data_list = _sanitize_for_json(result.to_dict('records'))
 
         print("\n[SUCCESS] Query completed with forced table!")
         print("=" * 60 + "\n")
 
-        return {
+        # Sanitize entire response to handle numpy types in plan, entities, etc.
+        response = {
             'success': True,
             'explanation': explanation,
             'data': data_list,
@@ -549,17 +682,38 @@ def _execute_with_forced_table(
             'data_refreshed': False,
             'no_results': no_results
         }
+        return _sanitize_for_json(response)
 
     except Exception as e:
-        print(f"\n[ERROR] Failed to execute with forced table: {e}")
         import traceback
-        traceback.print_exc()
-        error_msg = app_state.personality.handle_error('general', str(e))
+        error_str = str(e)
+        error_trace = traceback.format_exc()
+        print(f"\n[ERROR] Failed to execute with forced table: {error_str}")
+        print(f"  Traceback:\n{error_trace}")
+
+        # Determine error type for better user messaging
+        error_lower = error_str.lower()
+        if 'timeout' in error_lower or 'timed out' in error_lower:
+            user_msg = "The request took too long. Please try again."
+            error_type = 'timeout_error'
+        elif 'connection' in error_lower or 'network' in error_lower:
+            user_msg = "Connection issue. Please check your internet and try again."
+            error_type = 'connection_error'
+        elif 'json' in error_lower or 'parse' in error_lower:
+            user_msg = "I had trouble understanding the response. Please try rephrasing your question."
+            error_type = 'parse_error'
+        elif 'table' in error_lower and 'not found' in error_lower:
+            user_msg = f"Could not find the selected table. Please try again."
+            error_type = 'table_not_found'
+        else:
+            user_msg = f"Something went wrong: {error_str[:100]}"
+            error_type = 'execution_error'
+
         return {
             'success': False,
-            'error': str(e),
-            'explanation': error_msg,
-            'error_type': 'execution_error'
+            'error': error_str,
+            'explanation': user_msg,
+            'error_type': error_type
         }
 
 
@@ -665,11 +819,29 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         app_state.initialize()
         print("  ✓ App state initialized")
 
+        # Get conversation context FIRST (needed for clarification check)
+        ctx = app_state.conversation_manager.get_context(conversation_id)
+        print(f"  ✓ Context loaded (conversation: {conversation_id or 'default'})")
+
         # === VALIDATE INPUT ===
         # Reject empty, too short, or obvious noise (transcription artifacts)
+        # BUT: Allow short inputs (like "1", "2", "3") if there's a pending clarification
         question_clean = question.strip()
-        if not question_clean or len(question_clean) < 3:
-            print("  ✗ Empty or invalid input detected")
+        has_pending = ctx.has_pending_clarification()
+
+        if not question_clean:
+            print("  ✗ Empty input detected")
+            print("=" * 60 + "\n")
+            return {
+                'success': False,
+                'error': 'Empty or invalid input',
+                'explanation': "I didn't catch that. Could you please ask again?",
+                'error_type': 'invalid_input'
+            }
+
+        # Allow short inputs (1-2 chars) ONLY when clarification is pending
+        if len(question_clean) < 3 and not has_pending:
+            print("  ✗ Input too short (no pending clarification)")
             print("=" * 60 + "\n")
             return {
                 'success': False,
@@ -691,10 +863,6 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'error_type': 'transcription_noise'
             }
 
-        # Get conversation context
-        ctx = app_state.conversation_manager.get_context(conversation_id)
-        print(f"  ✓ Context loaded (conversation: {conversation_id or 'default'})")
-
         # Track if we preserved context from a failed clarification match
         preserved_from_clarification = False
 
@@ -709,16 +877,16 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 # User responded with a table selection - use it!
                 ctx.clear_pending_clarification()
 
-                # Restore state from pending clarification
-                original_question = pending.original_question
-                processing_query = pending.translated_question
-                entities = pending.entities
-                is_tamil = pending.is_tamil
+                # Restore state from pending clarification (with safety checks)
+                original_question = pending.original_question or question
+                processing_query = pending.translated_question or original_question
+                entities = pending.entities or {}
+                is_tamil = pending.is_tamil if pending.is_tamil is not None else False
 
                 # Force this table to be used (bypass routing)
                 forced_table = matched_table
                 print(f"  → Resuming query with forced table: {forced_table}")
-                print(f"  → Original question: {original_question[:50]}...")
+                print(f"  → Original question: {(original_question or '')[:50]}...")
 
                 # Skip to planning phase with forced table
                 # (This jumps ahead in the pipeline)
@@ -937,7 +1105,16 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # === CHECK FOR DATA CHANGES (INVALIDATE STALE CACHE) ===
         print("\n[STEP 6/8] CACHE & DATA CHECK...")
         # If data was refreshed mid-session, invalidate cache to avoid stale answers
-        spreadsheet_id = app_state.current_spreadsheet_id or ""
+        # Fallback to config if app_state doesn't have it (e.g., after server restart)
+        spreadsheet_id = app_state.current_spreadsheet_id
+        if not spreadsheet_id:
+            try:
+                config = get_config()
+                spreadsheet_id = config.google_sheets.spreadsheet_id  # Typed config access
+                if spreadsheet_id:
+                    app_state.current_spreadsheet_id = spreadsheet_id  # Cache it for future use
+            except:
+                spreadsheet_id = ""
         data_was_refreshed = check_and_refresh_data()
         if data_was_refreshed:
             print(f"  ! Data was refreshed - invalidating stale cache")
@@ -1179,9 +1356,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print(f"  Confidence: {confidence:.0%}")
         print("=" * 60 + "\n")
 
+        # Sanitize numpy types for JSON serialization
         data_list = None
         if result is not None and hasattr(result, 'to_dict'):
-            data_list = result.to_dict('records')
+            data_list = _sanitize_for_json(result.to_dict('records'))
 
         response = {
             'success': True,
@@ -1196,6 +1374,9 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             'data_refreshed': data_was_refreshed,  # True if data was refreshed before this query
             'no_results': no_results  # Flag for empty result set
         }
+
+        # Sanitize entire response to handle numpy types in plan, entities, etc.
+        response = _sanitize_for_json(response)
 
         # === CACHE RESULT (CACHING FLOW FROM ARCHITECTURE) ===
         # Store for 5 minutes (configurable via settings.yaml)
@@ -1269,10 +1450,12 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         }
 
     except Exception as e:
-        print(f"\n[ERROR] Unexpected exception:")
-        print(f"  {str(e)}")
         import traceback
-        traceback.print_exc()
+        error_trace = traceback.format_exc()
+        print(f"\n[ERROR] Unexpected exception:")
+        print(f"  Type: {type(e).__name__}")
+        print(f"  Message: {str(e)}")
+        print(f"  Traceback:\n{error_trace}")
         print("=" * 60 + "\n")
 
         # Check if it's a known error pattern
@@ -1285,10 +1468,16 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             error_msg = app_state.personality.handle_error('table_not_found')
         elif 'connection' in error_str or 'timeout' in error_str:
             error_msg = app_state.personality.handle_error('connection')
-        else:
-            # Truly generic error - provide actionable message
+        elif 'json' in error_str or 'parse' in error_str or 'decode' in error_str:
             error_msg = app_state.personality.handle_error('general',
-                "Something went wrong. Try rephrasing your question or check if the data is loaded.")
+                "I had trouble understanding how to answer that. Please try rephrasing your question.")
+        elif 'column' in error_str or 'metric' in error_str:
+            error_msg = app_state.personality.handle_error('column_not_found')
+        else:
+            # Truly generic error - provide more specific message
+            short_error = str(e)[:150] if len(str(e)) > 150 else str(e)
+            error_msg = app_state.personality.handle_error('general',
+                f"Something went wrong: {short_error}. Try rephrasing your question.")
 
         return {
             'success': False,
@@ -1378,3 +1567,5 @@ def clear_context_service(conversation_id: str = None) -> Dict[str, Any]:
     """
     app_state.conversation_manager.clear_context(conversation_id)
     return {'success': True, 'message': 'Context cleared'}
+
+
