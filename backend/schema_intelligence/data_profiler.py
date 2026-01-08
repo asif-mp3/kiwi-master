@@ -14,26 +14,75 @@ class DataProfiler:
     """
     Profiles tables to enable intelligent query routing.
     Creates comprehensive metadata about table structure, content, and semantics.
+
+    DOMAIN-AGNOSTIC: Works with any dataset type (sales, HR, healthcare, education, etc.)
     """
 
-    # Common metric keywords for column classification
+    # Common metric keywords for column classification (MULTI-DOMAIN)
+    # NOTE: Avoid ambiguous keywords that could be dimensions (like 'level', 'rank', 'grade')
     METRIC_KEYWORDS = [
+        # Financial/Sales
         'sales', 'amount', 'revenue', 'profit', 'cost', 'price',
-        'order', 'quantity', 'count', 'total', 'gross', 'net',
+        'quantity', 'total', 'gross', 'net',
         'value', 'shipping', 'tax', 'gst', 'aov', 'discount',
-        'subtotal', 'margin', 'expense', 'income', 'balance'
+        'subtotal', 'margin', 'expense', 'income', 'balance',
+        # Financial abbreviations
+        'amt', 'qty', 'rev', 'exp', 'gp', 'np', 'cogs', 'ebitda',
+        'ytd', 'mtd', 'qtd',  # Year/Month/Quarter to date
+        # HR/Attendance
+        'hours', 'salary', 'wage', 'bonus', 'leave', 'attendance',
+        'overtime', 'deduction', 'allowance', 'days', 'present', 'absent',
+        # HR abbreviations
+        'hrs', 'ot', 'ctc', 'hra', 'pf', 'esi',
+        # Education (only clearly numeric metrics, not 'grade' or 'rank')
+        'score', 'marks', 'percentage', 'cgpa', 'gpa', 'credits', 'percentile',
+        # Healthcare
+        'dosage', 'reading', 'rate', 'pulse', 'pressure',
+        'weight', 'height', 'bmi', 'age',
+        # General metrics
+        'rating', 'duration', 'distance', 'speed', 'temperature',
+        'frequency', 'volume', 'capacity', 'utilization', 'efficiency',
+        # Aggregation hints (column names with these are likely metrics)
+        'sum', 'avg', 'average', 'min', 'max', 'cnt',
     ]
 
-    # Common dimension keywords
+    # Common dimension keywords (MULTI-DOMAIN)
+    # NOTE: These are categorical/grouping columns with limited distinct values
     DIMENSION_KEYWORDS = [
+        # General
         'category', 'type', 'status', 'channel', 'region', 'area',
-        'zone', 'department', 'group', 'segment', 'class', 'tier'
+        'zone', 'department', 'group', 'segment', 'class', 'tier',
+        # HR
+        'designation', 'position', 'role', 'shift', 'gender', 'team',
+        'branch', 'division', 'grade_level', 'employment_type',
+        # Education (ambiguous ones moved here from metrics)
+        'subject', 'course', 'semester', 'section', 'stream', 'batch',
+        'grade', 'rank', 'level',  # These are often categorical, not summable
+        # Healthcare
+        'diagnosis', 'treatment', 'ward', 'specialty',
+        # General
+        'priority', 'severity', 'mode', 'source', 'flag', 'indicator',
     ]
 
-    # Common identifier keywords
+    # Common identifier keywords (MULTI-DOMAIN)
+    # NOTE: These are unique identifiers - should NEVER be aggregated (sum, avg)
     IDENTIFIER_KEYWORDS = [
+        # General IDs
         'name', 'id', 'code', 'sku', 'item', 'product', 'customer',
-        'employee', 'vendor', 'supplier', 'account', 'number'
+        'employee', 'vendor', 'supplier', 'account', 'number',
+        # Specific ID patterns (will also check for _id suffix)
+        'order_id', 'transaction_id', 'invoice_id', 'receipt_id',
+        'emp_id', 'employee_id', 'staff_id', 'worker', 'person',
+        # Education
+        'student', 'student_id', 'roll', 'enrollment', 'teacher', 'faculty',
+        # Healthcare
+        'patient', 'patient_id', 'doctor', 'nurse', 'mrn',
+        # Contact
+        'email', 'phone', 'mobile', 'address', 'contact',
+        # Reference/Tracking
+        'reference', 'ticket', 'case', 'serial', 'sequence',
+        # Additional patterns
+        'device', 'manufacturer', 'index', 'row', 'record', 'key',
     ]
 
     # Month names for detection (English + Tamil)
@@ -323,11 +372,33 @@ class DataProfiler:
 
             # Check for numeric
             if pd.api.types.is_numeric_dtype(col_data):
-                # Determine if metric or dimension
-                is_metric = any(kw in col_lower for kw in self.METRIC_KEYWORDS)
                 cardinality = col_data.nunique()
+                row_count = len(col_data)
 
-                if is_metric or cardinality > 20:
+                # CRITICAL: Check for numeric ID patterns FIRST
+                # IDs should NEVER be aggregated (sum, avg) even if high cardinality
+                is_numeric_id = self._is_numeric_id_column(col_lower, cardinality, row_count)
+
+                if is_numeric_id:
+                    # Numeric ID - treat as identifier, not metric
+                    classifications[col] = {
+                        'role': 'identifier',
+                        'dtype': str(col_data.dtype),
+                        'cardinality': cardinality,
+                        'null_ratio': null_ratio,
+                        'sample_values': [str(v) for v in col_data.dropna().head(5)],
+                        'synonyms': self._generate_identifier_synonyms(col)
+                    }
+                    continue
+
+                # Check if column name suggests it's a metric
+                is_metric = any(kw in col_lower for kw in self.METRIC_KEYWORDS)
+
+                # Use adaptive cardinality threshold based on row count
+                # Small tables: lower threshold; Large tables: higher threshold
+                cardinality_threshold = max(20, min(100, row_count * 0.1))
+
+                if is_metric or cardinality > cardinality_threshold:
                     # It's a metric
                     metric_type = self._detect_metric_type(col_lower)
                     synonyms = self._generate_metric_synonyms(col)
@@ -380,6 +451,80 @@ class DataProfiler:
                 }
 
         return classifications
+
+    def _normalize_column_name(self, col_name: str) -> List[str]:
+        """
+        Extract keywords from column name regardless of format.
+        Handles: snake_case, camelCase, PascalCase, kebab-case, spaces
+
+        Examples:
+            "totalSales" -> ["total", "sales"]
+            "order_id" -> ["order", "id"]
+            "Employee Name" -> ["employee", "name"]
+        """
+        # Convert camelCase/PascalCase to words
+        words = re.sub(r'([a-z])([A-Z])', r'\1_\2', col_name)
+        # Split on non-alphanumeric
+        words = re.split(r'[^a-zA-Z0-9]+', words.lower())
+        return [w for w in words if w and len(w) > 1]
+
+    def _is_numeric_id_column(self, col_lower: str, cardinality: int, row_count: int) -> bool:
+        """
+        Detect if a numeric column is actually an ID/identifier.
+        IDs should NEVER be aggregated (sum, avg) even with high cardinality.
+
+        Returns True if column is likely a numeric ID.
+        """
+        # Pattern 1: Column name contains 'id' keyword
+        if 'id' in col_lower or '_id' in col_lower:
+            return True
+
+        # Pattern 2: Column name ends with common ID suffixes
+        id_suffixes = ['_no', '_num', '_code', '_ref', '_key', '_seq', '_idx']
+        if any(col_lower.endswith(suffix) for suffix in id_suffixes):
+            return True
+
+        # Pattern 3: Column name IS a common ID term
+        id_terms = ['serial', 'sequence', 'row', 'index', 'number', 'no', 'num']
+        if col_lower in id_terms:
+            return True
+
+        # Pattern 4: Column name contains identifier keywords
+        if any(kw in col_lower for kw in self.IDENTIFIER_KEYWORDS):
+            return True
+
+        # Pattern 5: Very high cardinality relative to rows (>50% unique)
+        # AND column name doesn't suggest it's a metric
+        is_metric_name = any(kw in col_lower for kw in self.METRIC_KEYWORDS)
+        if not is_metric_name and row_count > 0:
+            uniqueness_ratio = cardinality / row_count
+            if uniqueness_ratio > 0.5:  # More than 50% unique values
+                # Likely an ID unless name suggests metric
+                return True
+
+        return False
+
+    def _validate_classification(self, col_name: str, col_data: pd.Series,
+                                  initial_role: str) -> str:
+        """
+        Override classification if actual data contradicts column name.
+        This is a safety net for edge cases.
+        """
+        # If classified as metric but contains mostly text, override to dimension
+        if initial_role == 'metric' and col_data.dtype == object:
+            return 'dimension'
+
+        # If classified as dimension but ALL values are unique, might be identifier
+        if initial_role == 'dimension':
+            non_null = col_data.dropna()
+            if len(non_null) > 0 and non_null.nunique() == len(non_null):
+                return 'identifier'
+
+        # If classified as identifier but very low cardinality, might be dimension
+        if initial_role == 'identifier' and col_data.nunique() < 5:
+            return 'dimension'
+
+        return initial_role
 
     def _is_date_column(self, col_data: pd.Series, col_name: str) -> bool:
         """Check if column contains date data"""
@@ -447,9 +592,13 @@ class DataProfiler:
         return 'DD/MM/YYYY'
 
     def _detect_metric_type(self, col_name: str) -> str:
-        """Detect the type of metric"""
+        """
+        Detect the type of metric - MULTI-DOMAIN support.
+        Works with sales, HR, education, healthcare, and generic datasets.
+        """
         col_lower = col_name.lower()
 
+        # Financial/Sales metrics
         if any(kw in col_lower for kw in ['sales', 'revenue', 'income']):
             return 'revenue'
         if any(kw in col_lower for kw in ['profit', 'margin']):
@@ -466,17 +615,69 @@ class DataProfiler:
             return 'shipping'
         if any(kw in col_lower for kw in ['discount', 'rebate']):
             return 'discount'
-        if any(kw in col_lower for kw in ['aov', 'average']):
+
+        # HR/Attendance metrics
+        if any(kw in col_lower for kw in ['hour', 'hours', 'time', 'duration']):
+            return 'hours'
+        if any(kw in col_lower for kw in ['salary', 'wage', 'pay', 'compensation']):
+            return 'salary'
+        if any(kw in col_lower for kw in ['attendance', 'present', 'absent']):
+            return 'attendance'
+        if any(kw in col_lower for kw in ['leave', 'vacation', 'pto']):
+            return 'leave'
+        if any(kw in col_lower for kw in ['overtime', 'ot']):
+            return 'overtime'
+        if any(kw in col_lower for kw in ['bonus', 'incentive', 'commission']):
+            return 'bonus'
+
+        # Education metrics
+        if any(kw in col_lower for kw in ['score', 'marks', 'point']):
+            return 'score'
+        if any(kw in col_lower for kw in ['grade', 'gpa', 'cgpa']):
+            return 'grade'
+        if any(kw in col_lower for kw in ['percent', 'percentage']):
+            return 'percentage'
+        if any(kw in col_lower for kw in ['rank', 'position']):
+            return 'rank'
+        if any(kw in col_lower for kw in ['credit', 'credits']):
+            return 'credits'
+
+        # Healthcare metrics
+        if any(kw in col_lower for kw in ['pulse', 'heartrate', 'heart_rate']):
+            return 'pulse'
+        if any(kw in col_lower for kw in ['pressure', 'bp']):
+            return 'pressure'
+        if any(kw in col_lower for kw in ['temperature', 'temp']):
+            return 'temperature'
+        if any(kw in col_lower for kw in ['weight', 'mass']):
+            return 'weight'
+        if any(kw in col_lower for kw in ['height']):
+            return 'height'
+        if any(kw in col_lower for kw in ['dosage', 'dose']):
+            return 'dosage'
+
+        # General metrics
+        if any(kw in col_lower for kw in ['rating', 'star']):
+            return 'rating'
+        if any(kw in col_lower for kw in ['distance', 'length']):
+            return 'distance'
+        if any(kw in col_lower for kw in ['speed', 'velocity']):
+            return 'speed'
+        if any(kw in col_lower for kw in ['aov', 'average', 'avg', 'mean']):
             return 'average'
+        if any(kw in col_lower for kw in ['total', 'sum']):
+            return 'total'
 
         return 'amount'
 
     def _generate_metric_synonyms(self, col_name: str) -> List[str]:
-        """Generate synonyms for a metric column"""
+        """
+        Generate synonyms for a metric column - MULTI-DOMAIN support.
+        """
         col_lower = col_name.lower()
         synonyms = []
 
-        # Add base terms
+        # Financial/Sales
         if 'sales' in col_lower or 'revenue' in col_lower:
             synonyms.extend(['sales', 'revenue', 'amount', 'value', 'total'])
         if 'order' in col_lower:
@@ -490,13 +691,50 @@ class DataProfiler:
         if 'quantity' in col_lower or 'qty' in col_lower:
             synonyms.extend(['quantity', 'qty', 'units', 'items'])
 
+        # HR/Attendance
+        if 'hour' in col_lower:
+            synonyms.extend(['hours', 'time', 'duration', 'worked'])
+        if 'salary' in col_lower or 'wage' in col_lower:
+            synonyms.extend(['salary', 'wage', 'pay', 'compensation', 'earnings'])
+        if 'attendance' in col_lower:
+            synonyms.extend(['attendance', 'present', 'present days'])
+        if 'leave' in col_lower:
+            synonyms.extend(['leave', 'vacation', 'time off', 'pto', 'absent'])
+        if 'bonus' in col_lower:
+            synonyms.extend(['bonus', 'incentive', 'reward'])
+
+        # Education
+        if 'score' in col_lower or 'marks' in col_lower:
+            synonyms.extend(['score', 'marks', 'points', 'result'])
+        if 'grade' in col_lower or 'gpa' in col_lower:
+            synonyms.extend(['grade', 'gpa', 'cgpa', 'rating'])
+        if 'percent' in col_lower:
+            synonyms.extend(['percentage', 'percent', 'ratio'])
+
+        # Healthcare
+        if 'pulse' in col_lower or 'heart' in col_lower:
+            synonyms.extend(['pulse', 'heart rate', 'bpm'])
+        if 'pressure' in col_lower:
+            synonyms.extend(['pressure', 'bp', 'blood pressure'])
+        if 'temperature' in col_lower or 'temp' in col_lower:
+            synonyms.extend(['temperature', 'temp', 'fever'])
+
+        # General
+        if 'rating' in col_lower:
+            synonyms.extend(['rating', 'score', 'stars', 'review'])
+        if 'count' in col_lower or 'total' in col_lower:
+            synonyms.extend(['count', 'total', 'number', 'sum'])
+
         return list(set(synonyms))
 
     def _generate_dimension_synonyms(self, col_name: str) -> List[str]:
-        """Generate synonyms for a dimension column"""
+        """
+        Generate synonyms for a dimension column - MULTI-DOMAIN support.
+        """
         col_lower = col_name.lower()
         synonyms = []
 
+        # General
         if 'category' in col_lower:
             synonyms.extend(['category', 'type', 'group'])
         if 'region' in col_lower or 'area' in col_lower:
@@ -506,13 +744,40 @@ class DataProfiler:
         if 'status' in col_lower:
             synonyms.extend(['status', 'state', 'condition'])
 
+        # HR
+        if 'department' in col_lower or 'dept' in col_lower:
+            synonyms.extend(['department', 'dept', 'division', 'unit'])
+        if 'designation' in col_lower or 'position' in col_lower:
+            synonyms.extend(['designation', 'position', 'role', 'title'])
+        if 'shift' in col_lower:
+            synonyms.extend(['shift', 'schedule', 'timing'])
+        if 'gender' in col_lower:
+            synonyms.extend(['gender', 'sex'])
+
+        # Education
+        if 'subject' in col_lower or 'course' in col_lower:
+            synonyms.extend(['subject', 'course', 'class', 'module'])
+        if 'section' in col_lower or 'batch' in col_lower:
+            synonyms.extend(['section', 'batch', 'class', 'division'])
+        if 'semester' in col_lower:
+            synonyms.extend(['semester', 'term', 'quarter'])
+
+        # Healthcare
+        if 'ward' in col_lower:
+            synonyms.extend(['ward', 'unit', 'department'])
+        if 'specialty' in col_lower:
+            synonyms.extend(['specialty', 'specialization', 'department'])
+
         return list(set(synonyms))
 
     def _generate_identifier_synonyms(self, col_name: str) -> List[str]:
-        """Generate synonyms for an identifier column"""
+        """
+        Generate synonyms for an identifier column - MULTI-DOMAIN support.
+        """
         col_lower = col_name.lower()
         synonyms = []
 
+        # General
         if 'name' in col_lower:
             synonyms.extend(['name', 'title', 'label'])
         if 'product' in col_lower or 'item' in col_lower:
@@ -520,24 +785,73 @@ class DataProfiler:
         if 'customer' in col_lower:
             synonyms.extend(['customer', 'client', 'buyer'])
 
+        # HR
+        if 'employee' in col_lower or 'emp' in col_lower:
+            synonyms.extend(['employee', 'emp', 'staff', 'worker', 'person'])
+        if 'manager' in col_lower:
+            synonyms.extend(['manager', 'supervisor', 'lead', 'boss'])
+
+        # Education
+        if 'student' in col_lower:
+            synonyms.extend(['student', 'learner', 'pupil', 'enrollee'])
+        if 'teacher' in col_lower or 'faculty' in col_lower:
+            synonyms.extend(['teacher', 'faculty', 'instructor', 'professor'])
+
+        # Healthcare
+        if 'patient' in col_lower:
+            synonyms.extend(['patient', 'case', 'client'])
+        if 'doctor' in col_lower or 'physician' in col_lower:
+            synonyms.extend(['doctor', 'physician', 'provider', 'clinician'])
+
+        # Contact
+        if 'email' in col_lower:
+            synonyms.extend(['email', 'mail', 'e-mail'])
+        if 'phone' in col_lower or 'mobile' in col_lower:
+            synonyms.extend(['phone', 'mobile', 'contact', 'cell'])
+
         return list(set(synonyms))
 
     def _build_synonym_map(self, columns: Dict) -> Dict[str, List[str]]:
         """
         Build reverse mapping from common terms to actual column names.
+        MULTI-DOMAIN support: sales, HR, education, healthcare, etc.
         """
         synonym_map = {}
 
-        # Common search terms
+        # Common search terms (MULTI-DOMAIN)
         common_terms = {
+            # Financial/Sales
             'sales': ['sales', 'revenue', 'amount', 'value', 'total', 'gross sales'],
             'orders': ['orders', 'order count', 'transactions', 'order'],
             'profit': ['profit', 'margin', 'net profit', 'gross profit', 'earnings'],
             'quantity': ['quantity', 'qty', 'units', 'items', 'count'],
+
+            # HR/Attendance
+            'hours': ['hours', 'hour', 'time', 'duration', 'worked', 'work hours'],
+            'salary': ['salary', 'wage', 'pay', 'compensation', 'ctc', 'earnings'],
+            'attendance': ['attendance', 'present', 'absent', 'present days'],
+            'leave': ['leave', 'vacation', 'time off', 'pto', 'sick leave'],
+            'employee': ['employee', 'emp', 'staff', 'worker', 'person', 'emp_id'],
+            'department': ['department', 'dept', 'division', 'team', 'unit'],
+            'designation': ['designation', 'position', 'role', 'title', 'job'],
+
+            # Education
+            'score': ['score', 'marks', 'points', 'result', 'grade'],
+            'student': ['student', 'roll', 'enrollment', 'learner'],
+            'subject': ['subject', 'course', 'class', 'module'],
+
+            # Healthcare
+            'patient': ['patient', 'patient_id', 'mrn', 'case'],
+            'diagnosis': ['diagnosis', 'condition', 'disease', 'ailment'],
+
+            # General
             'date': ['date', 'time', 'day', 'period', 'timestamp'],
             'category': ['category', 'type', 'group', 'segment'],
             'product': ['product', 'item', 'sku', 'name', 'article'],
-            'location': ['location', 'region', 'area', 'zone', 'city']
+            'location': ['location', 'region', 'area', 'zone', 'city', 'branch'],
+            'name': ['name', 'title', 'label', 'description'],
+            'id': ['id', 'code', 'number', 'reference', 'key'],
+            'status': ['status', 'state', 'condition', 'stage'],
         }
 
         for col_name, col_info in columns.items():
@@ -621,14 +935,29 @@ class DataProfiler:
         return date_like_cols >= 3
 
     def _has_metric_structure(self, df: pd.DataFrame, columns: Dict) -> bool:
-        """Check if table has summary/metric structure"""
+        """
+        Check if table has summary/metric structure - MULTI-DOMAIN support.
+        """
         # Summary tables often have metric names in first column
         if len(df.columns) >= 2:
             first_col = df.columns[0]
             first_col_data = df[first_col].dropna()
 
-            # Check if first column contains metric-like labels
-            metric_labels = ['sales', 'orders', 'profit', 'revenue', 'total', 'count', 'average']
+            # Check if first column contains metric-like labels (MULTI-DOMAIN)
+            metric_labels = [
+                # Financial
+                'sales', 'orders', 'profit', 'revenue', 'total', 'count', 'average',
+                'cost', 'expense', 'income', 'margin', 'discount',
+                # HR
+                'hours', 'salary', 'attendance', 'leave', 'overtime', 'bonus',
+                'employees', 'headcount', 'present', 'absent',
+                # Education
+                'score', 'marks', 'grade', 'pass', 'fail', 'students', 'credits',
+                # Healthcare
+                'patients', 'visits', 'cases', 'admissions',
+                # General
+                'rating', 'quantity', 'units', 'items', 'records',
+            ]
             if first_col_data.dtype == object:
                 values_lower = first_col_data.astype(str).str.lower()
                 if any(any(label in val for label in metric_labels) for val in values_lower):
