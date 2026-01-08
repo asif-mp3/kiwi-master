@@ -17,5 +17,11 @@ export const DEFAULT_API_BASE_URL = 'http://localhost:8000';
 export const getApiBaseUrl = () =>
   process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 
-export const getElevenLabsVoiceId = () =>
-  process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || 'OUBMjq0LvBjb07bhwD3H';
+export const getElevenLabsVoiceId = () => {
+  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID;
+  if (!voiceId) {
+    console.warn('NEXT_PUBLIC_ELEVENLABS_VOICE_ID not set - voice features may not work');
+    return ''; // Return empty instead of hardcoded fallback
+  }
+  return voiceId;
+};

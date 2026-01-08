@@ -80,7 +80,7 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
           }}
           transition={{ duration: 0.2 }}
           className={cn(
-            "px-5 py-4 rounded-2xl text-[15px] leading-relaxed transition-all duration-300",
+            "px-3 py-3 sm:px-5 sm:py-4 rounded-xl sm:rounded-2xl text-sm sm:text-[15px] leading-relaxed transition-all duration-300",
             isAssistant
               ? "bg-card/80 backdrop-blur-xl text-card-foreground border border-border rounded-tl-md"
               : "bg-gradient-to-br from-violet-600 to-violet-700 text-white shadow-lg rounded-tr-md"
@@ -107,26 +107,27 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2 }}
-            className="mt-2 flex items-center gap-2"
+            className="mt-1.5 sm:mt-2 flex items-center gap-1 sm:gap-2 flex-wrap"
           >
             {[
-              { icon: Volume2, label: 'Play', onClick: () => onPlay?.(message.content) },
-              { icon: copied ? Check : Copy, label: copied ? 'Copied!' : 'Copy', onClick: handleCopy },
+              { icon: Volume2, label: 'Play', ariaLabel: 'Play message audio', onClick: () => onPlay?.(message.content) },
+              { icon: copied ? Check : Copy, label: copied ? 'Copied!' : 'Copy', ariaLabel: 'Copy message', onClick: handleCopy },
             ].map((action, i) => (
               <motion.button
                 key={i}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={action.onClick}
+                aria-label={action.ariaLabel}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all",
+                  "flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all",
                   copied && action.label === 'Copied!'
                     ? "bg-green-500/20 text-green-400"
                     : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >
                 <action.icon className="w-3 h-3" />
-                {action.label}
+                <span className="hidden sm:inline">{action.label}</span>
               </motion.button>
             ))}
 
@@ -136,13 +137,14 @@ export function MessageBubble({ message, onPlay }: MessageBubbleProps) {
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="View query plan"
+                    className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     <Database className="w-3 h-3" />
-                    Query Plan
+                    <span className="hidden sm:inline">Query Plan</span>
                   </motion.button>
                 </PopoverTrigger>
-                <PopoverContent className="w-96 p-4 bg-zinc-950/95 backdrop-blur-xl border border-zinc-800 shadow-2xl rounded-xl">
+                <PopoverContent className="w-[calc(100vw-2rem)] sm:w-96 max-w-96 p-3 sm:p-4 bg-zinc-950/95 backdrop-blur-xl border border-zinc-800 shadow-2xl rounded-xl">
                   <QueryPlanViewer plan={message.metadata.plan} />
                 </PopoverContent>
               </Popover>

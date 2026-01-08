@@ -93,6 +93,31 @@ class SheetCache:
             self._last_check = 0
             self._spreadsheet_id = None
 
+    def is_valid(self, spreadsheet_id: str) -> bool:
+        """
+        Check if cache is valid without returning data.
+        Used by check_and_refresh_data() to skip redundant downloads.
+
+        Args:
+            spreadsheet_id: The spreadsheet ID to check
+
+        Returns:
+            True if cache is valid and fresh, False otherwise
+        """
+        with self._cache_lock:
+            if self._data is None:
+                print(f"    [SheetCache] Invalid: no data cached")
+                return False
+            if self._spreadsheet_id != spreadsheet_id:
+                print(f"    [SheetCache] Invalid: ID mismatch (cached: {self._spreadsheet_id[:15] if self._spreadsheet_id else 'None'}...)")
+                return False
+            age = time.time() - self._last_check
+            if age >= self._check_interval:
+                print(f"    [SheetCache] Invalid: cache expired (age: {age:.1f}s > {self._check_interval}s)")
+                return False
+            print(f"    [SheetCache] Valid! Age: {age:.1f}s < {self._check_interval}s TTL")
+            return True
+
     def set_check_interval(self, seconds: int) -> None:
         """Update the cache check interval."""
         self._check_interval = seconds
@@ -256,7 +281,6 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                 # Convert if ratio exceeds threshold (default 80% from config)
                 # Less aggressive than before (was 30%) to avoid converting mostly-text columns
                 ratio = numeric_values.notna().sum() / len(non_null)
-                print(f"      DEBUG: Column '{col}' numeric ratio: {ratio:.2f} (threshold: {numeric_threshold})")
                 if ratio >= numeric_threshold:
                     # Check if all numeric values are integers
                     if numeric_values.dropna().apply(lambda x: x == int(x)).all():

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppState } from '@/lib/hooks';
 import { MessageBubble } from './MessageBubble';
+import { MessageSkeleton } from './MessageSkeleton';
 import { VoiceVisualizer } from './VoiceVisualizer';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,13 @@ import {
   Monitor,
   Loader2,
   RefreshCw,
-  StopCircle
+  StopCircle,
+  Pencil,
+  Check,
+  Eraser,
+  Search,
+  PanelLeftClose,
+  PanelLeft
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
@@ -43,6 +50,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -149,8 +167,10 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     createNewChat,
     switchChat,
     deleteChat,
+    renameChat,
     getCurrentChat,
-    setDatasetForChat
+    setDatasetForChat,
+    clearCurrentChat
   } = useAppState();
 
   const [isRecording, setIsRecording] = useState(false);
@@ -170,12 +190,21 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingChatTitle, setEditingChatTitle] = useState('');
 
   // Audio ref to control TTS playback (stop functionality)
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Timeout refs for cleanup (prevent memory leaks)
+  const voiceModeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   /* New State for Voice Section Toggles - REMOVED, replaced with suggestion UI */
   const [expandedVoiceSection, setExpandedVoiceSection] = useState<'plan' | 'data' | 'schema' | null>(null);
+
+  // Search state for sidebar
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -183,44 +212,42 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   }, [messages, showChat]);
 
+  // Cleanup timeouts on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (voiceModeTimeoutRef.current) {
+        clearTimeout(voiceModeTimeoutRef.current);
+      }
+      if (recordingTimeoutRef.current) {
+        clearTimeout(recordingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Push-to-talk: Track if recording was started via push-to-talk
+  const isPushToTalkRef = useRef(false);
+
+  // Ref to hold the latest handleVoiceToggle function (avoids stale closure in useEffect)
+  const handleVoiceToggleRef = useRef<() => void>(() => {});
+
   const activeChat = getCurrentChat();
 
   // Track if this is the initial mount (for verification logic)
   const hasVerifiedOnce = useRef(false);
 
-  // EFFECT: Verify Dataset Connection on Load (Honest UI)
-  // Only runs on mount/page reload, NOT after fresh connection
+  // EFFECT: Check if dataset was previously connected (don't auto-reload)
+  // We trust the stored state - user must manually sync if they want fresh data
   useEffect(() => {
-    const verifyConnection = async () => {
-      // If we have a stored connection, verify it's actually alive on the backend
-      if (activeChat?.datasetStatus === 'ready' && activeChat?.datasetUrl) {
-        // Skip re-verification if we already verified (e.g., just connected)
-        // This prevents the "Verifying..." flash after handleDatasetSuccess
-        if (hasVerifiedOnce.current) {
-          console.log("⏭️ Skipping re-verification (already verified)");
-          return;
-        }
-
-        try {
-          setIsConnectionVerified(false);
-          console.log("🔄 Verifying dataset connection with backend...");
-          // We re-load the dataset. This is idempotent and ensures backend has data loaded.
-          await api.loadDataset(activeChat.datasetUrl);
-          setIsConnectionVerified(true);
-          hasVerifiedOnce.current = true;
-          console.log("✅ Dataset connection verified.");
-        } catch (e) {
-          console.error("❌ Dataset verification failed:", e);
-          // Optional: Reset status if verification fails?
-          // For now, we just leave it as unverified which shows 'Connecting...'
-          // toast.error("Connection check failed. Please reconnect.");
-        }
-      } else {
-        setIsConnectionVerified(true); // Nothing to verify
-      }
-    };
-
-    verifyConnection();
+    if (activeChat?.datasetStatus === 'ready' && activeChat?.datasetUrl) {
+      // Trust stored state - mark as verified without re-loading
+      // User can click "Sync" button if they want to refresh data
+      setIsConnectionVerified(true);
+      hasVerifiedOnce.current = true;
+      console.log("✅ Using stored dataset state (no auto-reload)");
+    } else {
+      // No dataset connected - reset verification state (be honest)
+      setIsConnectionVerified(false);
+    }
   }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
 
   const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false) => {
@@ -423,9 +450,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             setIsProcessingVoice(false); // Stop loading UI
 
             // Keep voice mode enabled for a bit, then disable
-            setTimeout(() => {
+            // Clear any previous timeout before setting a new one
+            if (voiceModeTimeoutRef.current) {
+              clearTimeout(voiceModeTimeoutRef.current);
+            }
+            voiceModeTimeoutRef.current = setTimeout(() => {
               console.log('🔇 Disabling voice mode');
               setIsVoiceMode(false);
+              voiceModeTimeoutRef.current = null;
             }, VOICE_MODE_TIMEOUT);
 
           } catch (err) {
@@ -444,12 +476,17 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         console.log('🔴 Recording started...');
 
         // Auto-stop after timeout
-        setTimeout(() => {
+        // Clear any previous timeout before setting a new one
+        if (recordingTimeoutRef.current) {
+          clearTimeout(recordingTimeoutRef.current);
+        }
+        recordingTimeoutRef.current = setTimeout(() => {
           if (recorder.state === 'recording') {
             console.log('⏱️ Auto-stopping after timeout...');
             recorder.stop();
             setIsRecording(false);
           }
+          recordingTimeoutRef.current = null;
         }, VOICE_RECORDING_TIMEOUT);
 
       } catch (err) {
@@ -463,11 +500,52 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     } else {
       // Manual stop
       console.log('🛑 Manually stopping recording...');
+      // Clear the auto-stop timeout since we're manually stopping
+      if (recordingTimeoutRef.current) {
+        clearTimeout(recordingTimeoutRef.current);
+        recordingTimeoutRef.current = null;
+      }
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
       }
     }
   };
+
+  // Keep the ref updated with the latest handleVoiceToggle function
+  useEffect(() => {
+    handleVoiceToggleRef.current = handleVoiceToggle;
+  });
+
+  // Push-to-talk: Shift key hold to record (desktop)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Only trigger if Shift is pressed, not already recording, and not typing in an input
+      if (e.key === 'Shift' && !isRecording && !isPushToTalkRef.current) {
+        const activeElement = document.activeElement;
+        const isTyping = activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA';
+        if (!isTyping) {
+          isPushToTalkRef.current = true;
+          handleVoiceToggleRef.current();
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      // Stop recording when Shift is released (only if started via push-to-talk)
+      if (e.key === 'Shift' && isPushToTalkRef.current && isRecording) {
+        isPushToTalkRef.current = false;
+        handleVoiceToggleRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isRecording]);
 
   const handleDatasetSuccess = (url: string, stats: DatasetStats) => {
     console.log('[ChatScreen] Dataset connected with stats:', stats);
@@ -504,171 +582,334 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     toast.success("New conversation started");
   };
 
+  // Filter chats based on search query
+  const filteredChats = chatTabs.filter(tab =>
+    tab.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    tab.messages.some(msg => msg.content.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      {/* Your Chats Sidebar */}
-      <AnimatePresence>
-        {showChatsPanel && (
-          <motion.div
-            initial={{ x: -320, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: -320, opacity: 0 }}
-            transition={{ type: "spring", damping: 25, stiffness: 200 }}
-            className="absolute left-0 top-0 bottom-0 w-80 z-50 glass border-r border-zinc-800/50 flex flex-col"
-          >
-            <div className="p-6 border-b border-zinc-800/50">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-bold font-display tracking-tight">Your Chats</h3>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setShowChatsPanel(false)}
-                  className="h-9 w-9 rounded-xl hover:bg-zinc-800"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-
-            <div className="p-4">
-              <Button
-                onClick={handleNewChat}
-                className="w-full h-12 bg-violet-600 hover:bg-violet-500 text-white rounded-xl font-semibold gap-2 transition-all hover:scale-[1.02] active:scale-[0.98]"
-              >
-                <Plus className="w-4 h-4" />
-                New Chat
-              </Button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-3 pb-4 hide-scrollbar">
-              {chatTabs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-48 opacity-40">
-                  <MessageCircle className="w-10 h-10 mb-3" />
-                  <p className="text-sm font-medium">No conversations yet</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {chatTabs.map((tab) => (
-                    <motion.div
-                      key={tab.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className={`group relative p-4 rounded-xl cursor-pointer transition-all ${activeChatId === tab.id
-                        ? 'bg-violet-500/10 border border-violet-500/20'
-                        : 'hover:bg-zinc-800/50 border border-transparent'
-                        }`}
-                      onClick={() => {
-                        switchChat(tab.id);
-                        setShowChatsPanel(false);
-                        setShowChat(true);
-                      }}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm truncate">{tab.title}</p>
-                          <p className="text-xs text-zinc-500 mt-1">
-                            {tab.messages.length} messages
-                          </p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteChat(tab.id);
-                          }}
-                          className="h-8 w-8 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 transition-all"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Chats Panel Overlay */}
+      {/* Mobile Sidebar Backdrop */}
       <AnimatePresence>
         {showChatsPanel && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 bg-black/50 z-40 md:hidden"
             onClick={() => setShowChatsPanel(false)}
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm z-40"
           />
         )}
       </AnimatePresence>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col relative">
+      {/* Sidebar - Width animation on desktop, slide on mobile */}
+      <motion.div
+        initial={false}
+        animate={{ width: showChatsPanel ? 280 : 0 }}
+        transition={{ duration: 0.2, ease: "easeInOut" }}
+        className="h-full overflow-hidden flex-shrink-0 hidden md:block"
+      >
+        <div className="w-[280px] h-full glass border-r border-border flex flex-col">
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-border">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold font-display tracking-tight">Your Chats</h3>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Close sidebar"
+                onClick={() => setShowChatsPanel(false)}
+                className="h-8 w-8 rounded-lg hover:bg-accent"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search chats..."
+                className="pl-9 h-9 bg-muted/50 border-border focus:border-violet-500"
+              />
+            </div>
+          </div>
+
+          {/* New Chat Button */}
+          <div className="p-3">
+            <Button
+              onClick={handleNewChat}
+              className="w-full h-10 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-semibold gap-2 transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              New Chat
+            </Button>
+          </div>
+
+          {/* Chat List */}
+          <div className="flex-1 overflow-y-auto px-2 pb-4 hide-scrollbar">
+            {filteredChats.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 opacity-40">
+                <MessageCircle className="w-8 h-8 mb-2" />
+                <p className="text-xs font-medium">
+                  {searchQuery ? 'No matching chats' : 'No conversations yet'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {filteredChats.map((tab) => (
+                  <motion.div
+                    key={tab.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className={cn(
+                      "group relative px-3 py-2.5 rounded-lg cursor-pointer transition-all",
+                      activeChatId === tab.id
+                        ? 'bg-violet-500/15 border border-violet-500/30'
+                        : 'hover:bg-muted/50 border border-transparent'
+                    )}
+                    onClick={() => {
+                      if (editingChatId !== tab.id) {
+                        switchChat(tab.id);
+                        setShowChat(true);
+                        // Close sidebar on mobile after selection
+                        if (window.innerWidth < 768) {
+                          setShowChatsPanel(false);
+                        }
+                      }
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        {editingChatId === tab.id ? (
+                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <Input
+                              value={editingChatTitle}
+                              onChange={(e) => setEditingChatTitle(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  renameChat(tab.id, editingChatTitle);
+                                  setEditingChatId(null);
+                                  toast.success('Chat renamed');
+                                } else if (e.key === 'Escape') {
+                                  setEditingChatId(null);
+                                }
+                              }}
+                              className="h-6 text-xs bg-muted border-border focus:border-violet-500"
+                              autoFocus
+                            />
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Save chat name"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                renameChat(tab.id, editingChatTitle);
+                                setEditingChatId(null);
+                                toast.success('Chat renamed');
+                              }}
+                              className="h-6 w-6 rounded hover:bg-green-500/20 hover:text-green-400"
+                            >
+                              <Check className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <p className="font-medium text-sm truncate">{tab.title}</p>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              {tab.messages.length} messages
+                            </p>
+                          </>
+                        )}
+                      </div>
+                      {editingChatId !== tab.id && (
+                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Rename chat"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingChatId(tab.id);
+                              setEditingChatTitle(tab.title);
+                            }}
+                            className="h-6 w-6 rounded hover:bg-violet-500/20 hover:text-violet-400"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete chat"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteChat(tab.id);
+                            }}
+                            className="h-6 w-6 rounded hover:bg-red-500/20 hover:text-red-400"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Mobile Sidebar - Slides in from left */}
+      <motion.div
+        initial={false}
+        animate={{ x: showChatsPanel ? 0 : '-100%' }}
+        transition={{ duration: 0.2, ease: "easeInOut" }}
+        className="fixed md:hidden left-0 top-0 h-full z-50 w-[280px]"
+      >
+        <div className="w-full h-full glass border-r border-border flex flex-col bg-background">
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-border">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold font-display tracking-tight">Your Chats</h3>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Close sidebar"
+                onClick={() => setShowChatsPanel(false)}
+                className="h-8 w-8 rounded-lg hover:bg-accent"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </Button>
+            </div>
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search chats..."
+                className="pl-9 h-9 bg-muted/50 border-border focus:border-violet-500"
+              />
+            </div>
+          </div>
+          {/* New Chat Button */}
+          <div className="p-3">
+            <Button
+              onClick={handleNewChat}
+              className="w-full h-10 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-semibold gap-2 transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              New Chat
+            </Button>
+          </div>
+          {/* Chat List */}
+          <div className="flex-1 overflow-y-auto px-2 pb-4 hide-scrollbar">
+            {filteredChats.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 opacity-40">
+                <MessageCircle className="w-8 h-8 mb-2" />
+                <p className="text-xs font-medium">
+                  {searchQuery ? 'No matching chats' : 'No conversations yet'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {filteredChats.map((tab) => (
+                  <div
+                    key={tab.id}
+                    className={cn(
+                      "group relative px-3 py-2.5 rounded-lg cursor-pointer transition-all",
+                      activeChatId === tab.id
+                        ? 'bg-violet-500/15 border border-violet-500/30'
+                        : 'hover:bg-muted/50 border border-transparent'
+                    )}
+                    onClick={() => {
+                      if (editingChatId !== tab.id) {
+                        switchChat(tab.id);
+                        setShowChat(true);
+                        setShowChatsPanel(false);
+                      }
+                    }}
+                  >
+                    <p className="font-medium text-sm truncate">{tab.title}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {tab.messages.length} messages
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Main Content - dynamically resizes */}
+      <div className="flex-1 flex flex-col relative min-w-0">
         {/* Background */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
-          <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-violet-500/8 dark:bg-violet-500/8 rounded-full blur-[150px]" />
-          <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-purple-500/5 dark:bg-purple-500/5 rounded-full blur-[150px]" />
+          <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-violet-500/8 rounded-full blur-[150px]" />
+          <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-purple-500/5 rounded-full blur-[150px]" />
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/50 to-background" />
         </div>
 
         {/* Header */}
-        <header className="relative z-20 flex items-center justify-between px-6 py-5">
-          <div className="flex items-center gap-4">
+        <header className="relative z-20 flex items-center justify-between px-3 sm:px-6 py-3 sm:py-5">
+          <div className="flex items-center gap-2 sm:gap-4">
             <Button
               variant="ghost"
-              onClick={() => setShowChatsPanel(true)}
-              className="h-11 px-4 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all gap-3"
+              size="icon"
+              aria-label={showChatsPanel ? "Close sidebar" : "Open sidebar"}
+              onClick={() => setShowChatsPanel(!showChatsPanel)}
+              className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
             >
-              <MessageSquarePlus className="w-4 h-4 text-violet-400" />
-              <span className="text-sm font-medium">Your Chats</span>
-              {chatTabs.length > 0 && (
-                <span className="ml-1 px-2 py-0.5 text-xs font-bold bg-violet-500/20 text-violet-400 rounded-full">
-                  {chatTabs.length}
-                </span>
+              {showChatsPanel ? (
+                <PanelLeftClose className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400" />
+              ) : (
+                <PanelLeft className="w-4 h-4 sm:w-5 sm:h-5 text-zinc-400" />
               )}
             </Button>
+            {!showChatsPanel && chatTabs.length > 0 && (
+              <span className="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-violet-500/20 text-violet-400 rounded-full hidden sm:inline">
+                {chatTabs.length} chats
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Dataset Button - shows honest state */}
             <Button
               variant="ghost"
               onClick={() => setIsDatasetModalOpen(true)}
               className={cn(
-                "h-11 px-4 rounded-xl glass border transition-all gap-2",
-                activeChat?.datasetStatus === 'ready'
-                  ? isConnectionVerified
-                    ? "border-violet-500/50 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
-                    : "border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20" // Showing Connecting...
+                "h-9 sm:h-11 px-2 sm:px-4 rounded-xl glass border transition-all gap-1.5 sm:gap-2",
+                activeChat?.datasetStatus === 'ready' && isConnectionVerified
+                  ? "border-violet-500/50 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
                   : "border-border hover:border-violet-500/30 hover:bg-accent"
               )}
             >
-              {activeChat?.datasetStatus === 'ready' && !isConnectionVerified ? (
-                <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
-              ) : (
-                <Table className={cn("w-4 h-4", activeChat?.datasetStatus === 'ready' ? "text-violet-400" : "text-zinc-400")} />
-              )}
-
-              <span className="text-sm font-medium hidden sm:inline">
-                {activeChat?.datasetStatus === 'ready'
-                  ? (isConnectionVerified ? 'Loaded Successfully' : 'Verifying...')
-                  : ''}
+              <Table className={cn("w-4 h-4", activeChat?.datasetStatus === 'ready' && isConnectionVerified ? "text-violet-400" : "text-zinc-400")} />
+              <span className="text-xs sm:text-sm font-medium hidden sm:inline">
+                {activeChat?.datasetStatus === 'ready' && isConnectionVerified
+                  ? 'Connected'
+                  : 'Connect Data'}
               </span>
             </Button>
 
-            {/* Sync Changes Button - Only show when dataset is connected */}
+            {/* Sync Button - Only show when dataset is connected */}
             {activeChat?.datasetStatus === 'ready' && isConnectionVerified && (
               <Button
                 variant="ghost"
+                size="icon"
                 onClick={handleSyncDataset}
                 disabled={isSyncing}
-                className="h-11 px-4 rounded-xl glass border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 transition-all gap-2"
+                aria-label="Sync dataset"
+                className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 transition-all"
               >
                 <RefreshCw className={cn("w-4 h-4 text-emerald-400", isSyncing && "animate-spin")} />
-                <span className="text-sm font-medium text-emerald-400 hidden sm:inline">
-                  {isSyncing ? 'Syncing...' : 'Sync'}
-                </span>
               </Button>
             )}
 
@@ -685,21 +926,60 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             <Button
               variant="ghost"
               onClick={() => setShowChat(!showChat)}
-              className={`h-11 px-4 rounded-xl border transition-all gap-2 ${showChat
-                ? 'bg-violet-500 text-white border-violet-400 hover:bg-violet-400'
-                : 'glass border-border hover:border-violet-500/30 hover:bg-accent'
-                }`}
+              className={cn(
+                "h-9 sm:h-11 px-2 sm:px-4 rounded-xl border transition-all gap-1.5 sm:gap-2",
+                showChat
+                  ? 'bg-violet-500 text-white border-violet-400 hover:bg-violet-400'
+                  : 'glass border-border hover:border-violet-500/30 hover:bg-accent'
+              )}
             >
               <MessageCircle className="w-4 h-4" />
-              <span className="text-sm font-medium">Chat</span>
+              <span className="text-xs sm:text-sm font-medium">Chat</span>
             </Button>
+
+            {/* Clear Chat Button - only visible when in chat mode with messages */}
+            {showChat && messages.length > 0 && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Clear chat conversation"
+                    className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-red-500/30 hover:bg-red-500/10 transition-all"
+                  >
+                    <Eraser className="w-4 h-4 text-zinc-400" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent className="bg-card border-border">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear conversation?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will delete all messages in this chat. Your dataset connection will be preserved.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="border-border hover:bg-accent">Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => {
+                        clearCurrentChat();
+                        toast.success("Chat cleared");
+                      }}
+                      className="bg-red-500 hover:bg-red-600 text-white"
+                    >
+                      Clear Chat
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-11 w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
+                  aria-label="User menu"
+                  className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
                 >
                   <User className="w-4 h-4 text-zinc-400" />
                 </Button>
@@ -792,7 +1072,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 1.05 }}
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                className="relative z-10 w-full max-w-2xl flex flex-col items-center justify-between h-full py-8 gap-4 px-6"
+                className="relative z-10 w-full max-w-3xl flex flex-col items-center justify-between h-full py-8 gap-4 px-6"
               >
                 <div className="flex-1 flex flex-col items-center justify-center gap-8 w-full">
                   {/* Brand Header */}
@@ -825,12 +1105,35 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                   {/* Voice Visualizer */}
                   <VoiceVisualizer isRecording={isRecording} isSpeaking={isSpeaking} />
 
-                  {/* Voice Button */}
+                  {/* Voice Button - supports push-to-talk on mobile */}
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    onClick={isSpeaking ? stopTextToSpeech : handleVoiceToggle}
-                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
+                    onClick={isSpeaking ? stopTextToSpeech : undefined}
+                    onPointerDown={(e) => {
+                      if (isSpeaking) return;
+                      // Start recording on touch/hold
+                      if (!isRecording) {
+                        isPushToTalkRef.current = true;
+                        handleVoiceToggle();
+                      }
+                    }}
+                    onPointerUp={() => {
+                      // Stop recording on release (only if push-to-talk)
+                      if (isPushToTalkRef.current && isRecording) {
+                        isPushToTalkRef.current = false;
+                        handleVoiceToggle();
+                      }
+                    }}
+                    onPointerLeave={() => {
+                      // Stop if finger/cursor leaves the button while recording
+                      if (isPushToTalkRef.current && isRecording) {
+                        isPushToTalkRef.current = false;
+                        handleVoiceToggle();
+                      }
+                    }}
+                    aria-label={isRecording ? "Release to stop recording" : isSpeaking ? "Stop speaking" : "Hold to record"}
+                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center touch-none ${
                       isRecording
                         ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
                         : isSpeaking
@@ -909,37 +1212,80 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -50 }}
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                className="absolute inset-0 z-20 flex flex-col pt-4"
+                className="absolute inset-0 z-20 flex flex-col pt-2 sm:pt-4"
               >
-                <div className="max-w-3xl mx-auto w-full flex flex-col h-full px-6">
-                  <div className="flex items-center justify-between mb-6">
+                <div className="max-w-4xl mx-auto w-full flex flex-col h-full px-3 sm:px-6">
+                  <div className="flex items-center justify-between mb-3 sm:mb-6">
                     <div>
-                      <h2 className="text-2xl font-display font-bold">Chat</h2>
-                      <p className="text-zinc-500 text-sm">Conversation with Thara</p>
+                      <h2 className="text-xl sm:text-2xl font-display font-bold">Chat</h2>
+                      <p className="text-zinc-500 text-xs sm:text-sm">Conversation with Thara</p>
                     </div>
                     <Button
                       variant="ghost"
+                      size="icon"
                       onClick={() => setShowChat(false)}
-                      className="h-10 w-10 rounded-xl glass border border-zinc-800/50 hover:border-violet-500/30"
+                      className="h-9 w-9 sm:h-10 sm:w-10 rounded-xl glass border border-zinc-800/50 hover:border-violet-500/30"
                     >
-                      <ChevronLeft className="w-5 h-5" />
+                      <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
                     </Button>
                   </div>
 
                   <div
                     ref={scrollRef}
-                    className="flex-1 overflow-y-auto space-y-6 pb-32 hide-scrollbar"
+                    className="flex-1 overflow-y-auto space-y-4 sm:space-y-6 pb-20 sm:pb-24 hide-scrollbar"
                   >
                     {messages.length === 0 ? (
-                      <div className="h-64 flex flex-col items-center justify-center opacity-40">
-                        <Sparkles className="w-12 h-12 mb-4 text-violet-500/50" />
-                        <p className="text-sm font-medium">Start a conversation with Thara</p>
-                        <p className="text-xs text-zinc-600 mt-1">Use voice or type to begin</p>
+                      <div className="h-full flex flex-col items-center justify-center py-12">
+                        <div className="text-center space-y-4">
+                          <div className="w-16 h-16 mx-auto rounded-2xl bg-violet-500/10 flex items-center justify-center">
+                            <MessageCircle className="w-8 h-8 text-violet-500" />
+                          </div>
+                          <div className="space-y-2">
+                            <h3 className="text-lg font-semibold text-foreground">Start a conversation</h3>
+                            <p className="text-sm text-muted-foreground max-w-sm">
+                              {activeChat?.datasetStatus === 'ready'
+                                ? "Ask questions about your data using voice or text"
+                                : "Connect a dataset first, then ask questions about your data"}
+                            </p>
+                          </div>
+                          {activeChat?.datasetStatus !== 'ready' && (
+                            <Button
+                              variant="outline"
+                              onClick={() => setIsDatasetModalOpen(true)}
+                              className="mt-4 gap-2"
+                            >
+                              <Table className="w-4 h-4" />
+                              Connect Dataset
+                            </Button>
+                          )}
+                          {activeChat?.datasetStatus === 'ready' && (
+                            <div className="mt-6 space-y-2">
+                              <p className="text-xs text-muted-foreground uppercase tracking-wider">Try asking</p>
+                              <div className="flex flex-wrap justify-center gap-2">
+                                {["Show me total sales", "What are the top 5 items?", "Compare categories"].map((suggestion) => (
+                                  <button
+                                    key={suggestion}
+                                    onClick={() => {
+                                      setInputMessage(suggestion);
+                                    }}
+                                    className="px-3 py-1.5 text-xs rounded-full bg-muted hover:bg-accent border border-border hover:border-violet-500/30 transition-all"
+                                  >
+                                    {suggestion}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       messages.map((msg) => (
                         <MessageBubble key={msg.id} message={msg} onPlay={playTextToSpeech} />
                       ))
+                    )}
+                    {/* Show skeleton while processing voice or waiting for response */}
+                    {isProcessingVoice && (
+                      <MessageSkeleton />
                     )}
                     {isSpeaking && (
                       <motion.div
@@ -964,9 +1310,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 </div>
 
                 {/* Input Box with Voice and Send */}
-                <div className="absolute bottom-6 left-0 right-0 px-6 pointer-events-none">
-                  <div className="max-w-3xl mx-auto pointer-events-auto">
-                    <div className="flex items-center gap-2 p-2 rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl">
+                <div className="absolute bottom-3 sm:bottom-6 left-0 right-0 px-3 sm:px-6 pointer-events-none">
+                  <div className="max-w-4xl mx-auto pointer-events-auto">
+                    <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-xl sm:rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl">
                       <Input
                         value={inputMessage}
                         onChange={(e) => setInputMessage(e.target.value)}
@@ -977,21 +1323,44 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           }
                         }}
                         placeholder="Type your message..."
-                        className="flex-1 bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-foreground placeholder:text-muted-foreground"
+                        className="flex-1 bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm sm:text-base text-foreground placeholder:text-muted-foreground"
                       />
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
-                        onClick={handleVoiceToggle}
-                        className={`w-10 h-10 rounded-xl transition-all duration-300 flex items-center justify-center ${isRecording
-                          ? 'bg-violet-500 shadow-[0_0_30px_rgba(139,92,246,0.5)]'
-                          : 'bg-secondary border border-border hover:border-primary/50'
-                          }`}
+                        onPointerDown={() => {
+                          // Start recording on touch/hold
+                          if (!isRecording) {
+                            isPushToTalkRef.current = true;
+                            handleVoiceToggle();
+                          }
+                        }}
+                        onPointerUp={() => {
+                          // Stop recording on release (only if push-to-talk)
+                          if (isPushToTalkRef.current && isRecording) {
+                            isPushToTalkRef.current = false;
+                            handleVoiceToggle();
+                          }
+                        }}
+                        onPointerLeave={() => {
+                          // Stop if finger/cursor leaves the button while recording
+                          if (isPushToTalkRef.current && isRecording) {
+                            isPushToTalkRef.current = false;
+                            handleVoiceToggle();
+                          }
+                        }}
+                        aria-label={isRecording ? "Release to stop recording" : "Hold to record"}
+                        className={cn(
+                          "w-9 h-9 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl transition-all duration-300 flex items-center justify-center flex-shrink-0 touch-none",
+                          isRecording
+                            ? 'bg-violet-500 shadow-[0_0_30px_rgba(139,92,246,0.5)]'
+                            : 'bg-secondary border border-border hover:border-primary/50'
+                        )}
                       >
                         {isRecording ? (
-                          <Square className="w-5 h-5 text-white fill-current" />
+                          <Square className="w-4 h-4 sm:w-5 sm:h-5 text-white fill-current" />
                         ) : (
-                          <Mic className="w-5 h-5 text-muted-foreground" />
+                          <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-muted-foreground" />
                         )}
                       </motion.button>
                       <motion.button
@@ -1004,12 +1373,15 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           }
                         }}
                         disabled={!inputMessage.trim()}
-                        className={`w-10 h-10 rounded-xl transition-all duration-300 flex items-center justify-center ${inputMessage.trim()
-                          ? 'bg-primary hover:bg-primary/90 shadow-[0_0_20px_rgba(var(--primary),0.3)]'
-                          : 'bg-secondary border border-border opacity-50 cursor-not-allowed'
-                          }`}
+                        aria-label="Send message"
+                        className={cn(
+                          "w-9 h-9 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl transition-all duration-300 flex items-center justify-center flex-shrink-0",
+                          inputMessage.trim()
+                            ? 'bg-primary hover:bg-primary/90 shadow-[0_0_20px_rgba(var(--primary),0.3)]'
+                            : 'bg-secondary border border-border opacity-50 cursor-not-allowed'
+                        )}
                       >
-                        <Send className="w-5 h-5 text-white" />
+                        <Send className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
                       </motion.button>
                     </div>
                   </div>

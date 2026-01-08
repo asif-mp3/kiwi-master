@@ -125,6 +125,7 @@ class ProfileStore:
         Returns list of (table_name, score) tuples sorted by score descending.
 
         Scoring criteria:
+        - +50: Table name contains keyword from query (e.g., "attendance" matches "Attendance Records")
         - +30: Month explicitly matches table name
         - +25: Month matches table's date range
         - +20: Metric column exists with exact match
@@ -136,9 +137,26 @@ class ProfileStore:
         """
         scores = []
 
+        # Extract keywords from the raw question for table name matching
+        raw_question = entities.get('raw_question', '').lower()
+        # Get significant words (>= 4 chars, exclude common words)
+        stop_words = {'what', 'where', 'when', 'which', 'how', 'tell', 'show', 'give', 'find',
+                     'the', 'and', 'for', 'from', 'with', 'about', 'this', 'that', 'have', 'does'}
+        query_keywords = [w for w in raw_question.split() if len(w) >= 4 and w not in stop_words]
+
         for table_name, profile in self._profiles.items():
             score = 0
             match_reasons = []
+
+            # --- CRITICAL: Table name keyword match ---
+            # Strong boost when table name contains keywords from the query
+            # e.g., "attendance" in query matches "Attendance Records Table1"
+            table_name_lower = table_name.lower()
+            for keyword in query_keywords:
+                if keyword in table_name_lower:
+                    score += 50  # Strong boost for keyword match
+                    match_reasons.append(f"table_name_keyword_match:{keyword}")
+                    break  # One keyword match is enough
 
             # --- Cross-table intent: Boost tables with aggregate columns ---
             # When user asks for "across all months" or "overall total", prefer tables

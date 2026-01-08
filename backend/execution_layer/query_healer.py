@@ -43,6 +43,39 @@ class QueryHealer:
 
     MAX_RETRIES = 3
 
+    # Errors that cannot be fixed by healing - fail immediately to save time
+    UNRECOVERABLE_ERRORS = [
+        'permission denied',
+        'connection refused',
+        'connection reset',
+        'connection closed',
+        'authentication failed',
+        'access denied',
+        'out of memory',
+        'disk full',
+        'database is locked',
+        'timeout expired',
+        'network error',
+        'ssl error',
+        'certificate error',
+    ]
+
+    @staticmethod
+    def is_unrecoverable_error(error: str) -> bool:
+        """
+        Check if an error is unrecoverable (cannot be fixed by SQL modifications).
+        Fast-fails to save 1-3 seconds on hopeless queries.
+
+        Args:
+            error: The error message
+
+        Returns:
+            bool: True if error cannot be fixed, False if healing should be attempted
+        """
+        error_lower = error.lower()
+        return any(unrecoverable in error_lower
+                   for unrecoverable in QueryHealer.UNRECOVERABLE_ERRORS)
+
     def __init__(self, db_manager=None, profile_store=None):
         # Lazy imports to avoid circular dependencies
         self._db = db_manager
@@ -106,6 +139,13 @@ class QueryHealer:
             except Exception as e:
                 last_error = str(e)
                 print(f"  [Healer] Error on attempt {attempt + 1}: {last_error[:100]}")
+
+                # Fast-fail for unrecoverable errors (saves 1-3 seconds)
+                if self.is_unrecoverable_error(last_error):
+                    print(f"  [Healer] FAST-FAIL: Unrecoverable error detected")
+                    self._record_attempt(attempt + 1, current_sql, current_sql,
+                                        last_error, "unrecoverable_error", False)
+                    break
 
                 fixed_sql = self._diagnose_and_fix(current_sql, last_error, plan, profile)
 
@@ -408,9 +448,17 @@ class QueryHealer:
         # Be careful not to change string literals
 
         # Fix 3: Missing quotes around column names with spaces
+        # Exclude SQL keywords and functions to avoid false positives
+        sql_keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP', 'ORDER', 'BY', 'HAVING', 'LIMIT',
+                       'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'LIKE', 'BETWEEN', 'AS',
+                       'COUNT', 'SUM', 'AVG', 'MAX', 'MIN', 'CAST', 'DISTINCT', 'ASC', 'DESC']
         column_pattern = r'(?:SELECT|FROM|WHERE|GROUP BY|ORDER BY)\s+([A-Za-z][A-Za-z0-9 ]+[A-Za-z0-9])(?=\s|,|$)'
         for match in re.finditer(column_pattern, modified, re.IGNORECASE):
             col = match.group(1)
+            # Skip SQL keywords and functions
+            col_words = col.upper().split()
+            if any(word in sql_keywords for word in col_words):
+                continue
             if ' ' in col and not (col.startswith('"') or col.startswith("'")):
                 modified = modified.replace(col, f'"{col}"')
 
@@ -462,7 +510,9 @@ class QueryHealer:
 
         # Strategy 2: Make LIKE patterns more generous
         # e.g., LIKE 'Dairy' -> LIKE '%Dairy%'
-        like_pattern = r"LIKE\s+'([^%][^']*[^%])'"
+        # Fixed pattern to handle single characters and edge cases
+        # Match LIKE with a value that doesn't already have % at both ends
+        like_pattern = r"LIKE\s+'(?!%)([^']+)(?<!%)'"
         modified = re.sub(like_pattern, r"LIKE '%\1%'", modified, flags=re.IGNORECASE)
 
         # Strategy 3: Convert exact matches to LIKE for text columns

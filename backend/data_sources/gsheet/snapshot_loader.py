@@ -4,17 +4,10 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any
 from data_sources.gsheet.connector import fetch_sheets_with_tables
+from utils.sql_utils import quote_identifier
 
 DB_PATH = "data_sources/snapshots/latest.duckdb"
 TABLE_METADATA_FILE = "data_sources/snapshots/table_metadata.json"
-
-
-def quote_identifier(name: str) -> str:
-    """Quote SQL identifiers that contain spaces, special characters, or start with a digit"""
-    # Must quote if: has spaces, special chars, or starts with a digit
-    if ' ' in name or any(char in name for char in ['-', '.', '(', ')']) or (name and name[0].isdigit()):
-        return f'"{name}"'
-    return name
 
 
 def sanitize_table_name(name: str, index: int = 0) -> str:

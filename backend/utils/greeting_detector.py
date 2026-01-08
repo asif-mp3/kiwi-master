@@ -85,9 +85,10 @@ GREETING_CATEGORIES = {
         r'உதவுங்கள்',  # Help me
     ],
     'schema_inquiry': [  # Questions about data structure/schema
-        # Basic "what is sheet X" patterns
-        r'\b(what)\s+(is|are)\s+(sheet|table|the)\s+',
-        r'\b(what)\s+(is|are)\s+(?:in\s+)?(?:the\s+)?(sheet|table)',  # "what is in sheet 1"
+        # Basic "what is sheet X" patterns - MUST include sheet/table number or name
+        r'\b(what)\s+(is|are)\s+(sheet|table)\s+(\d+|\w+)',  # "what is sheet 1" or "what is table sales"
+        r'\b(what)\s+(is|are)\s+the\s+(sheet|table|data|dataset)\b',  # "what is the sheet" (general)
+        r'\b(what)\s+(is|are)\s+(?:in\s+)?(?:the\s+)?(sheet|table)\s*\d+',  # "what is in sheet 1"
         r'\b(what)\s+(is|are)\s+(present|available|there)\s+(in\s+)?(the\s+)?(sheet|table)',  # "what is present in sheet"
         r'\b(what)\s+(does)\s+(sheet|table)\s*\w*\s*(contain|have)\b',  # "what does sheet 1 contain"
         r'\b(what)\s+(can\s+i\s+find|is\s+there)\s+(in\s+)?(the\s+)?(sheet|table)',  # "what can I find in sheet"

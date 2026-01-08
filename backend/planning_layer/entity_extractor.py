@@ -65,7 +65,11 @@ class EntityExtractor:
 
     # Minimal fallback locations (only used if no profiles loaded)
     _DEFAULT_LOCATIONS: Set[str] = {
-        'chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad'
+        'chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad',
+        # Common Chennai areas (Freshggies delivery zones)
+        'velachery', 'adyar', 'koyambedu', 'anna nagar', 'chromepet',
+        'tambaram', 'porur', 't nagar', 'mylapore', 'besant nagar',
+        'thiruvanmiyur', 'guindy', 'nanganallur', 'madipakkam'
     }
 
     # Fallback categories (used if not learned from profiles)
@@ -76,7 +80,16 @@ class EntityExtractor:
         'fresh cut vegetables', 'fresh cut fruits', 'leafy greens',
         'exotic vegetables', 'salad mixes', 'ready to cook',
         'dairy', 'beverages', 'groceries', 'snacks', 'frozen',
-        'fruits', 'vegetables', 'organic', 'premium'
+        'fruits', 'vegetables', 'organic', 'premium',
+        # Additional common categories
+        'fresh produce', 'dairy & homemade', 'snacks & sweets',
+        'bakery', 'meat', 'seafood', 'pantry', 'household',
+        # Freshggies specific categories from user data (EXACT column names)
+        'dairy & homemade essentials', 'batter & dough',
+        'ready to cook & eat', 'fresh fruits', 'fresh vegetables',
+        'juices & beverages', 'homemade powders, pastes & pickles',
+        'pickles & preserves', 'salads & dressings', 'combo / value pack',
+        'fresh cut vegetables / prepped veggies'
     }
 
     # Aggregation keywords
@@ -87,6 +100,13 @@ class EntityExtractor:
         'MIN': ['minimum', 'min', 'lowest', 'worst', 'bottom'],
         'COUNT': ['count', 'how many', 'number of', 'total number']
     }
+
+    # Dimension keywords - when these appear in question, boost tables with matching columns
+    DIMENSION_KEYWORDS = [
+        'area', 'zone', 'region', 'pincode', 'zip', 'shipping',
+        'city', 'state', 'district', 'branch', 'location',
+        'category', 'type', 'product', 'item', 'customer', 'segment'
+    ]
 
     def __init__(self):
         """Initialize with empty learned entities (populated by refresh_from_profiles)"""
@@ -198,6 +218,22 @@ class EntityExtractor:
     COMPARISON_TERMS = ['compare', 'versus', 'vs', 'compared to', 'difference',
                         'against', 'between', 'relative to']
 
+    # Cross-table / aggregate keywords - indicates query needs data across all periods/tables
+    CROSS_TABLE_TERMS = [
+        'across all', 'all months', 'all time', 'overall', 'grand total',
+        'entire', 'whole', 'complete', 'combined', 'aggregate',
+        'year to date', 'ytd', 'month to date', 'mtd',
+        'month over month', 'year over year', 'yoy', 'mom',
+        'throughout', 'over time', 'across months', 'across periods',
+        'total for', 'sum of all', 'everything', 'all data',
+        # Time range patterns - "from X to Y" indicates cross-table trend
+        'from august to', 'from september to', 'from october to', 'from november to',
+        'from december to', 'from january to', 'from february to', 'from march to',
+        'august to december', 'september to december', 'october to december',
+        'january to december', 'august to november', 'trend change',
+        'trend from', 'trend over', 'trend across'
+    ]
+
     def extract(self, question: str) -> Dict[str, Any]:
         """
         Extract all entities from a question.
@@ -216,14 +252,19 @@ class EntityExtractor:
 
         return {
             'month': self._extract_month(q_lower),
+            'all_months': self._extract_all_months(q_lower),
             'metric': self._extract_metric(q_lower),
             'category': self._extract_category(q_lower, question),
             'location': self._extract_location(q_lower),
             'aggregation': self._extract_aggregation(q_lower),
             'comparison': self._is_comparison(q_lower),
+            'multi_month_comparison': self._is_multi_month_comparison(q_lower),
+            'cross_table_intent': self._is_cross_table_query(q_lower),
+            'dimension_keywords': self._extract_dimension_keywords(q_lower),
             'time_period': self._extract_time_period(q_lower),
             'explicit_table': self._extract_explicit_table(question),
             'date_specific': self._extract_specific_date(q_lower),
+            'custom_entities': self._extract_custom_entities(q_lower),
             'raw_question': question
         }
 
@@ -255,8 +296,8 @@ class EntityExtractor:
 
         return None
 
-    def _month_num_to_name(self, month_num: int) -> str:
-        """Convert month number to name"""
+    def _month_num_to_name(self, month_num: int) -> Optional[str]:
+        """Convert month number to name. Returns None for invalid month numbers."""
         names = ['January', 'February', 'March', 'April', 'May', 'June',
                  'July', 'August', 'September', 'October', 'November', 'December']
         return names[month_num - 1] if 1 <= month_num <= 12 else None
@@ -294,11 +335,23 @@ class EntityExtractor:
 
     def _extract_location(self, text: str) -> Optional[str]:
         """Extract location/city from text"""
+        # First check learned locations
         for loc in self.LOCATIONS:
             pattern = r'\b' + re.escape(loc) + r'\b'
             if re.search(pattern, text):
                 # Return properly capitalized
                 return loc.title()
+
+        # Also check custom entities that might be area/location related
+        # This catches area names learned from "Area Name" type columns
+        location_entity_types = ['area_name', 'area', 'location', 'city', 'zone', 'region']
+        for entity_type in location_entity_types:
+            if entity_type in self._learned_custom_entities:
+                for val in self._learned_custom_entities[entity_type]:
+                    pattern = r'\b' + re.escape(val) + r'\b'
+                    if re.search(pattern, text):
+                        return val.title()
+
         return None
 
     def _extract_aggregation(self, text: str) -> str:
@@ -314,6 +367,71 @@ class EntityExtractor:
     def _is_comparison(self, text: str) -> bool:
         """Check if question is asking for comparison"""
         return any(term in text for term in self.COMPARISON_TERMS)
+
+    def _extract_all_months(self, text: str) -> List[str]:
+        """Extract ALL month names mentioned in the text"""
+        found_months = []
+        for month_name, month_num in self.MONTHS.items():
+            pattern = r'\b' + month_name + r'\b'
+            if re.search(pattern, text):
+                full_names = {
+                    '01': 'January', '02': 'February', '03': 'March',
+                    '04': 'April', '05': 'May', '06': 'June',
+                    '07': 'July', '08': 'August', '09': 'September',
+                    '10': 'October', '11': 'November', '12': 'December'
+                }
+                full_name = full_names[month_num]
+                if full_name not in found_months:
+                    found_months.append(full_name)
+        return found_months
+
+    def _is_multi_month_comparison(self, text: str) -> bool:
+        """
+        Check if question compares TWO OR MORE months.
+        This helps route to tables with multi-month columns instead of month-specific tables.
+
+        Examples:
+        - "Compare September and October sales" → True
+        - "September vs October" → True
+        - "How did sales change from September to October?" → True
+        - "What were September sales?" → False (only one month)
+        """
+        months_found = self._extract_all_months(text)
+        if len(months_found) >= 2:
+            # Multiple months mentioned - likely a comparison
+            return True
+        # Also check for comparison terms + month
+        if len(months_found) == 1 and self._is_comparison(text):
+            # Single month with comparison term might be "compare X to Y" pattern
+            return True
+        return False
+
+    def _is_cross_table_query(self, text: str) -> bool:
+        """
+        Check if question needs data aggregated across all tables/periods.
+        
+        Examples:
+        - "Which area has the highest total sales across all months?"
+        - "What is the overall revenue?"
+        - "Show grand total sales"
+        """
+        return any(term in text for term in self.CROSS_TABLE_TERMS)
+
+    def _extract_dimension_keywords(self, text: str) -> List[str]:
+        """
+        Extract dimension-related keywords from the question.
+        
+        These are used to boost tables that have columns matching these keywords.
+        For example, if the question asks about "area", tables with an "Area Name" 
+        column should be boosted.
+        """
+        found_keywords = []
+        for keyword in self.DIMENSION_KEYWORDS:
+            # Use word boundary matching
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, text):
+                found_keywords.append(keyword)
+        return found_keywords
 
     def _extract_time_period(self, text: str) -> Optional[str]:
         """Extract special time period references"""
@@ -374,7 +492,9 @@ class EntityExtractor:
         Extract specific date references like "November 15th" or "15/11/2025"
         """
         # Pattern: Month Day (e.g., "November 15th", "Nov 15")
-        month_day_pattern = r'(' + '|'.join(self.MONTHS.keys()) + r')\s+(\d{1,2})(?:st|nd|rd|th)?'
+        # Use word boundaries to avoid false matches like "margin" matching "mar"
+        month_names_escaped = '|'.join(re.escape(m) for m in self.MONTHS.keys())
+        month_day_pattern = r'\b(' + month_names_escaped + r')\s+(\d{1,2})(?:st|nd|rd|th)?\b'
         match = re.search(month_day_pattern, text, re.IGNORECASE)
         if match:
             month = match.group(1).lower()
@@ -405,6 +525,20 @@ class EntityExtractor:
                 }
 
         return None
+
+    def _extract_custom_entities(self, text: str) -> Dict[str, str]:
+        """
+        Extract custom entities learned from dimension columns.
+        Returns dict mapping entity_type -> matched_value
+        """
+        found = {}
+        for entity_type, values in self._learned_custom_entities.items():
+            for val in values:
+                pattern = r'\b' + re.escape(val) + r'\b'
+                if re.search(pattern, text):
+                    found[entity_type] = val.title()
+                    break  # Only one match per entity type
+        return found
 
     def is_followup_question(self, question: str, has_previous_context: bool = False) -> bool:
         """
@@ -472,6 +606,10 @@ class EntityExtractor:
             parts.append(f"Aggregation: {entities['aggregation']}")
         if entities.get('comparison'):
             parts.append("Type: Comparison")
+        if entities.get('cross_table_intent'):
+            parts.append("Intent: Cross-table/Aggregate")
+        if entities.get('dimension_keywords'):
+            parts.append(f"Dimensions: {entities['dimension_keywords']}")
         if entities.get('time_period'):
             parts.append(f"Time period: {entities['time_period']}")
         if entities.get('explicit_table'):

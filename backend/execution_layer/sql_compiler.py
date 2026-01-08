@@ -1,12 +1,5 @@
 from analytics_engine.metric_registry import MetricRegistry
-
-
-def quote_identifier(name: str) -> str:
-    """Quote SQL identifiers that contain spaces, special characters, or start with a digit"""
-    # Must quote if: has spaces, special chars, or starts with a digit
-    if ' ' in name or any(char in name for char in ['-', '.', '(', ')']) or (name and name[0].isdigit()):
-        return f'"{name}"'
-    return name
+from utils.sql_utils import quote_identifier
 
 
 def compile_sql(plan: dict) -> str:
@@ -38,14 +31,21 @@ def compile_sql(plan: dict) -> str:
 def _compile_lookup(plan):
     """Compile row lookup query"""
     table = quote_identifier(plan["table"])
-    columns = plan["select_columns"]
-    
+    columns = plan.get("select_columns", ["*"])
+
+    # Default to all columns if empty
+    if not columns:
+        columns = ["*"]
+
     # Quote column names if needed
-    quoted_columns = ", ".join([quote_identifier(col) for col in columns])
-    
+    if columns != ["*"]:
+        quoted_columns = ", ".join([quote_identifier(col) for col in columns])
+    else:
+        quoted_columns = "*"
+
     where = _build_where_clause(plan["filters"])
     limit = plan.get("limit", 1)
-    
+
     return f"SELECT {quoted_columns} FROM {table} {where} LIMIT {limit}".strip()
 
 
@@ -164,7 +164,17 @@ def _compile_metric(plan):
 def _compile_extrema_lookup(plan):
     """Compile extrema lookup query (min/max with ordering)"""
     table = quote_identifier(plan["table"])
-    columns = ", ".join([quote_identifier(col) for col in plan["select_columns"]])
+    select_cols = plan.get("select_columns", ["*"])
+
+    # Default to all columns if empty
+    if not select_cols:
+        select_cols = ["*"]
+
+    if select_cols != ["*"]:
+        columns = ", ".join([quote_identifier(col) for col in select_cols])
+    else:
+        columns = "*"
+
     order_by = plan.get("order_by", [])
     limit = plan.get("limit", 1)
     
@@ -180,43 +190,80 @@ def _compile_extrema_lookup(plan):
 
 
 def _compile_rank(plan):
-    """Compile rank query (ordered list of all results)"""
+    """Compile rank query (ordered list, with optional GROUP BY for aggregation)"""
     table = quote_identifier(plan["table"])
-    
-    # Quote column names if needed
+
+    group_by = plan.get("group_by", [])
+    metrics = plan.get("metrics", [])
+    order_by = plan.get("order_by", [])
+    limit = plan.get("limit", 100)
+
+    # Build WHERE clause if filters exist
+    where_clause = _build_where_clause(plan.get("filters", []))
+
+    # If we have group_by, we need to aggregate
+    if group_by:
+        # Build SELECT with grouped columns + aggregated metrics
+        select_parts = [quote_identifier(col) for col in group_by]
+
+        # Add aggregated metrics (default to SUM if metric column exists in order_by)
+        for metric in metrics:
+            quoted_metric = quote_identifier(metric)
+            select_parts.append(f"SUM({quoted_metric}) AS {quoted_metric}")
+
+        # If no explicit metrics but order_by has a column not in group_by, aggregate it
+        if not metrics:
+            for col, _ in order_by:
+                if col not in group_by:
+                    quoted_col = quote_identifier(col)
+                    select_parts.append(f"SUM({quoted_col}) AS {quoted_col}")
+
+        columns = ", ".join(select_parts)
+
+        # Build GROUP BY clause
+        group_clause = "GROUP BY " + ", ".join([quote_identifier(col) for col in group_by])
+
+        # Build ORDER BY clause (use the aggregated column name)
+        order_clause = ""
+        if order_by:
+            order_parts = [f"{quote_identifier(col)} {direction}" for col, direction in order_by]
+            order_clause = "ORDER BY " + ", ".join(order_parts)
+
+        return f"SELECT {columns} FROM {table} {where_clause} {group_clause} {order_clause} LIMIT {limit}".strip()
+
+    # No group_by - simple rank query
     select_columns = plan.get("select_columns", ["*"])
     if select_columns != ["*"]:
         columns = ", ".join([quote_identifier(col) for col in select_columns])
     else:
         columns = "*"
-    
-    order_by = plan.get("order_by", [])
-    limit = plan.get("limit", 100)
-    
-    # Build WHERE clause if filters exist
-    where_clause = _build_where_clause(plan.get("filters", []))
-    
+
     order_clause = ""
     if order_by:
         order_parts = [f"{quote_identifier(col)} {direction}" for col, direction in order_by]
         order_clause = "ORDER BY " + ", ".join(order_parts)
-    
+
     return f"SELECT {columns} FROM {table} {where_clause} {order_clause} LIMIT {limit}".strip()
 
 
 def _compile_list(plan):
     """Compile list/show all query"""
     table = quote_identifier(plan["table"])
-    
+
     # Quote column names if needed
     select_columns = plan.get("select_columns", ["*"])
+
+    # Default to all columns if empty
+    if not select_columns:
+        select_columns = ["*"]
+
     if select_columns != ["*"]:
         columns = ", ".join([quote_identifier(col) for col in select_columns])
     else:
         columns = "*"
-    
+
     limit = plan.get("limit", 100)
-    
+
     return f"SELECT {columns} FROM {table} LIMIT {limit}".strip()
 
 

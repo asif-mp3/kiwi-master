@@ -35,7 +35,7 @@ export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProp
   const isActive = isRecording || isSpeaking;
 
   return (
-    <div className="relative w-80 h-80 flex items-center justify-center">
+    <div className="relative w-60 h-60 flex items-center justify-center">
       {/* Outer Glow Rings */}
       <motion.div
         animate={{
@@ -43,7 +43,7 @@ export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProp
           opacity: isActive ? [0.1, 0.25, 0.1] : 0.05,
         }}
         transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-        className="absolute w-72 h-72 rounded-full border border-violet-500/20"
+        className="absolute w-56 h-56 rounded-full border border-violet-500/20"
       />
       <motion.div
         animate={{
@@ -51,7 +51,7 @@ export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProp
           opacity: isActive ? [0.05, 0.15, 0.05] : 0.03,
         }}
         transition={{ duration: 4, repeat: Infinity, ease: "easeInOut", delay: 0.5 }}
-        className="absolute w-80 h-80 rounded-full border border-violet-500/10"
+        className="absolute w-60 h-60 rounded-full border border-violet-500/10"
       />
 
       {/* Ambient Glow */}
@@ -61,11 +61,11 @@ export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProp
           opacity: isRecording ? 0.4 : isSpeaking ? 0.25 : 0.1,
         }}
         transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-        className="absolute w-48 h-48 rounded-full bg-gradient-to-br from-violet-500/30 via-purple-500/20 to-fuchsia-500/10 blur-3xl"
+        className="absolute w-40 h-40 rounded-full bg-gradient-to-br from-violet-500/30 via-purple-500/20 to-fuchsia-500/10 blur-3xl"
       />
 
       {/* Circular Audio Bars */}
-      <div className="absolute w-56 h-56 rounded-full">
+      <div className="absolute w-44 h-44 rounded-full">
         {audioLevels.map((level, i) => {
           const angle = (i / audioLevels.length) * 360;
           const barHeight = isActive ? 20 + level * 40 : 8;
@@ -103,7 +103,7 @@ export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProp
           scale: isRecording ? [1, 1.08, 1] : isSpeaking ? [1, 1.05, 1] : 1,
         }}
         transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-        className="relative z-10 w-32 h-32 rounded-full overflow-hidden"
+        className="relative z-10 w-24 h-24 rounded-full overflow-hidden"
         style={{
           background: 'linear-gradient(135deg, rgba(24, 24, 27, 0.9), rgba(9, 9, 11, 0.95))',
           boxShadow: isActive

@@ -69,7 +69,14 @@ When multiple tables with similar schemas are available in the schema context:
 5. **For lookup queries**, choose the table that most likely contains the entity being queried
 6. **Tables Ending in '_By_Category' or similar**: If the user's question involves a category breakdown (e.g., "Sales for X", "Breakdown by Y"), and there is a table in the context that explicitly mentions "Category" or "Breakdown" in its name (e.g., _By_Category), **YOU MUST USE THAT TABLE** instead of the generic raw data table.
 7. **Month-Specific Tables**: If a table name contains a specific month (e.g., "August Detailed Breakdown"), **NEVER** use it for queries about a different month (e.g., November). Look for the correct month's table.
-8. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw data tables (e.g., "Freshggies – Shopify Sales on Fulfillments").
+8. **CRITICAL - Multi-Month Comparisons**: When the user asks to COMPARE two or more months (e.g., "compare September vs October", "September and October sales"), **DO NOT use month-specific tables** like "September_Detailed_Breakdown". Instead, use a table that has columns for ALL months being compared (e.g., a table with "September-Value", "October-Value" columns). Tables with "pincode" or "area" in the name often have multi-month pivoted data.
+9. **Tables with Area/Location Data**: If the user's question mentions geographic dimensions (area, pincode, zone, region, location, city, branch, zip), **PRIORITIZE tables with these columns** over category tables.
+   - "areas with highest sales" → Use table with "Area Name" or "Area" column
+   - "sales by pincode" → Use table with "Pincode" or "Shipping Zip" column
+   - "which zone performed best" → Use table with "Zone" column
+   - **DO NOT** use a category table (e.g., "By_Category") for area/location/pincode questions!
+   - Look for tables with "pincode", "area", "zone", or "location" in the name
+10. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw data tables (e.g., "Freshggies – Shopify Sales on Fulfillments").
 
 ## Strict Rules
 
@@ -77,18 +84,22 @@ When multiple tables with similar schemas are available in the schema context:
 
 1. Output valid JSON only (no markdown, no explanations)
 2. Use ONLY table, column, and metric names present in the schema context provided
-3. Normalize synonyms based on available columns and metrics
-4. Infer the correct query_type from the question
-5. Propose appropriate filters and groupings based on the question
-6. **Use correct value types**: numeric columns require numeric values (e.g., 1, 9.5), text columns require strings (e.g., "Chennai")
-7. **Use correct operators for text matching**:
+3. **CRITICAL: Use EXACT column names from the schema context** - Column names vary by dataset (e.g., "September-Value" vs "Value Sep" vs "Sep_Value"). Always copy column names EXACTLY as shown in the schema context, never guess or use example patterns.
+4. Normalize synonyms based on available columns and metrics
+5. Infer the correct query_type from the question
+6. Propose appropriate filters and groupings based on the question
+7. **Use correct value types**: numeric columns require numeric values (e.g., 1, 9.5), text columns require strings (e.g., "Chennai")
+8. **Use correct operators for text matching**:
     - **ALWAYS use LIKE operator with %wildcards% for TEXT/VARCHAR columns** when filtering by categories, names, descriptions, or any text values
     - Format: {"column": "Category", "operator": "LIKE", "value": "%Dairy%"}
+    - **ZIP CODES and IDENTIFIERS**: Columns like "Shipping Zip", "Pincode", "ID", "Code" are TEXT columns even if they contain numbers. Always use LIKE with STRING values:
+        - CORRECT: {"column": "Shipping Zip", "operator": "LIKE", "value": "%600061%"}
+        - WRONG: {"column": "Shipping Zip", "operator": "=", "value": 600061}
     - Use = operator ONLY for:
-        - Exact numeric comparisons (e.g., quantity = 5)
+        - Exact numeric comparisons on actual numeric columns (e.g., quantity = 5, price > 100)
         - When the user explicitly asks for "exact match" or "equals exactly"
     - **CRITICAL**: For text columns, LIKE with wildcards handles variations, partial matches, and is more robust than =
-8. **For date/time queries**: ALWAYS use TIMESTAMP columns (e.g., "Time") instead of string date columns (e.g., "Date") when available
+9. **For date/time queries**: ALWAYS use TIMESTAMP columns (e.g., "Time") instead of string date columns (e.g., "Date") when available
     - When filtering by date, use timestamp comparisons (>=, <=) with ISO format: "YYYY-MM-DD HH:MM:SS"
     - **CRITICAL DATE FORMAT**: Parse dates as DD/MM/YYYY (day first, then month)
         - "1/11/2025" = November 1, 2025 → "2025-11-01"
@@ -96,10 +107,10 @@ When multiple tables with similar schemas are available in the schema context:
         - "02/01/2017" = January 2, 2017 → "2017-01-02"
     - For date ranges, use two filters: one with >= for start, one with <= for end
     - String Date columns are for display only, NOT for filtering
-9. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
-10. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
-11. **Pivoted Date Columns**: If the table has columns formatted like 'Metric-Date' (e.g., "Gross sales-01/11/2025"), and the user asks for a specific date (e.g., "Nov 1st"), you MUST select the exact column name that matches the date (e.g., "Gross sales-01/11/2025"). Do not look for a generic "Date" column in these tables.
-12. **GRAND TOTAL Columns**: If a pivoted table has columns ending with '-GRAND TOTAL' (e.g., "Gross sales-GRAND TOTAL", "Orders-GRAND TOTAL"), and the user asks for "total", "overall", or "entire month" aggregation, you MUST use the GRAND TOTAL column. Do NOT try to use a generic column name like "Gross sales" - use the exact column name with "-GRAND TOTAL" suffix.
+10. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
+11. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
+12. **Pivoted Date Columns**: If the table has columns formatted like 'Metric-Date' (e.g., "Gross sales-01/11/2025"), and the user asks for a specific date (e.g., "Nov 1st"), you MUST select the exact column name that matches the date (e.g., "Gross sales-01/11/2025"). Do not look for a generic "Date" column in these tables.
+13. **GRAND TOTAL Columns**: If a pivoted table has columns ending with '-GRAND TOTAL' (e.g., "Gross sales-GRAND TOTAL", "Orders-GRAND TOTAL"), and the user asks for "total", "overall", or "entire month" aggregation, you MUST use the GRAND TOTAL column. Do NOT try to use a generic column name like "Gross sales" - use the exact column name with "-GRAND TOTAL" suffix.
     - For summing across all categories: Use query_type "aggregation_on_subset" with aggregation_function "SUM" and aggregation_column "Gross sales-GRAND TOTAL"
     - For a single category: Use query_type "lookup" with filters on the category and select_columns ["Gross sales-GRAND TOTAL"]
 
@@ -275,6 +286,204 @@ When multiple tables with similar schemas are available in the schema context:
 "comparison": {
   "period_a": {"label": "Weekdays", "table": "Day_Wise_Sales_Table1", "column": "Gross sales", "filters": [{"column": "Day", "operator": "LIKE", "value": "%Monday%"}, {"column": "Day", "operator": "LIKE", "value": "%Tuesday%"}, {"column": "Day", "operator": "LIKE", "value": "%Wednesday%"}, {"column": "Day", "operator": "LIKE", "value": "%Thursday%"}, {"column": "Day", "operator": "LIKE", "value": "%Friday%"}], "aggregation": "AVG"},
   "period_b": {"label": "Weekends", "table": "Day_Wise_Sales_Table1", "column": "Gross sales", "filters": [{"column": "Day", "operator": "LIKE", "value": "%Saturday%"}, {"column": "Day", "operator": "LIKE", "value": "%Sunday%"}], "aggregation": "AVG"},
+  "compare_type": "difference"
+}
+}
+
+**Question:** "Which area has the highest total sales?"
+**Schema context:** Table "Pincode_Sales" with columns ["Area Name", "Gross Sales", "Orders", "Shipping Zip"]
+**Output:**
+{
+"query_type": "rank",
+"table": "Pincode_Sales",
+"select_columns": ["Area Name", "Gross Sales"],
+"group_by": ["Area Name"],
+"metrics": ["Gross Sales"],
+"order_by": [["Gross Sales", "DESC"]],
+"limit": 10
+}
+
+**Question:** "Which product category contributes the most to sales?"
+**Schema context:** Table "Sales_By_Category" with columns ["Category", "Gross sales", "Orders"]
+**Output:**
+{
+"query_type": "rank",
+"table": "Sales_By_Category",
+"select_columns": ["Category", "Gross sales"],
+"group_by": ["Category"],
+"metrics": ["Gross sales"],
+"order_by": [["Gross sales", "DESC"]],
+"limit": 10
+}
+
+**Question:** "What is the sales breakdown by shipping zip?"
+**Schema context:** Table "Shipping_Data" with columns ["Shipping Zip", "Area Name", "Total Sales", "Orders"]
+**Output:**
+{
+"query_type": "rank",
+"table": "Shipping_Data",
+"select_columns": ["Shipping Zip", "Total Sales"],
+"group_by": ["Shipping Zip"],
+"metrics": ["Total Sales"],
+"order_by": [["Total Sales", "DESC"]],
+"limit": 20
+}
+
+**Question:** "Show me sales by month across all areas"
+**Schema context:** Tables "August_Detailed_Breakdown", "September_Detailed_Breakdown", "October_Detailed_Breakdown", "November_Detailed_Breakdown" with columns ["Area", "Gross Sales", "Net Profit"]
+**Output:**
+{
+"query_type": "rank",
+"table": "November_Detailed_Breakdown",
+"select_columns": ["*"],
+"order_by": [["Gross Sales", "DESC"]],
+"limit": 50
+}
+
+**Question:** "How does the sales quantity trend from August to December for Adyar?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "Quantity Aug", "Quantity Sep", "Quantity Oct", "Quantity Nov", "Quantity Dec", "Gross Sales"]
+**Extracted Entities:** Location filter = Adyar, Cross-table intent = True (trend analysis)
+**Output:**
+{
+"query_type": "filter",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "Quantity Aug", "Quantity Sep", "Quantity Oct", "Quantity Nov", "Quantity Dec"],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Adyar%"}],
+"limit": 10
+}
+
+**Question:** "What are Velachery's total sales?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "Gross Sales", "Orders"]
+**Extracted Entities:** Location filter = Velachery
+**Output:**
+{
+"query_type": "filter",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "Gross Sales", "Orders"],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Velachery%"}],
+"limit": 10
+}
+
+**Question:** "What area has shipping zip 600061?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Shipping Zip", "Area Name", "Gross Sales"]
+**Output:**
+{
+"query_type": "filter",
+"table": "pincode_sales_Table1",
+"select_columns": ["Shipping Zip", "Area Name"],
+"filters": [{"column": "Shipping Zip", "operator": "LIKE", "value": "%600061%"}],
+"limit": 10
+}
+
+**Question:** "Compare the sales performance of Dairy and Fresh Produce categories"
+**Schema context:** Table "Category_Sales_Table1" with columns ["Category", "Gross Sales", "Orders", "Month"]
+**Output:**
+{
+"query_type": "comparison",
+"table": "Category_Sales_Table1",
+"comparison": {
+  "period_a": {"label": "Dairy", "table": "Category_Sales_Table1", "column": "Gross Sales", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Dairy%"}], "aggregation": "SUM"},
+  "period_b": {"label": "Fresh Produce", "table": "Category_Sales_Table1", "column": "Gross Sales", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Fresh Produce%"}], "aggregation": "SUM"},
+  "compare_type": "difference"
+}
+}
+
+**Question:** "Which month had the highest overall sales value across all areas?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "August Value", "September-Value", "October-Value", "November-Value", "December-Value", "Grand Total-Value"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "August Value", "September-Value", "October-Value", "November-Value", "December-Value"],
+"aggregation_function": "SUM",
+"aggregation_column": "Grand Total-Value",
+"subset_filters": [],
+"subset_limit": null
+}
+
+**Question:** "Are there any seasonal patterns visible in total sales quantity?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "August Qty", "September-Oty", "October-Oty", "November-Oty", "December-Oty"]
+**Output:**
+{
+"query_type": "list",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "August Qty", "September-Oty", "October-Oty", "November-Oty", "December-Oty"],
+"limit": 50
+}
+
+**Question:** "Which area shows consistent increase in sales from August to December?"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "August Value", "September-Value", "October-Value", "November-Value", "December-Value"]
+**Output:**
+{
+"query_type": "list",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "August Value", "September-Value", "October-Value", "November-Value", "December-Value"],
+"limit": 50
+}
+
+**Question:** "Identify the area where December sales dropped compared to November"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "November-Oty", "December-Oty", "November-Value", "December-Value"]
+**Output:**
+{
+"query_type": "list",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "November-Oty", "December-Oty", "November-Value", "December-Value"],
+"limit": 50
+}
+
+**Question:** "In which area does Dairy & Homemade category dominate?"
+**Schema context:** Table "Sales_by_Category_Table1" with columns ["Area Name", "Dairy & Homemade Essentials", "Snacks & Sweets", "Batter & Dough", "Beverages"]
+**Output:**
+{
+"query_type": "list",
+"table": "Sales_by_Category_Table1",
+"select_columns": ["Area Name", "Dairy & Homemade Essentials", "Snacks & Sweets", "Batter & Dough", "Beverages"],
+"limit": 50
+}
+
+**Question:** "Compare Batter & Dough and Snacks & Sweets sales for Koyambedu"
+**Schema context:** Table "Sales_by_Category_Table1" with columns ["Area Name", "Dairy & Homemade Essentials", "Snacks & Sweets", "Batter & Dough", "Beverages", "Grand Total"]
+**Extracted Entities:** Location filter = Koyambedu, Categories = Batter & Dough, Snacks & Sweets
+**Output:**
+{
+"query_type": "filter",
+"table": "Sales_by_Category_Table1",
+"select_columns": ["Area Name", "Batter & Dough", "Snacks & Sweets"],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Koyambedu%"}],
+"limit": 10
+}
+
+**Question:** "Compare September and October sales for Velachery"
+**Schema context:** Table "pincode_sales_Table1" with columns ["Area Name", "September-Value", "October-Value", "September-Oty", "October-Oty"]
+**Extracted Entities:** Location filter = Velachery
+**Output:**
+{
+"query_type": "filter",
+"table": "pincode_sales_Table1",
+"select_columns": ["Area Name", "September-Value", "October-Value", "September-Oty", "October-Oty"],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Velachery%"}],
+"limit": 10
+}
+
+**Question:** "Which month has the highest shipping cost share?"
+**Schema context:** Table "Profit_Table1" with columns ["Month", "Gross Sales", "Shipping Cost", "Tax", "Net Profit"]
+**Output:**
+{
+"query_type": "list",
+"table": "Profit_Table1",
+"select_columns": ["Month", "Gross Sales", "Shipping Cost", "Tax", "Net Profit"],
+"limit": 20
+}
+
+**Question:** "Compare Shopify and WhatsApp profits for August"
+**Schema context:** Table "Profit_August_Table1" with columns ["Channel", "Gross Sales", "Net Profit", "Tax"]
+**Output:**
+{
+"query_type": "comparison",
+"table": "Profit_August_Table1",
+"comparison": {
+  "period_a": {"label": "Shopify", "table": "Profit_August_Table1", "column": "Net Profit", "filters": [{"column": "Channel", "operator": "LIKE", "value": "%Shopify%"}], "aggregation": "SUM"},
+  "period_b": {"label": "WhatsApp", "table": "Profit_August_Table1", "column": "Net Profit", "filters": [{"column": "Channel", "operator": "LIKE", "value": "%WhatsApp%"}], "aggregation": "SUM"},
   "compare_type": "difference"
 }
 }

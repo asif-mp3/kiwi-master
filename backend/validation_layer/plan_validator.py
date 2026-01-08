@@ -2,14 +2,7 @@ import json
 from jsonschema import validate, ValidationError
 from analytics_engine.metric_registry import MetricRegistry
 from analytics_engine.duckdb_manager import DuckDBManager
-
-
-def quote_identifier(name: str) -> str:
-    """Quote SQL identifiers that contain spaces, special characters, or start with a digit"""
-    # Must quote if: has spaces, special chars, or starts with a digit
-    if ' ' in name or any(char in name for char in ['-', '.', '(', ')']) or (name and name[0].isdigit()):
-        return f'"{name}"'
-    return name
+from utils.sql_utils import quote_identifier
 
 
 def get_table_schema(table_name: str) -> dict:
@@ -84,16 +77,40 @@ def validate_columns_exist(columns: list, table_name: str):
     # Allow wildcard
     if columns == ["*"]:
         return
-    
+
     table_schema = get_table_schema(table_name)
     available_columns = list(table_schema.keys())
-    
+
     # Create case-insensitive lookup
     column_map = {col.lower(): col for col in available_columns}
-    
+
     for column in columns:
         column_lower = column.lower()
-        if column_lower not in column_map:
+
+        # 1. Exact match (case-insensitive)
+        if column_lower in column_map:
+            continue
+
+        # 2. Partial/fuzzy match - LLM might use shortened column names
+        # e.g., "Homemade Powders" should match "Homemade Powders, Pastes & Pickles"
+        found = False
+        for actual_col in available_columns:
+            actual_lower = actual_col.lower()
+            # Check if LLM column is contained in actual column or vice versa
+            if column_lower in actual_lower or actual_lower in column_lower:
+                found = True
+                break
+
+        if not found:
+            # 3. Try fuzzy matching for typos (80% similarity)
+            from difflib import SequenceMatcher
+            for actual_col in available_columns:
+                ratio = SequenceMatcher(None, column_lower, actual_col.lower()).ratio()
+                if ratio >= 0.8:
+                    found = True
+                    break
+
+        if not found:
             raise ValueError(
                 f"Column '{column}' does not exist in table '{table_name}'. "
                 f"Available columns: {available_columns}"
@@ -102,23 +119,46 @@ def validate_columns_exist(columns: list, table_name: str):
 
 
 def validate_metric_table_mapping(metrics: list, table_name: str):
-    """Validate that metrics are used with their correct base table (only if metrics are defined)"""
+    """
+    Validate that metrics are used with their correct base table.
+
+    IMPORTANT: This function is lenient to handle LLM confusion between metrics and columns.
+    - If metric is actually a column name in the table, allow it (LLM put column in wrong field)
+    - If no metrics are registered, skip validation entirely
+    - Only raise error for truly invalid metrics that aren't columns either
+    """
     if not metrics:
         return
-    
+
     registry = MetricRegistry()
-    
-    # If no metrics are defined in the registry, skip validation
+
+    # If no metrics are defined in the registry, skip validation entirely
     if not registry.metrics:
         return
-    
+
+    # Get table columns for fallback check (LLM might confuse columns with metrics)
+    try:
+        table_schema = get_table_schema(table_name)
+        column_names_lower = [col.lower() for col in table_schema.keys()]
+    except Exception:
+        column_names_lower = []
+
     for metric in metrics:
+        # FIRST: Check if this "metric" is actually a column name (LLM confusion)
+        # This is common for lookup queries where LLM puts "Hours" in metrics instead of select_columns
+        if metric.lower() in column_names_lower:
+            # It's a column name, not a metric - allow it (will be handled by SQL compiler)
+            continue
+
+        # SECOND: Check if it's a registered metric
         if not registry.is_valid_metric(metric):
-            raise ValueError(f"Invalid metric requested: {metric}")
-        
+            # Not a registered metric AND not a column - this is an error
+            raise ValueError(f"Invalid metric requested: {metric}. It's not a registered metric or a column in the table.")
+
+        # Validate metric-table mapping
         metric_def = registry.get_metric(metric)
         expected_table = metric_def.get("base_table")
-        
+
         if expected_table and expected_table != table_name:
             raise ValueError(
                 f"Metric '{metric}' can only be used with table '{expected_table}', "
@@ -151,14 +191,23 @@ def validate_filter_values(filters: list, table_name: str):
         
         # Basic type validation
         col_type = table_schema[column].upper()
-        
+
         # Numeric columns should have numeric values (unless using LIKE)
         if any(t in col_type for t in ["INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC"]):
-            if operator != "LIKE" and not isinstance(value, (int, float)):
-                raise ValueError(
-                    f"Column '{column}' is numeric ({col_type}) but filter value is {type(value).__name__}"
-                )
-        
+            if operator != "LIKE":
+                # Allow string numbers - try to convert them
+                if isinstance(value, str):
+                    try:
+                        float(value)  # Validate it's convertible to number
+                    except ValueError:
+                        raise ValueError(
+                            f"Column '{column}' is numeric ({col_type}) but filter value '{value}' cannot be converted to a number"
+                        )
+                elif not isinstance(value, (int, float)):
+                    raise ValueError(
+                        f"Column '{column}' is numeric ({col_type}) but filter value is {type(value).__name__}"
+                    )
+
         # LIKE operator should only be used with string values
         if operator == "LIKE" and not isinstance(value, str):
             raise ValueError(
@@ -200,7 +249,20 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     
     if plan.get("metrics") is None:
         plan["metrics"] = []
-    
+
+    # --- CRITICAL FIX: Handle LLM confusion between metrics and select_columns ---
+    # For non-metric query types (lookup, filter, list, etc.), if LLM put column names
+    # in "metrics" instead of "select_columns", move them automatically.
+    # This prevents errors like "Lookup queries cannot use aggregation metrics"
+    query_type = plan.get("query_type", "metric")
+    if query_type in ["lookup", "filter", "list", "extrema_lookup", "rank"]:
+        metrics_to_move = plan.get("metrics", [])
+        if metrics_to_move:
+            # Move metrics to select_columns
+            existing_cols = plan.get("select_columns") or []
+            plan["select_columns"] = existing_cols + metrics_to_move
+            plan["metrics"] = []  # Clear metrics for non-metric queries
+
     if plan.get("filters") is None:
         plan["filters"] = []
     

@@ -45,3 +45,4 @@ backend/schema_store/
 
 # Claude Code plans
 .claude/
+nul

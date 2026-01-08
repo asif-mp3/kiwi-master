@@ -244,10 +244,11 @@ class TableRouter:
         High confidence if:
         - Single table scores much higher than others
         - Clear winner based on multiple matching criteria
+        - Best table's name strongly matches query keywords
 
         Low confidence if:
-        - Multiple tables with similar scores
-        - Low overall scores
+        - Multiple tables with very similar scores (within 10%)
+        - Low overall scores (under 20)
         """
         if not candidates:
             return 0.0
@@ -255,26 +256,45 @@ class TableRouter:
         if len(candidates) == 1:
             # Only one candidate - base confidence on score
             score = candidates[0][1]
-            return min(1.0, score / 50)  # 50+ score = max confidence
+            return min(1.0, score / 40)  # 40+ score = max confidence (lowered threshold)
 
         # Multiple candidates - check score gap
-        best_score = candidates[0][1]
+        best_table, best_score = candidates[0]
         second_score = candidates[1][1]
 
         # Score gap analysis
         if best_score <= 0:
             return 0.0
 
-        gap_ratio = (best_score - second_score) / best_score
+        gap = best_score - second_score
+        gap_ratio = gap / best_score
+
+        # HIGH CONFIDENCE CONDITIONS (no clarification needed):
+        # 1. Strong absolute score (>= 50) with reasonable gap (>= 15%)
+        if best_score >= 50 and gap_ratio >= 0.15:
+            return max(0.7, min(1.0, best_score / 60))
+
+        # 2. Very high score (>= 70) regardless of gap - clear keyword match
+        if best_score >= 70:
+            return max(0.75, min(1.0, best_score / 80))
+
+        # 3. Large gap (>= 30 points) - clear winner even if scores are moderate
+        if gap >= 30:
+            return max(0.7, min(1.0, gap / 50 + 0.5))
 
         # Base confidence from score magnitude
-        magnitude_confidence = min(1.0, best_score / 60)  # 60+ = max
+        magnitude_confidence = min(1.0, best_score / 50)  # 50+ = max
 
-        # Gap confidence
-        gap_confidence = min(1.0, gap_ratio * 2)  # 50% gap = max
+        # Gap confidence - penalize very close scores more heavily
+        if gap_ratio < 0.1:  # Within 10% - genuinely ambiguous
+            gap_confidence = 0.2
+        elif gap_ratio < 0.2:  # Within 20%
+            gap_confidence = 0.4
+        else:
+            gap_confidence = min(1.0, gap_ratio * 1.5)
 
         # Combined confidence
-        confidence = (magnitude_confidence * 0.6) + (gap_confidence * 0.4)
+        confidence = (magnitude_confidence * 0.5) + (gap_confidence * 0.5)
 
         return round(confidence, 2)
 
@@ -498,8 +518,31 @@ class RoutingResult:
 
     @property
     def needs_clarification(self) -> bool:
-        """Check if we should ask user for clarification"""
-        return 0.3 <= self.confidence < 0.6 and len(self.alternatives) > 1
+        """
+        Check if we should ask user for clarification.
+
+        Only ask for clarification when there's GENUINE ambiguity:
+        - Confidence is between 0.3 and 0.5 (very narrow range)
+        - Multiple alternatives with VERY close scores (within 10%)
+        - At least 2 alternatives to choose from
+        """
+        if self.confidence >= 0.5 or self.confidence < 0.3:
+            return False
+
+        if len(self.alternatives) < 2:
+            return False
+
+        # Check if top candidates have very close scores (genuine ambiguity)
+        if len(self.alternatives) >= 2:
+            best_score = self.alternatives[0][1]
+            second_score = self.alternatives[1][1]
+            if best_score > 0:
+                score_gap_ratio = (best_score - second_score) / best_score
+                # Only clarify if scores are within 15% of each other
+                if score_gap_ratio > 0.15:
+                    return False
+
+        return True
 
     @property
     def should_fallback(self) -> bool:

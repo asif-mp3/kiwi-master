@@ -31,23 +31,28 @@ export default function RootLayout({
             <rect width="100%" height="100%" filter="url(#noise)" />
           </svg>
         </div>
-        <Script
-          id="orchids-browser-logs"
-          src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/scripts/orchids-browser-logs.js"
-          strategy="afterInteractive"
-          data-orchids-project-id="8352d780-8e02-4864-b277-5d2436c7139e"
-        />
+        {/* External scripts - only load if environment variables are set */}
+        {process.env.NEXT_PUBLIC_ORCHIDS_SCRIPT_URL && (
+          <Script
+            id="orchids-browser-logs"
+            src={process.env.NEXT_PUBLIC_ORCHIDS_SCRIPT_URL}
+            strategy="afterInteractive"
+            data-orchids-project-id={process.env.NEXT_PUBLIC_ORCHIDS_PROJECT_ID || ''}
+          />
+        )}
         <ErrorReporter />
-        <Script
-          src="https://slelguoygbfzlpylpxfs.supabase.co/storage/v1/object/public/scripts//route-messenger.js"
-          strategy="afterInteractive"
-          data-target-origin="*"
-          data-message-type="ROUTE_CHANGE"
-          data-include-search-params="true"
-          data-only-in-iframe="true"
-          data-debug="true"
-          data-custom-data='{"appName": "YourApp", "version": "1.0.0", "greeting": "hi"}'
-        />
+        {process.env.NEXT_PUBLIC_ROUTE_MESSENGER_URL && (
+          <Script
+            src={process.env.NEXT_PUBLIC_ROUTE_MESSENGER_URL}
+            strategy="afterInteractive"
+            data-target-origin="*"
+            data-message-type="ROUTE_CHANGE"
+            data-include-search-params="true"
+            data-only-in-iframe="true"
+            data-debug={process.env.NODE_ENV === 'development' ? 'true' : 'false'}
+            data-custom-data={JSON.stringify({ appName: 'Thara.ai', version: '2.0.0' })}
+          />
+        )}
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           {children}
         </ThemeProvider>

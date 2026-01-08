@@ -85,9 +85,13 @@ def initialize_gemini_client(config):
     model_name = config.get("model", "gemini-2.5-pro")
     temperature = config.get("temperature", 0.0)
     
+    # Limit output tokens for faster response (JSON plans are concise)
+    max_tokens = config.get("planner_max_tokens", 500)
+
     generation_config = {
         "temperature": temperature,
         "response_mime_type": "application/json",
+        "max_output_tokens": max_tokens,
     }
     
     # Load and inject permanent memory into system prompt
@@ -173,7 +177,7 @@ def call_llm_with_timeout(model, prompt: str, timeout_seconds: int = 60):
             raise TimeoutError(f"LLM request timed out after {timeout_seconds} seconds")
 
 
-def generate_plan(question: str, schema_context: list, max_retries: int = None) -> dict:
+def generate_plan(question: str, schema_context: list, max_retries: int = None, entities: dict = None) -> dict:
     """
     Generate query plan using Gemini LLM.
     
@@ -206,9 +210,26 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None) 
     # Format schema context
     schema_text = format_schema_context(schema_context)
     
+    # Build entity hints if available
+    entity_hints = ""
+    if entities:
+        hint_parts = []
+        if entities.get('location'):
+            hint_parts.append(f"- Filter by location/area: {entities['location']}")
+        if entities.get('category'):
+            hint_parts.append(f"- Filter by category: {entities['category']}")
+        if entities.get('month'):
+            hint_parts.append(f"- Time context: {entities['month']}")
+        if entities.get('metric'):
+            hint_parts.append(f"- Metric focus: {entities['metric']}")
+        if entities.get('cross_table_intent'):
+            hint_parts.append("- User wants data ACROSS multiple time periods (trend analysis)")
+        if hint_parts:
+            entity_hints = "\n**Extracted Entities (use these for filters):**\n" + "\n".join(hint_parts) + "\n"
+
     # Build user prompt
     user_prompt = f"""{schema_text}
-
+{entity_hints}
 User Question: {question}
 
 Output the query plan as JSON:"""

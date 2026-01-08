@@ -1,13 +1,6 @@
 import duckdb
 import yaml
-
-
-def quote_identifier(name: str) -> str:
-    """Quote SQL identifiers that contain spaces, special characters, or start with a digit"""
-    # Must quote if: has spaces, special chars, or starts with a digit
-    if ' ' in name or any(char in name for char in ['-', '.', '(', ')']) or (name and name[0].isdigit()):
-        return f'"{name}"'
-    return name
+from utils.sql_utils import quote_identifier
 
 
 def _infer_semantic_type(column_name: str, column_type: str):
