@@ -4,8 +4,8 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppState } from '@/lib/hooks';
 import { MessageBubble } from './MessageBubble';
-import { MessageSkeleton } from './MessageSkeleton';
 import { VoiceVisualizer } from './VoiceVisualizer';
+import { ProcessingStatus } from './ProcessingStatus';
 import { api } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -209,6 +209,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   // Search state for sidebar
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Processing status tracking for UI feedback
+  const [isProcessingQuery, setIsProcessingQuery] = useState(false);
+  const [isCurrentInputVoice, setIsCurrentInputVoice] = useState(false);
+  const [hasTamilInput, setHasTamilInput] = useState(false);
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -253,7 +258,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
 
-  const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false) => {
+  const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false, isVoiceInput: boolean = false) => {
     if (!activeChatId) {
       createNewChat();
     }
@@ -265,6 +270,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
       return;
     }
+
+    // Detect Tamil characters in input
+    const containsTamil = /[\u0B80-\u0BFF]/.test(content);
+
+    // Set processing state for UI feedback
+    setIsProcessingQuery(true);
+    setIsCurrentInputVoice(isVoiceInput);
+    setHasTamilInput(containsTamil);
 
     addMessage(content, 'user');
 
@@ -316,6 +329,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         }
       }
       addMessage(errorMessage, 'assistant');
+    } finally {
+      // Reset processing state
+      setIsProcessingQuery(false);
+      setIsCurrentInputVoice(false);
+      setHasTamilInput(false);
     }
   };
 
@@ -360,9 +378,23 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         URL.revokeObjectURL(audioUrl);
       };
 
-      await audio.play();
-      audio.playbackRate = 1.3;  // 50% faster playback
-      console.log('▶️ TTS playback started at 1.5x speed');
+      try {
+        await audio.play();
+        audio.playbackRate = 1.3;  // 30% faster playback
+        console.log('▶️ TTS playback started at 1.3x speed');
+      } catch (playError) {
+        // Handle autoplay policy - browser blocks audio without user interaction
+        if (playError instanceof Error && playError.name === 'NotAllowedError') {
+          console.warn('⚠️ Autoplay blocked by browser policy - user can click Play button');
+          // Don't show error toast - user can manually click Play on the message
+          setIsSpeaking(false);
+          setSpeakingMessageId(null);
+          audioRef.current = null;
+          URL.revokeObjectURL(audioUrl);
+          return; // Exit silently - user can manually play
+        }
+        throw playError; // Re-throw other errors
+      }
 
     } catch (error) {
       console.error('❌ TTS error:', error);
@@ -410,7 +442,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   };
 
+  // Ref to prevent double-clicking on mic button
+  const isTogglingVoiceRef = useRef(false);
+
   const handleVoiceToggle = async () => {
+    // Prevent double-click issues
+    if (isTogglingVoiceRef.current) {
+      console.log('⚠️ Voice toggle already in progress, ignoring...');
+      return;
+    }
+
     if (!activeChat) {
       // Trigger new chat or mandatory dataset prompt
       if (!isDatasetModalOpen) setIsDatasetModalOpen(true);
@@ -425,8 +466,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       return;
     }
 
+    // Set toggle lock
+    isTogglingVoiceRef.current = true;
+
     const newIsRecording = !isRecording;
     setIsRecording(newIsRecording);
+
+    // Release lock after a short delay
+    setTimeout(() => {
+      isTogglingVoiceRef.current = false;
+    }, 300);
 
     if (newIsRecording) { // Started listening
       console.log('🎤 Started listening...');
@@ -475,9 +524,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             console.log('🔊 Enabling voice mode for TTS...');
             setIsVoiceMode(true);
 
-            // Send transcribed message WITH TTS enabled
+            // Send transcribed message WITH TTS enabled and mark as voice input
             console.log('📤 Sending transcribed message with TTS...');
-            await handleSendMessage(text, true); // Pass true to enable TTS
+            await handleSendMessage(text, true, true); // TTS enabled + voice input flag
             setIsProcessingVoice(false); // Stop loading UI
 
             // Keep voice mode enabled for a bit, then disable
@@ -1116,6 +1165,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                     <h1 className="text-4xl font-display font-bold tracking-tight">
                       {isRecording ? (
                         <span className="text-violet-400">Listening<span className="animate-pulse">...</span></span>
+                      ) : (isProcessingVoice || isProcessingQuery) ? (
+                        <span className="text-cyan-400">Processing<span className="animate-pulse">...</span></span>
                       ) : isSpeaking ? (
                         <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
                       ) : (
@@ -1125,21 +1176,43 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                     <p className="text-zinc-500 text-sm font-medium max-w-md mx-auto">
                       {isRecording
                         ? "Your voice is being captured securely"
-                        : isProcessingVoice
-                          ? "Processing your request..."
+                        : (isProcessingVoice || isProcessingQuery)
+                          ? "Thara is working on your request"
                           : isSpeaking
                             ? "Speaking... tap the button to stop"
                             : "Tap the button below to start a voice conversation"}
                     </p>
                   </motion.div>
 
-                  {/* Voice Visualizer */}
-                  <VoiceVisualizer isRecording={isRecording} isSpeaking={isSpeaking} />
+                  {/* Voice Visualizer - show when not processing */}
+                  {!(isProcessingVoice || isProcessingQuery) && (
+                    <VoiceVisualizer isRecording={isRecording} isSpeaking={isSpeaking} />
+                  )}
+
+                  {/* Processing Status - show when processing */}
+                  <AnimatePresence>
+                    {(isProcessingVoice || isProcessingQuery) && (
+                      <ProcessingStatus
+                        isProcessing={true}
+                        isVoiceInput={isCurrentInputVoice}
+                        hasTamilInput={hasTamilInput}
+                        variant="voice"
+                      />
+                    )}
+                  </AnimatePresence>
 
                   {/* Voice Button - supports push-to-talk on mobile */}
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
+                    animate={isRecording ? {
+                      scale: [1, 1.05, 1],
+                    } : {}}
+                    transition={isRecording ? {
+                      duration: 1.5,
+                      repeat: Infinity,
+                      ease: "easeInOut"
+                    } : {}}
                     onClick={isSpeaking ? stopTextToSpeech : undefined}
                     onPointerDown={(e) => {
                       if (isSpeaking) return;
@@ -1172,6 +1245,36 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
                       }`}
                   >
+                    {/* Pulsing ring when recording */}
+                    {isRecording && (
+                      <motion.span
+                        className="absolute inset-0 rounded-full bg-violet-500"
+                        animate={{
+                          scale: [1, 1.5],
+                          opacity: [0.4, 0]
+                        }}
+                        transition={{
+                          duration: 1.2,
+                          repeat: Infinity,
+                          ease: "easeOut"
+                        }}
+                      />
+                    )}
+                    {/* Pulsing ring when speaking */}
+                    {isSpeaking && (
+                      <motion.span
+                        className="absolute inset-0 rounded-full bg-red-500"
+                        animate={{
+                          scale: [1, 1.5],
+                          opacity: [0.4, 0]
+                        }}
+                        transition={{
+                          duration: 1.2,
+                          repeat: Infinity,
+                          ease: "easeOut"
+                        }}
+                      />
+                    )}
                     <AnimatePresence mode="wait">
                       {isSpeaking ? (
                         <motion.div
@@ -1319,10 +1422,17 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         />
                       ))
                     )}
-                    {/* Show skeleton while processing voice or waiting for response */}
-                    {isProcessingVoice && (
-                      <MessageSkeleton />
-                    )}
+                    {/* Show processing status while waiting for response */}
+                    <AnimatePresence>
+                      {(isProcessingVoice || isProcessingQuery) && (
+                        <ProcessingStatus
+                          isProcessing={true}
+                          isVoiceInput={isCurrentInputVoice}
+                          hasTamilInput={hasTamilInput}
+                          variant="chat"
+                        />
+                      )}
+                    </AnimatePresence>
                     {isSpeaking && (
                       <motion.div
                         initial={{ opacity: 0, y: 10 }}
@@ -1364,40 +1474,69 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
-                        onPointerDown={() => {
-                          // Start recording on touch/hold
-                          if (!isRecording) {
-                            isPushToTalkRef.current = true;
-                            handleVoiceToggle();
-                          }
+                        animate={isRecording ? {
+                          scale: [1, 1.1, 1],
+                          boxShadow: [
+                            '0 0 0 0 rgba(139, 92, 246, 0.4)',
+                            '0 0 0 10px rgba(139, 92, 246, 0)',
+                            '0 0 0 0 rgba(139, 92, 246, 0)'
+                          ]
+                        } : {}}
+                        transition={isRecording ? {
+                          duration: 1.2,
+                          repeat: Infinity,
+                          ease: "easeInOut"
+                        } : {}}
+                        onClick={() => {
+                          // Click to toggle recording on/off
+                          handleVoiceToggle();
                         }}
-                        onPointerUp={() => {
-                          // Stop recording on release (only if push-to-talk)
-                          if (isPushToTalkRef.current && isRecording) {
-                            isPushToTalkRef.current = false;
-                            handleVoiceToggle();
-                          }
-                        }}
-                        onPointerLeave={() => {
-                          // Stop if finger/cursor leaves the button while recording
-                          if (isPushToTalkRef.current && isRecording) {
-                            isPushToTalkRef.current = false;
-                            handleVoiceToggle();
-                          }
-                        }}
-                        aria-label={isRecording ? "Release to stop recording" : "Hold to record"}
+                        aria-label={isRecording ? "Stop recording" : "Start recording"}
                         className={cn(
-                          "w-9 h-9 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl transition-all duration-300 flex items-center justify-center flex-shrink-0 touch-none",
+                          "w-9 h-9 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl transition-all duration-300 flex items-center justify-center flex-shrink-0 relative",
                           isRecording
-                            ? 'bg-violet-500 shadow-[0_0_30px_rgba(139,92,246,0.5)]'
+                            ? 'bg-violet-500 shadow-[0_0_30px_rgba(139,92,246,0.6)]'
                             : 'bg-secondary border border-border hover:border-primary/50'
                         )}
                       >
-                        {isRecording ? (
-                          <Square className="w-4 h-4 sm:w-5 sm:h-5 text-white fill-current" />
-                        ) : (
-                          <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-muted-foreground" />
+                        {/* Pulsing ring when recording */}
+                        {isRecording && (
+                          <motion.span
+                            className="absolute inset-0 rounded-lg sm:rounded-xl bg-violet-500"
+                            animate={{
+                              scale: [1, 1.4],
+                              opacity: [0.5, 0]
+                            }}
+                            transition={{
+                              duration: 1,
+                              repeat: Infinity,
+                              ease: "easeOut"
+                            }}
+                          />
                         )}
+                        <AnimatePresence mode="wait">
+                          {isRecording ? (
+                            <motion.div
+                              key="recording-stop"
+                              initial={{ scale: 0, rotate: -90 }}
+                              animate={{ scale: 1, rotate: 0 }}
+                              exit={{ scale: 0, rotate: 90 }}
+                              transition={{ duration: 0.2 }}
+                            >
+                              <Square className="w-4 h-4 sm:w-5 sm:h-5 text-white fill-current" />
+                            </motion.div>
+                          ) : (
+                            <motion.div
+                              key="mic-idle"
+                              initial={{ scale: 0, rotate: 90 }}
+                              animate={{ scale: 1, rotate: 0 }}
+                              exit={{ scale: 0, rotate: -90 }}
+                              transition={{ duration: 0.2 }}
+                            >
+                              <Mic className="w-4 h-4 sm:w-5 sm:h-5 text-muted-foreground" />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </motion.button>
                       <motion.button
                         whileHover={{ scale: 1.05 }}
