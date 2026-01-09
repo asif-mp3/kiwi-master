@@ -11,11 +11,14 @@ Updated with:
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import tempfile
 import os
+import asyncio
+import json
 from pathlib import Path
 from typing import Optional
+from pydantic import BaseModel
 
 from api.models import (
     LoadDataRequest,
@@ -511,6 +514,119 @@ async def clear_context(request: dict = None):
 
 
 # =============================================================================
+# Real-time Sheet Update Endpoints (Webhook + SSE)
+# =============================================================================
+
+class SheetUpdateRequest(BaseModel):
+    """Request model for sheet update webhook."""
+    spreadsheetId: str
+    sheetName: Optional[str] = None
+    updatedAt: Optional[str] = None
+
+
+@app.post("/api/sheet-update")
+async def sheet_update_webhook(request: SheetUpdateRequest):
+    """
+    Webhook endpoint for Google Apps Script notifications.
+    
+    Called when sheet data changes - queues async refresh.
+    Returns immediately (no blocking).
+    """
+    try:
+        from utils.webhook_handler import get_webhook_handler
+        
+        handler = get_webhook_handler()
+        queued = handler.queue_update(
+            spreadsheet_id=request.spreadsheetId,
+            sheet_name=request.sheetName
+        )
+        
+        print(f"[Webhook] Received update for {request.sheetName or 'all sheets'}")
+        
+        return {
+            "success": True,
+            "queued": queued,
+            "message": "Update queued for processing"
+        }
+    except Exception as e:
+        print(f"[Webhook] Error: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/api/events/data-refresh")
+async def data_refresh_events():
+    """
+    Server-Sent Events (SSE) endpoint for real-time data refresh notifications.
+    
+    Frontend connects here to receive instant updates when sheet data changes.
+    """
+    from utils.webhook_handler import get_webhook_handler
+    
+    handler = get_webhook_handler()
+    sub_queue = handler.subscribe()
+    
+    async def event_generator():
+        try:
+            # Send initial heartbeat
+            yield f"data: {json.dumps({'type': 'connected'})}
+
+"
+            
+            while True:
+                try:
+                    # Wait for events with timeout (for heartbeat)
+                    event = await asyncio.wait_for(
+                        sub_queue.get(),
+                        timeout=30.0
+                    )
+                    yield f"data: {json.dumps(event)}
+
+"
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}
+
+"
+        except asyncio.CancelledError:
+            handler.unsubscribe(sub_queue)
+            raise
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
+
+@app.get("/api/refresh-status")
+async def get_refresh_status():
+    """Get the last refresh timestamp and status."""
+    try:
+        from utils.webhook_handler import get_webhook_handler
+        
+        handler = get_webhook_handler()
+        last_refresh = handler.get_last_refresh()
+        
+        return {
+            "success": True,
+            "last_refresh": last_refresh,
+            "has_pending_updates": False  # Could check dirty sheets here
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# =============================================================================
 # Lifecycle Events
 # =============================================================================
 
@@ -524,13 +640,16 @@ async def startup_event():
     print("  New Features:")
     print("  - Intelligent Table Routing (no more top_k=50!)")
     print("  - Self-Healing Query Execution")
+    print("  - Real-time Sheet Updates (webhook + SSE)")
     print("  - Thara Personality")
     print("  - Conversation Context")
     print("  - Tamil Language Support")
     print()
     print("  Endpoints:")
-    print("  - POST /api/load-dataset    (with profiling)")
-    print("  - POST /api/query           (with healing)")
+    print("  - POST /api/load-dataset       (with profiling)")
+    print("  - POST /api/query              (with healing)")
+    print("  - POST /api/sheet-update       (webhook receiver)")
+    print("  - GET  /api/events/data-refresh (SSE stream)")
     print("  - POST /api/transcribe")
     print("  - POST /api/text-to-speech")
     print("  - GET  /api/onboarding/start")
@@ -561,6 +680,15 @@ async def startup_event():
     snapshots_dir = Path("data_sources/snapshots")
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Snapshots dir: OK")
+    
+    # Start webhook handler background worker
+    try:
+        from utils.webhook_handler import get_webhook_handler
+        handler = get_webhook_handler()
+        handler.start_worker()
+        print(f"  Webhook handler: OK (background worker started)")
+    except Exception as e:
+        print(f"  WARNING: Webhook handler failed to start: {e}")
 
     print()
     print("=" * 60)
@@ -570,6 +698,15 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup resources on shutdown"""
     print("[API] Kiwi-RAG API shutting down...")
+    
+    # Stop webhook handler background worker
+    try:
+        from utils.webhook_handler import get_webhook_handler
+        handler = get_webhook_handler()
+        handler.stop_worker()
+        print("[API] Webhook handler stopped")
+    except Exception as e:
+        print(f"[API] Warning: Error stopping webhook handler: {e}")
 
 
 if __name__ == "__main__":

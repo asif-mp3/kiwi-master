@@ -252,7 +252,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const isPushToTalkRef = useRef(false);
 
   // Ref to hold the latest handleVoiceToggle function (avoids stale closure in useEffect)
-  const handleVoiceToggleRef = useRef<() => void>(() => {});
+  const handleVoiceToggleRef = useRef<() => void>(() => { });
 
   const activeChat = getCurrentChat();
 
@@ -273,6 +273,70 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       setIsConnectionVerified(false);
     }
   }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
+
+  // EFFECT: SSE listener for real-time data refresh notifications
+  // Connects to backend webhook handler for instant updates when Google Sheet changes
+  useEffect(() => {
+    // Only connect if we have a dataset loaded
+    if (!activeChat?.datasetStatus || activeChat.datasetStatus !== 'ready') {
+      return;
+    }
+
+    let eventSource: EventSource | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+
+    const connectSSE = () => {
+      try {
+        // Connect to SSE endpoint
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        eventSource = new EventSource(`${baseUrl}/api/events/data-refresh`);
+
+        eventSource.onopen = () => {
+          console.log('🔗 SSE connected for real-time updates');
+        };
+
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'data_refreshed') {
+              console.log('📊 Data refresh notification received:', data);
+              toast.info("📊 Data updated", {
+                description: data.sheet_name
+                  ? `Sheet "${data.sheet_name}" was refreshed`
+                  : "Google Sheet data was refreshed"
+              });
+            } else if (data.type === 'connected') {
+              console.log('✅ SSE connection confirmed');
+            }
+            // Ignore heartbeat messages
+          } catch (e) {
+            console.warn('⚠️ Failed to parse SSE message:', e);
+          }
+        };
+
+        eventSource.onerror = (error) => {
+          console.warn('⚠️ SSE connection error, will retry:', error);
+          eventSource?.close();
+          // Attempt to reconnect after 5 seconds
+          reconnectTimeout = setTimeout(connectSSE, 5000);
+        };
+      } catch (error) {
+        console.warn('⚠️ Failed to create SSE connection:', error);
+      }
+    };
+
+    connectSSE();
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+    };
+  }, [activeChat?.datasetStatus]);
 
   const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false, isVoiceInput: boolean = false) => {
     if (!activeChatId) {
@@ -1262,8 +1326,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                       }
                     }}
                     aria-label={isRecording ? "Release to stop recording" : isSpeaking ? "Stop speaking" : "Hold to record"}
-                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center touch-none ${
-                      isRecording
+                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center touch-none ${isRecording
                         ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
                         : isSpeaking
                           ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'

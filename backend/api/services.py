@@ -983,11 +983,81 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # NOTE: Removed hardcoded "Freshggies" STT correction
         # The system should work with any business name via ProfileStore dynamic learning
 
-        # === FAST PATH: Greetings & Conversational ===
+        # === PARALLEL FAST PATH DETECTION ===
+        # Run greeting, memory detection, schema inquiry, and translation in parallel
+        # This saves ~1400ms for Tamil queries (memory: 1674ms || translation: 1466ms)
         _step_start = _time.time()
-        print("\n[STEP 1/8] GREETING DETECTION...")
-        if is_greeting(question):
-            print("  ✓ Greeting detected - using fast path")
+        print("\n[STEP 1/8] PARALLEL DETECTION (greeting, memory, schema, translation)...")
+        
+        # Detect Tamil FIRST (needed for translation decision)
+        is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        
+        # Define tasks to run in parallel
+        def _detect_greeting_task():
+            return is_greeting(question)
+        
+        def _detect_memory_task():
+            return detect_memory_intent(question)
+        
+        def _detect_schema_task():
+            return detect_schema_inquiry(question)
+        
+        def _translate_task():
+            if is_tamil:
+                return translate_to_english(question)
+            return question
+        
+        # Run all detection tasks in parallel
+        greeting_result = None
+        memory_result = None
+        schema_result = None
+        processing_query = question
+        
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix='detect') as executor:
+            greeting_future = executor.submit(_detect_greeting_task)
+            memory_future = executor.submit(_detect_memory_task)
+            schema_future = executor.submit(_detect_schema_task)
+            translation_future = executor.submit(_translate_task)
+            
+            # Collect results (with timeout protection)
+            try:
+                greeting_result = greeting_future.result(timeout=5)
+            except Exception as e:
+                print(f"  ⚠️ Greeting detection failed: {e}")
+                greeting_result = False
+            
+            try:
+                memory_result = memory_future.result(timeout=5)
+            except Exception as e:
+                print(f"  ⚠️ Memory detection failed: {e}")
+                memory_result = None
+            
+            try:
+                schema_result = schema_future.result(timeout=5)
+            except Exception as e:
+                print(f"  ⚠️ Schema detection failed: {e}")
+                schema_result = None
+            
+            try:
+                processing_query = translation_future.result(timeout=5)
+            except Exception as e:
+                print(f"  ⚠️ Translation failed: {e}")
+                processing_query = question  # Fallback to original
+        
+        parallel_elapsed = (_time.time() - _step_start) * 1000
+        print(f"  ✓ Parallel detection completed in {parallel_elapsed:.0f}ms")
+        print(f"    - Greeting: {greeting_result}")
+        print(f"    - Memory intent: {memory_result.get('has_memory_intent', False) if memory_result else False}")
+        print(f"    - Schema inquiry: {schema_result is not None}")
+        print(f"    - Tamil detected: {is_tamil}")
+        if is_tamil:
+            print(f"    - Translation: {processing_query[:50]}...")
+        _log_timing("parallel_detection", _step_start)
+
+        # === FAST PATH: Greeting ===
+        _step_start = _time.time()
+        if greeting_result:
+            print("\n[FAST PATH] Greeting detected")
             _log_timing("greeting_detection", _step_start)
             response = get_greeting_response(question)
             user_name = ctx.get_user_name() or app_state.personality.user_name
@@ -1012,15 +1082,12 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'data_refreshed': False,
                 'is_greeting': True
             }
-        print("  ✗ Not a greeting")
         _log_timing("greeting_detection", _step_start)
 
         # === FAST PATH: Memory Intent ===
         _step_start = _time.time()
-        print("\n[STEP 2/8] MEMORY INTENT DETECTION...")
-        memory_result = detect_memory_intent(question)
         if memory_result and memory_result.get("has_memory_intent"):
-            print(f"  ✓ Memory intent detected!")
+            print("\n[FAST PATH] Memory intent detected")
             category = memory_result["category"]
             key = memory_result["key"]
             value = memory_result["value"]
@@ -1087,23 +1154,18 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     'data_refreshed': False,
                     'is_memory_storage': True
                 }
-        else:
-            print("  ✗ No memory intent")
         _log_timing("memory_detection", _step_start)
 
         # === FAST PATH: Schema Inquiry ===
         _step_start = _time.time()
         # Handles questions like "what is sheet 1", "describe the data", "what tables do I have"
         # Uses template-based responses - NO LLM (prevents hallucination)
-        print("\n[STEP 3/8] SCHEMA INQUIRY DETECTION...")
-        schema_intent = detect_schema_inquiry(question)
-        if schema_intent:
-            print(f"  ✓ Schema inquiry detected: {schema_intent}")
-            table_ref = schema_intent.get('table')
-            is_detailed = schema_intent.get('detailed', False)
+        if schema_result:
+            print(f"\n[FAST PATH] Schema inquiry detected: {schema_result}")
+            table_ref = schema_result.get('table')
+            is_detailed = schema_result.get('detailed', False)
 
             # Get user language preference
-            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
             language = 'ta' if is_tamil else 'en'
 
             # Generate response from profile store (template-based, no LLM)
@@ -1143,20 +1205,14 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'data_refreshed': False,
                 'is_schema_inquiry': True
             }
-        else:
-            print("  ✗ Not a schema inquiry")
         _log_timing("schema_inquiry", _step_start)
 
-        # === TRANSLATION LAYER (PRE-PROCESS) ===
+        # Translation already done in parallel, just log it
         _step_start = _time.time()
-        print("\n[STEP 4/8] TRANSLATION LAYER...")
-        processing_query = question
-        is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
-
+        print("\n[STEP 4/8] TRANSLATION (already completed in parallel)...")
         if is_tamil:
             print(f"  ✓ Tamil detected in input")
             print(f"    Original: {question[:50]}...")
-            processing_query = translate_to_english(question)
             print(f"    Translated: {processing_query[:50]}...")
             ctx.set_language('ta')
         else:
