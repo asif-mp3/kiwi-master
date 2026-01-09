@@ -51,6 +51,73 @@ import numpy as np
 import math
 
 
+def _extract_result_values(result, plan: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract key result values from a query result for pronoun resolution in follow-ups.
+
+    For extrema_lookup/rank queries, extracts the "winning" value so "that state",
+    "that branch", etc. can be resolved in follow-up questions.
+
+    Example:
+    - Query: "Which state has highest revenue?"
+    - Result: [{"State": "West Bengal", "Revenue": 1780000}]
+    - Extracted: {"State": "West Bengal", "Revenue": 1780000}
+
+    Next query: "In that state, which branch..."
+    → "that state" resolves to "West Bengal"
+    """
+    if result is None or not hasattr(result, '__len__') or len(result) == 0:
+        return {}
+
+    query_type = plan.get('query_type', '')
+    result_values = {}
+
+    try:
+        # For extrema_lookup or rank with limit 1, extract the top result
+        if query_type in ['extrema_lookup', 'rank', 'filter', 'lookup']:
+            if hasattr(result, 'iloc'):
+                first_row = result.iloc[0]
+            elif hasattr(result, '__getitem__'):
+                first_row = result[0] if isinstance(result, list) else result
+            else:
+                return {}
+
+            # Extract dimension columns (likely what user will reference)
+            # Priority: State, Branch, Area, Category, then other dimensions
+            priority_patterns = [
+                'state', 'branch', 'area', 'region', 'location', 'city',
+                'category', 'product', 'item', 'name', 'department'
+            ]
+
+            if hasattr(first_row, 'items'):
+                # Dict-like row
+                for col, val in first_row.items():
+                    col_lower = str(col).lower()
+                    # Include dimension columns
+                    for pattern in priority_patterns:
+                        if pattern in col_lower:
+                            result_values[col] = val
+                            break
+                    # Also include the metric column (for context)
+                    if any(m in col_lower for m in ['revenue', 'sales', 'profit', 'total', 'amount', 'value']):
+                        result_values[col] = val
+            elif hasattr(first_row, 'index'):
+                # Pandas Series
+                for col in first_row.index:
+                    col_lower = str(col).lower()
+                    for pattern in priority_patterns:
+                        if pattern in col_lower:
+                            result_values[col] = first_row[col]
+                            break
+                    if any(m in col_lower for m in ['revenue', 'sales', 'profit', 'total', 'amount', 'value']):
+                        result_values[col] = first_row[col]
+
+    except Exception as e:
+        print(f"  Warning: Could not extract result values: {e}")
+
+    return result_values
+
+
 def _sanitize_for_json(data):
     """
     Convert numpy/pandas types to native Python types for JSON serialization.
@@ -647,6 +714,11 @@ def _execute_with_forced_table(
 
         # Update context
         from utils.query_context import QueryTurn
+        # Extract key result values for pronoun resolution
+        result_values = _extract_result_values(result, plan) if result is not None else {}
+        if result_values:
+            print(f"  ✓ Extracted result values for context: {result_values}")
+
         turn = QueryTurn(
             question=original_question,
             resolved_question=processing_query,
@@ -656,7 +728,8 @@ def _execute_with_forced_table(
             result_summary=f"{row_count} rows returned",
             sql_executed=final_sql,
             was_followup=False,
-            confidence=1.0  # High confidence since user chose
+            confidence=1.0,  # High confidence since user chose
+            result_values=result_values  # NEW: For "that state", "that branch" resolution
         )
         ctx.add_turn(turn)
 
@@ -745,49 +818,28 @@ def _generate_clarification_message(
         context_parts.append(entities['category'])
     context_str = " ".join(context_parts) if context_parts else "your query"
 
-    # Generate options with brief descriptions
+    # Generate clean options - just table names
     options = []
     for i, table_name in enumerate(candidates[:3], 1):  # Max 3 options
-        profile = profile_store.get_profile(table_name) if profile_store else None
-        if profile:
-            table_type = profile.get('table_type', 'data')
-            granularity = profile.get('granularity', '')
-            row_count = profile.get('row_count', 0)
-
-            # Create brief description
-            desc_parts = []
-            if granularity:
-                desc_parts.append(f"{granularity} level")
-            if row_count:
-                desc_parts.append(f"{row_count:,} rows")
-            desc = f" ({', '.join(desc_parts)})" if desc_parts else ""
-
-            # Make table name more readable
-            display_name = table_name.replace('_', ' ').replace('-', ' ')
-            options.append(f"{i}. {display_name}{desc}")
-        else:
-            display_name = table_name.replace('_', ' ').replace('-', ' ')
-            options.append(f"{i}. {display_name}")
+        display_name = table_name.replace('_', ' ').replace('-', ' ')
+        options.append(f"{i}. {display_name}")
 
     options_text = "\n".join(options)
 
     if is_tamil:
-        # Tamil clarification message
-        message = f"""உங்கள் கேள்விக்கு "{context_str}" பல அட்டவணைகள் பொருந்துகின்றன.
-
-எந்த அட்டவணையை நீங்கள் குறிப்பிடுகிறீர்கள்?
+        # Tamil clarification message - crispy
+        message = f"""எந்த அட்டவணை?
 
 {options_text}
 
-எண் அல்லது பெயரை தட்டச்சு செய்யவும்."""
+எண்ணை சொல்லுங்கள்."""
     else:
-        message = f"""I found multiple tables that could answer your question about {context_str}.
-
-Which one would you like me to use?
+        # English clarification message - crispy
+        message = f"""Which table?
 
 {options_text}
 
-Just type the number or name."""
+Say the number."""
 
     return message
 
@@ -808,6 +860,17 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
     8. Self-healing execution
     9. Personality-enhanced explanation
     """
+    import time as _time
+    _query_start = _time.time()
+    _timings = {}
+
+    def _log_timing(step_name: str, step_start: float):
+        """Log timing for a step and update cumulative total."""
+        elapsed = (_time.time() - step_start) * 1000
+        cumulative = (_time.time() - _query_start) * 1000
+        _timings[step_name] = elapsed
+        print(f"  ⏱️  {step_name}: {elapsed:.0f}ms (total: {cumulative:.0f}ms)")
+
     try:
         # === FLOW LOGGING START ===
         print("\n" + "=" * 60)
@@ -815,9 +878,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print("=" * 60)
 
         # Initialize components
+        _step_start = _time.time()
         print("\n[STEP 0/8] INITIALIZING...")
         app_state.initialize()
         print("  ✓ App state initialized")
+        _log_timing("initialization", _step_start)
 
         # Get conversation context FIRST (needed for clarification check)
         ctx = app_state.conversation_manager.get_context(conversation_id)
@@ -919,9 +984,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # The system should work with any business name via ProfileStore dynamic learning
 
         # === FAST PATH: Greetings & Conversational ===
+        _step_start = _time.time()
         print("\n[STEP 1/8] GREETING DETECTION...")
         if is_greeting(question):
             print("  ✓ Greeting detected - using fast path")
+            _log_timing("greeting_detection", _step_start)
             response = get_greeting_response(question)
             user_name = ctx.get_user_name() or app_state.personality.user_name
             # Only personalize if we have a real name (not empty or placeholder)
@@ -929,7 +996,12 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 response = response.replace("Hi!", f"Hi {user_name}!")
                 response = response.replace("Hello!", f"Hello {user_name}!")
 
+            _total_time = (_time.time() - _query_start) * 1000
             print("  → Returning greeting response")
+            print(f"\n  ⏱️  TIMING SUMMARY (GREETING FAST PATH):")
+            for step, ms in _timings.items():
+                print(f"      {step}: {ms:.0f}ms")
+            print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
             print("=" * 60 + "\n")
             return {
                 'success': True,
@@ -941,8 +1013,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'is_greeting': True
             }
         print("  ✗ Not a greeting")
+        _log_timing("greeting_detection", _step_start)
 
         # === FAST PATH: Memory Intent ===
+        _step_start = _time.time()
         print("\n[STEP 2/8] MEMORY INTENT DETECTION...")
         memory_result = detect_memory_intent(question)
         if memory_result and memory_result.get("has_memory_intent"):
@@ -1015,8 +1089,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 }
         else:
             print("  ✗ No memory intent")
+        _log_timing("memory_detection", _step_start)
 
         # === FAST PATH: Schema Inquiry ===
+        _step_start = _time.time()
         # Handles questions like "what is sheet 1", "describe the data", "what tables do I have"
         # Uses template-based responses - NO LLM (prevents hallucination)
         print("\n[STEP 3/8] SCHEMA INQUIRY DETECTION...")
@@ -1056,6 +1132,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     response = f"{user_name}, here's what I found:\n\n{response}"
 
             print("  → Returning schema info response")
+            _log_timing("schema_inquiry", _step_start)
             print("=" * 60 + "\n")
             return {
                 'success': True,
@@ -1068,8 +1145,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             }
         else:
             print("  ✗ Not a schema inquiry")
+        _log_timing("schema_inquiry", _step_start)
 
         # === TRANSLATION LAYER (PRE-PROCESS) ===
+        _step_start = _time.time()
         print("\n[STEP 4/8] TRANSLATION LAYER...")
         processing_query = question
         is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
@@ -1082,8 +1161,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             ctx.set_language('ta')
         else:
             print("  ✗ No translation needed (English)")
+        _log_timing("translation", _step_start)
 
         # === CONTEXT DETECTION ===
+        _step_start = _time.time()
         print("\n[STEP 5/8] CONTEXT & ENTITY EXTRACTION...")
         is_followup = ctx.is_followup(processing_query)
         if is_followup:
@@ -1101,8 +1182,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             entities = ctx.merge_entities(entities)
             merge_reason = "follow-up" if is_followup else "preserved from clarification"
             print(f"  ✓ Merged with context ({merge_reason}): {app_state.entity_extractor.get_entities_summary(entities)}")
+        _log_timing("entity_extraction", _step_start)
 
         # === CHECK FOR DATA CHANGES (INVALIDATE STALE CACHE) ===
+        _step_start = _time.time()
         print("\n[STEP 6/8] CACHE & DATA CHECK...")
         # If data was refreshed mid-session, invalidate cache to avoid stale answers
         # Fallback to config if app_state doesn't have it (e.g., after server restart)
@@ -1148,6 +1231,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             }
         else:
             print("  ✗ Cache miss - proceeding with full query")
+        _log_timing("cache_check", _step_start)
 
         # === CHECK DATA LOADED ===
         profiles = app_state.profile_store.get_all_profiles() if app_state.profile_store else {}
@@ -1162,6 +1246,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             }
 
         # === INTELLIGENT TABLE ROUTING ===
+        _step_start = _time.time()
         print("\n[STEP 7/8] TABLE ROUTING & PLANNING...")
         # This is the CORE FIX - no more top_k=50 schema dump!
         previous_context = {
@@ -1177,6 +1262,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         confidence = routing_result.confidence
 
         print(f"  ✓ Router result: {best_table} (confidence: {confidence:.0%})")
+        _log_timing("table_routing", _step_start)
 
         # === CHECK IF CLARIFICATION NEEDED (DISAMBIGUATION FLOW) ===
         if routing_result.needs_clarification:
@@ -1242,9 +1328,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 schema_context = f"{context_prompt}\n\n---\n\n{schema_context}"
 
         # === PLANNING ===
+        _step_start = _time.time()
         print("  → Generating query plan via LLM...")
         plan = generate_plan(processing_query, schema_context, entities=entities)
         validate_plan(plan)
+        _log_timing("llm_planning", _step_start)
         print(f"  ✓ Plan generated:")
         print(f"    Query type: {plan.get('query_type', 'unknown')}")
         print(f"    Table: {plan.get('table', 'unknown')}")
@@ -1252,6 +1340,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print(f"    Filters: {plan.get('filters', [])}")
 
         # === EXECUTION WITH HEALING ===
+        _step_start = _time.time()
         print("\n[STEP 8/8] QUERY EXECUTION...")
         try:
             # Import at function level to avoid circular imports
@@ -1305,8 +1394,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             print(f"  ! Query returned 0 rows")
         else:
             print(f"  ✓ Query returned {row_count} rows")
+        _log_timing("sql_execution", _step_start)
 
         # === EXPLANATION WITH PERSONALITY ===
+        _step_start = _time.time()
         print("\n[RESPONSE] Generating explanation...")
         explanation = explain_results(result, query_plan=plan, original_question=processing_query)
 
@@ -1328,14 +1419,25 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # NOTE: Personality prefix REMOVED - LLM already generates crisp responses
         # The explain_results() function handles response formatting
         # Adding personality.format_response() caused double greetings like "Looking good, Viswa!"
+        _log_timing("llm_explanation", _step_start)
 
         # === TRANSLATION (POST-PROCESS) ===
+        _step_start = _time.time()
         if is_tamil:
             print("  → Translating response to Tamil...")
             explanation = translate_to_tamil(explanation)
             print("  ✓ Response translated")
+            _log_timing("translation_response", _step_start)
+        else:
+            _log_timing("translation_response", _step_start)
 
         # === UPDATE CONTEXT ===
+        # Extract key result values for pronoun resolution in follow-ups
+        # e.g., "that state" → "West Bengal" from previous query result
+        result_values = _extract_result_values(result, plan)
+        if result_values:
+            print(f"  ✓ Extracted result values for context: {result_values}")
+
         turn = QueryTurn(
             question=question,
             resolved_question=processing_query,
@@ -1345,15 +1447,22 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             result_summary=f"{len(result)} rows returned" if result is not None else "No data",
             sql_executed=final_sql if 'final_sql' in dir() else None,
             was_followup=is_followup,
-            confidence=confidence
+            confidence=confidence,
+            result_values=result_values  # NEW: For "that state", "that branch" resolution
         )
         ctx.add_turn(turn)
 
         # === BUILD RESPONSE ===
+        _total_time = (_time.time() - _query_start) * 1000
         print("\n[SUCCESS] Query completed successfully!")
         print(f"  Table: {plan.get('table', best_table)}")
         print(f"  Rows: {row_count}")
         print(f"  Confidence: {confidence:.0%}")
+        print(f"\n  ⏱️  TIMING SUMMARY:")
+        for step, ms in _timings.items():
+            print(f"      {step}: {ms:.0f}ms")
+        print(f"      ────────────────────")
+        print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
         print("=" * 60 + "\n")
 
         # Sanitize numpy types for JSON serialization

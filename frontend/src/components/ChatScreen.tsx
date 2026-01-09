@@ -215,10 +215,26 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [hasTamilInput, setHasTamilInput] = useState(false);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, showChat]);
+    // Scroll to bottom when messages change, chat opens, or switching chats
+    const scrollToBottom = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    };
+    // Multiple scroll attempts to handle layout shifts and async rendering
+    // Chat entry animation is 500ms, so we need timeouts up to 600ms
+    scrollToBottom();
+    const t1 = setTimeout(scrollToBottom, 50);
+    const t2 = setTimeout(scrollToBottom, 150);
+    const t3 = setTimeout(scrollToBottom, 350);
+    const t4 = setTimeout(scrollToBottom, 600); // After animation completes
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+    };
+  }, [messages.length, showChat, activeChatId]);
 
   // Cleanup timeouts on unmount to prevent memory leaks
   useEffect(() => {
@@ -298,12 +314,17 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           setExpandedVoiceSection('plan');
         }
 
+        // Clear processing state BEFORE TTS so VoiceVisualizer shows during playback
+        setIsProcessingQuery(false);
+        setIsCurrentInputVoice(false);
+        setHasTamilInput(false);
+
         // Play TTS response with Rachel voice
         console.log('🔊 shouldPlayTTS:', shouldPlayTTS);
         console.log('📝 Response explanation:', response.explanation.substring(0, 50));
 
         if (shouldPlayTTS) {
-          console.log('✅ Playing TTS (flag enabled)...');
+          console.log('✅ Playing TTS...');
           await playTextToSpeech(response.explanation);
         } else {
           console.log('⚠️ TTS disabled (flag not set)');
@@ -355,6 +376,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       const audioBlob = await api.textToSpeech(text);
       console.log('✅ Received audio blob:', audioBlob.size, 'bytes');
 
+      // Check if audio blob is valid
+      if (!audioBlob || audioBlob.size === 0) {
+        console.error('❌ Empty audio blob received');
+        setIsSpeaking(false);
+        setSpeakingMessageId(null);
+        return;
+      }
+
       // Create audio URL and play
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
@@ -370,8 +399,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         URL.revokeObjectURL(audioUrl);
       };
 
-      audio.onerror = (e) => {
-        console.error('❌ Audio playback error:', e);
+      audio.onerror = () => {
+        // Access audio.error for actual error details
+        const errorCode = audio.error?.code;
+        const errorMsg = audio.error?.message || 'Unknown audio error';
+        console.error('❌ Audio playback error:', errorCode, errorMsg);
         setIsSpeaking(false);
         setSpeakingMessageId(null);
         audioRef.current = null;
@@ -380,7 +412,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
       try {
         await audio.play();
-        audio.playbackRate = 1.3;  // 30% faster playback
+        audio.playbackRate = 1.15;  // 30% faster playback
         console.log('▶️ TTS playback started at 1.3x speed');
       } catch (playError) {
         // Handle autoplay policy - browser blocks audio without user interaction
@@ -524,10 +556,13 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             console.log('🔊 Enabling voice mode for TTS...');
             setIsVoiceMode(true);
 
+            // Stop voice processing UI BEFORE sending message
+            // This allows VoiceVisualizer to show during query processing & TTS
+            setIsProcessingVoice(false);
+
             // Send transcribed message WITH TTS enabled and mark as voice input
             console.log('📤 Sending transcribed message with TTS...');
             await handleSendMessage(text, true, true); // TTS enabled + voice input flag
-            setIsProcessingVoice(false); // Stop loading UI
 
             // Keep voice mode enabled for a bit, then disable
             // Clear any previous timeout before setting a new one
@@ -1184,22 +1219,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                     </p>
                   </motion.div>
 
-                  {/* Voice Visualizer - show when not processing */}
-                  {!(isProcessingVoice || isProcessingQuery) && (
-                    <VoiceVisualizer isRecording={isRecording} isSpeaking={isSpeaking} />
-                  )}
-
-                  {/* Processing Status - show when processing */}
-                  <AnimatePresence>
-                    {(isProcessingVoice || isProcessingQuery) && (
-                      <ProcessingStatus
-                        isProcessing={true}
-                        isVoiceInput={isCurrentInputVoice}
-                        hasTamilInput={hasTamilInput}
-                        variant="voice"
-                      />
-                    )}
-                  </AnimatePresence>
+                  {/* Voice Visualizer - always show in voice mode */}
+                  {/* Animate based on state: recording, speaking, or idle */}
+                  <VoiceVisualizer
+                    isRecording={isRecording}
+                    isSpeaking={isSpeaking || isProcessingVoice || isProcessingQuery}
+                  />
 
                   {/* Voice Button - supports push-to-talk on mobile */}
                   <motion.button

@@ -395,6 +395,7 @@ class ProfileStore:
                 # Check if table name contains a specific month
                 month_names = ['january', 'february', 'march', 'april', 'may', 'june',
                               'july', 'august', 'september', 'october', 'november', 'december']
+                month_to_num = {m: i+1 for i, m in enumerate(month_names)}
                 table_has_single_month = any(m in table_lower for m in month_names)
 
                 if table_has_single_month:
@@ -415,6 +416,53 @@ class ProfileStore:
                     # Table has multiple month columns - BOOST heavily
                     score += 80
                     match_reasons.append(f"BOOST:multi_month_columns:{len(months_in_cols)}")
+
+                # CRITICAL: Also BOOST tables with DATE COLUMNS that span the required months
+                # e.g., Daily_Sales_Transactions_Table1 has Date from Aug 1 to Dec 16
+                # This is IDEAL for "compare August vs December" queries!
+                date_range = profile.get('date_range', {})
+                date_min = date_range.get('min', '')
+                date_max = date_range.get('max', '')
+
+                if date_min and date_max:
+                    try:
+                        # Extract month numbers from date range
+                        # date_min format: "2025-08-01T00:00:00"
+                        min_month = int(date_min[5:7]) if len(date_min) >= 7 else 0
+                        max_month = int(date_max[5:7]) if len(date_max) >= 7 else 0
+
+                        # Check if date range covers all requested months
+                        requested_months_nums = []
+                        for req_month in all_months:
+                            req_month_lower = req_month.lower()
+                            if req_month_lower in month_to_num:
+                                requested_months_nums.append(month_to_num[req_month_lower])
+
+                        if requested_months_nums:
+                            min_requested = min(requested_months_nums)
+                            max_requested = max(requested_months_nums)
+
+                            # Check if table's date range covers requested months
+                            covers_all = min_month <= min_requested and max_month >= max_requested
+                            if covers_all:
+                                # Check if table has a date column (transactional data)
+                                has_date_col = any(
+                                    col_info.get('role') == 'date'
+                                    for col_info in columns.values()
+                                )
+                                if has_date_col:
+                                    # HEAVILY boost - this table has granular date data spanning all months
+                                    score += 100
+                                    match_reasons.append(f"BOOST:date_range_spans_all_months:{date_min[:10]}_to_{date_max[:10]}")
+
+                                    # Extra boost for transactional tables (Daily, Transaction, Sales)
+                                    # These are IDEAL for month comparisons as they have row-level date data
+                                    transactional_keywords = ['daily', 'transaction', 'sales', 'order']
+                                    if any(kw in table_lower for kw in transactional_keywords):
+                                        score += 50
+                                        match_reasons.append("BOOST:transactional_table_for_comparison")
+                    except (ValueError, IndexError):
+                        pass
 
             # --- Month matching (for single-month queries) ---
             if entities.get('month') and not is_multi_month:

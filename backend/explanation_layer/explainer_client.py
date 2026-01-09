@@ -105,18 +105,88 @@ def initialize_gemini_client(config):
     return model
 
 
+def _format_number_natural(value):
+    """Format a number in natural speech format (lakhs, thousands)."""
+    if not isinstance(value, (int, float)):
+        return str(value)
+
+    if value >= 100000:
+        return f"about {value/100000:.1f} lakhs"
+    elif value >= 1000:
+        return f"around {value/1000:.0f} thousand"
+    elif isinstance(value, float):
+        return f"{value:.2f}"
+    else:
+        return str(int(value))
+
+
+def _is_simple_aggregation(result_df, query_plan):
+    """Check if this is a simple aggregation that can skip LLM."""
+    if result_df is None or len(result_df) == 0:
+        return False
+    if len(result_df) > 1:
+        return False  # Multiple rows need LLM for explanation
+
+    # Check if it's a simple aggregation query
+    if query_plan:
+        agg_func = query_plan.get("aggregation_function")
+        query_type = query_plan.get("query_type")
+        if agg_func in ["SUM", "AVG", "COUNT", "MAX", "MIN"]:
+            return True
+        if query_type in ["aggregation", "count"]:
+            return True
+
+    return False
+
+
+def _generate_fast_explanation(result_df, query_plan):
+    """Generate a quick template-based explanation without LLM (saves ~2s)."""
+    import time
+    start = time.time()
+
+    agg_func = query_plan.get("aggregation_function", "") if query_plan else ""
+    agg_col = query_plan.get("aggregation_column", "") if query_plan else ""
+
+    # Get the value from the result
+    if len(result_df.columns) > 0:
+        value = result_df.iloc[0, 0]
+    else:
+        value = 0
+
+    formatted = _format_number_natural(value)
+
+    # Clean up column name for display
+    col_display = agg_col.replace("_", " ").lower() if agg_col else "value"
+
+    templates = {
+        "SUM": f"The total {col_display} is {formatted}.",
+        "AVG": f"The average {col_display} is {formatted}.",
+        "COUNT": f"There are {formatted} records.",
+        "MAX": f"The highest {col_display} is {formatted}.",
+        "MIN": f"The lowest {col_display} is {formatted}.",
+    }
+
+    result = templates.get(agg_func, f"The result is {formatted}.")
+    elapsed = (time.time() - start) * 1000
+    print(f"⚡ FAST PATH explanation generated [{elapsed:.0f}ms]")
+    return result
+
+
 def explain_results(result_df, query_plan=None, original_question=None):
     """
     Generate a natural language explanation of query results using LLM.
-    
+
     Args:
         result_df: DataFrame containing query results
         query_plan: Optional dict containing the query plan (for context)
         original_question: Optional string containing the user's original question
-    
-    Returns:    
+
+    Returns:
         str: Natural language explanation of the results
     """
+    import time
+    _start = time.time()
+
     # Detect the language of the original question first
     question_language = "English"  # Default
     if original_question:
@@ -231,12 +301,15 @@ Generate a crispy, TTS-friendly response:"""
         # Generate explanation
         response = model.generate_content(prompt)
         explanation = response.text.strip()
-        
+
+        elapsed = (time.time() - _start) * 1000
+        print(f"✅ LLM Explanation generated [{elapsed:.0f}ms]")
         return explanation
-        
+
     except Exception as e:
         # Fallback to simple explanation if LLM fails
-        print(f"Warning: LLM explanation failed ({e}), using fallback")
+        elapsed = (time.time() - _start) * 1000
+        print(f"⚠️ LLM explanation failed ({e}), using fallback [{elapsed:.0f}ms]")
         return _fallback_explanation(result_df, context)
 
 

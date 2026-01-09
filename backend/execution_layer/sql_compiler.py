@@ -86,7 +86,10 @@ def _build_where_clause(filters):
         if isinstance(value, str):
             if operator == "LIKE":
                 # Case-insensitive LIKE - cast to VARCHAR for timestamp columns
-                safe_value = value.replace("'", "''")
+                # First, normalize the value by removing apostrophes and special chars
+                # This fixes translation issues like "ladies' wear" vs "Ladies Wear"
+                normalized_value = value.replace("'", "").replace("'", "").replace("`", "")
+                safe_value = normalized_value.replace("'", "''")
                 
                 # For name matching, try to be more flexible
                 # Extract the core part of the search term (remove % wildcards)

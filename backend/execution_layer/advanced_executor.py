@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import duckdb
 from datetime import datetime
 import statistics
+import re
 
 
 def execute_advanced_query(
@@ -185,6 +186,7 @@ def execute_trend(
     Execute trend query - analyze patterns over time.
 
     Example question: "How are daily sales trending this month?"
+    Handles both date columns and text-based quarter columns (e.g., "Q3 2025").
     """
     trend = plan.get("trend", {})
     table = plan.get("table")
@@ -198,13 +200,30 @@ def execute_trend(
     quoted_date = f'"{date_column}"' if date_column and (' ' in date_column or '-' in date_column) else date_column
     quoted_value = f'"{value_column}"' if value_column and (' ' in value_column or '-' in value_column) else value_column
 
-    sql = f"""
-        SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
-        FROM {quoted_table}
-        WHERE {quoted_date} IS NOT NULL AND {quoted_value} IS NOT NULL
-        GROUP BY {quoted_date}
-        ORDER BY {quoted_date}
-    """
+    # Check if date_column is a text-based quarter column (e.g., "Q3 2025")
+    is_quarter = _is_quarter_column(conn, table, date_column)
+
+    if is_quarter:
+        # Sort quarters chronologically: extract year and quarter number
+        # "Q3 2025" -> year=2025, quarter=3
+        sql = f"""
+            SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
+            FROM {quoted_table}
+            WHERE {quoted_date} IS NOT NULL AND {quoted_value} IS NOT NULL
+            GROUP BY {quoted_date}
+            ORDER BY
+                CAST(REGEXP_EXTRACT({quoted_date}, '(\\d{{4}})', 1) AS INTEGER),
+                CAST(REGEXP_EXTRACT({quoted_date}, 'Q(\\d)', 1) AS INTEGER)
+        """
+        print(f"  📅 Quarter column detected - using chronological sort")
+    else:
+        sql = f"""
+            SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
+            FROM {quoted_table}
+            WHERE {quoted_date} IS NOT NULL AND {quoted_value} IS NOT NULL
+            GROUP BY {quoted_date}
+            ORDER BY {quoted_date}
+        """
 
     try:
         result = conn.execute(sql).fetchall()
@@ -223,6 +242,32 @@ def execute_trend(
                 "data": [{"date": str(d), "value": v} for d, v in result],
                 "calculation_result": None,
                 "analysis": {"error": "Not enough data points for trend analysis"}
+            }
+
+        # Check for constant values (no variance)
+        unique_values = set(values)
+        if len(unique_values) == 1:
+            constant_value = values[0]
+            first_period = str(dates[0])
+            last_period = str(dates[-1])
+            return {
+                "data": [{"date": str(d), "value": v} for d, v in result],
+                "calculation_result": 0,
+                "analysis": {
+                    "direction": "stable",
+                    "direction_emoji": "➡️",
+                    "confidence": "high",
+                    "start_value": constant_value,
+                    "end_value": constant_value,
+                    "min_value": constant_value,
+                    "max_value": constant_value,
+                    "avg_value": constant_value,
+                    "data_points": len(values),
+                    "total_change": 0,
+                    "percentage_change": 0,
+                    "is_constant": True,
+                    "message": f"Value has been constant at {constant_value} from {first_period} to {last_period}"
+                }
             }
 
         # Analyze trend
@@ -252,6 +297,43 @@ def execute_trend(
             "calculation_result": None,
             "analysis": {"error": str(e)}
         }
+
+
+def _is_quarter_column(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    column: str
+) -> bool:
+    """
+    Check if column contains quarter-formatted text like 'Q3 2025'.
+    Returns True if values match pattern Q[1-4] YYYY.
+    """
+    if not table or not column:
+        return False
+
+    try:
+        quoted_table = f'"{table}"' if ' ' in table or '-' in table or (table and table[0].isdigit()) else table
+        quoted_col = f'"{column}"' if ' ' in column or '-' in column else column
+
+        sql = f"SELECT DISTINCT {quoted_col} FROM {quoted_table} WHERE {quoted_col} IS NOT NULL LIMIT 10"
+        result = conn.execute(sql).fetchall()
+
+        if not result:
+            return False
+
+        # Check if values match quarter pattern like "Q1 2025", "Q2 2024", etc.
+        pattern = r'^Q[1-4]\s+\d{4}$'
+        matches = 0
+        for row in result:
+            if row[0] and re.match(pattern, str(row[0]).strip()):
+                matches += 1
+
+        # If most values match the pattern, it's a quarter column
+        return matches >= len(result) * 0.8  # 80% threshold
+
+    except Exception as e:
+        print(f"  ⚠️ Error checking quarter column: {e}")
+        return False
 
 
 def _get_aggregated_value(
@@ -432,6 +514,10 @@ def format_trend_result(analysis: Dict[str, Any], language: str = "en") -> str:
     """Format trend analysis into human-readable text."""
     if "error" in analysis:
         return analysis["error"]
+
+    # Use custom message if available (for constant values)
+    if analysis.get("message"):
+        return f"{analysis.get('direction_emoji', '')} {analysis['message']}"
 
     direction = analysis.get("direction", "unknown")
     emoji = analysis.get("direction_emoji", "")

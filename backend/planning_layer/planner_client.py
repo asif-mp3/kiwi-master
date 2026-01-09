@@ -189,25 +189,27 @@ def call_llm_with_timeout(model, prompt: str, timeout_seconds: int = 60):
 def generate_plan(question: str, schema_context: list, max_retries: int = None, entities: dict = None) -> dict:
     """
     Generate query plan using Gemini LLM.
-    
+
     Args:
         question: User's natural language question
         schema_context: List of schema documents from ChromaDB retrieval
         max_retries: Maximum number of retry attempts (defaults to config value)
-    
+
     Returns:
         dict: Query plan matching plan_schema.json
-    
+
     Raises:
         ValueError: If API key is missing, JSON parsing fails, or max retries exceeded
-    
+
     CRITICAL: This function ONLY proposes intent. It does NOT:
     - Execute queries
     - Validate plans (done by plan_validator.py)
     - Generate SQL (done by sql_compiler.py)
     - Access data (done by executor.py)
     """
-    
+    import time
+    _start = time.time()
+
     # Load configuration
     config = load_config()
     if max_retries is None:
@@ -291,6 +293,8 @@ Output the query plan as JSON:"""
                 if not isinstance(plan.get("order_by"), list):
                     raise ValueError(f"order_by must be a list, got: {type(plan.get('order_by'))}")
 
+            elapsed = (time.time() - _start) * 1000
+            print(f"✅ LLM Planning generated [{elapsed:.0f}ms]")
             return plan
 
         except TimeoutError as e:

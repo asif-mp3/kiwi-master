@@ -79,6 +79,9 @@ def transcribe_audio(audio_file_path: str, language: Optional[str] = None) -> st
     Returns:
         Transcribed text
     """
+    import time
+    _start = time.time()
+
     try:
         client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
@@ -112,12 +115,14 @@ def transcribe_audio(audio_file_path: str, language: Optional[str] = None) -> st
         else:
             transcribed_text = str(result)
 
-        print(f"✅ STT: Transcribed {len(transcribed_text)} characters")
+        elapsed = (time.time() - _start) * 1000
+        print(f"✅ STT: Transcribed [{elapsed:.0f}ms]: \"{transcribed_text}\"")
         return transcribed_text
 
     except Exception as e:
+        elapsed = (time.time() - _start) * 1000
         error_msg = f"Transcription failed: {str(e)}"
-        print(f"❌ STT Error: {error_msg}")
+        print(f"❌ STT Error: {error_msg} [{elapsed:.0f}ms]")
         raise Exception(error_msg)
 
 def _preprocess_for_tts(text: str) -> str:
@@ -142,6 +147,7 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
     Convert text to speech using ElevenLabs with user's preferred voice.
     Uses Turbo v2.5 for fastest, lowest-latency playback.
     Supports Tamil and English.
+    CACHES audio for instant replay.
 
     Args:
         text: Text to convert to speech
@@ -150,45 +156,53 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
     Returns:
         Audio bytes (MP3 format)
     """
+    import time
+    start_time = time.time()
+
     try:
         from elevenlabs.client import ElevenLabs
         import re
-
-        # Initialize ElevenLabs client
-        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        from utils.tts_cache import get_cached_tts_audio, cache_tts_audio
 
         # Preprocess text for better pronunciation
-        text = _preprocess_for_tts(text)
+        processed_text = _preprocess_for_tts(text)
 
         # Detect if text contains Tamil characters
         tamil_pattern = re.compile(r'[\u0B80-\u0BFF]')
-        has_tamil = bool(tamil_pattern.search(text))
+        has_tamil = bool(tamil_pattern.search(processed_text))
 
         # Get voice ID from config if not provided
         voice_config = get_voice_config()
         if voice_id is None:
             if has_tamil:
-                # Config validation ensures these exist - no hardcoded fallbacks
                 voice_id = voice_config["tamil_voice_id"]
             else:
                 voice_id = voice_config["default_voice_id"]
 
+        # CHECK CACHE FIRST - instant playback for repeated audio
+        hit, cached_audio = get_cached_tts_audio(processed_text, voice_id)
+        if hit and cached_audio:
+            elapsed = (time.time() - start_time) * 1000
+            print(f"⚡ TTS CACHE HIT: {len(cached_audio)} bytes [{elapsed:.0f}ms]")
+            return cached_audio
+
         print(f"🔊 TTS: Using voice ID {voice_id}")
+
+        # Initialize ElevenLabs client
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
         # Select model based on language for best balance of speed vs accuracy
         if has_tamil:
-            # Multilingual v2 is significantly better at Tamil pronunciation than Turbo
             model_id = "eleven_multilingual_v2"
-            print("🔊 TTS: Detected Tamil text - Switching to High-Accuracy Model (Multilingual v2)")
+            print("🔊 TTS: Detected Tamil text - Multilingual v2")
         else:
-            # Turbo v2.5 is fastest for English
             model_id = "eleven_turbo_v2_5"
-            print("🔊 TTS: English text - Using Low-Latency Model (Turbo v2.5)")
+            print("🔊 TTS: English text - Turbo v2.5 (fastest)")
 
-        # Generate audio
+        # Generate audio - use standard MP3 format for browser compatibility
         audio_stream = client.text_to_speech.convert(
             voice_id=voice_id,
-            text=text,
+            text=processed_text,
             model_id=model_id,
             output_format="mp3_44100_128",
         )
@@ -199,7 +213,11 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
             if chunk:
                 audio_bytes += chunk
 
-        print(f"✅ TTS: Generated {len(audio_bytes)} bytes")
+        # CACHE for future instant playback
+        cache_tts_audio(processed_text, voice_id, audio_bytes)
+
+        elapsed = (time.time() - start_time) * 1000
+        print(f"✅ TTS: Generated {len(audio_bytes)} bytes [{elapsed:.0f}ms]")
         return audio_bytes
 
     except Exception as e:

@@ -69,7 +69,11 @@ class EntityExtractor:
         # Common Chennai areas (Freshggies delivery zones)
         'velachery', 'adyar', 'koyambedu', 'anna nagar', 'chromepet',
         'tambaram', 'porur', 't nagar', 'mylapore', 'besant nagar',
-        'thiruvanmiyur', 'guindy', 'nanganallur', 'madipakkam'
+        'thiruvanmiyur', 'guindy', 'nanganallur', 'madipakkam',
+        # Indian states (for state-level filtering)
+        'tamil nadu', 'karnataka', 'kerala', 'andhra pradesh', 'telangana',
+        'maharashtra', 'gujarat', 'rajasthan', 'punjab', 'haryana',
+        'uttar pradesh', 'madhya pradesh', 'west bengal', 'odisha', 'bihar'
     }
 
     # Fallback categories (used if not learned from profiles)

@@ -76,6 +76,11 @@ When multiple tables with similar schemas are available in the schema context:
    - "which zone performed best" → Use table with "Zone" column
    - **DO NOT** use a category table (e.g., "By_Category") for area/location/pincode questions!
    - Look for tables with "pincode", "area", "zone", or "location" in the name
+   - **CRITICAL - "In [State], which branch/district..."**: When the question asks about branches/districts WITHIN a state:
+     - Use a table with BOTH "Branch" and "State" columns
+     - Apply a FILTER on the State column (e.g., State LIKE '%Tamil Nadu%')
+     - Return the branch with the highest/lowest metric
+     - Example: "Which branch in Tamil Nadu has highest profit?" → Filter State='Tamil Nadu', ORDER BY profit DESC, LIMIT 1
 10. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw data tables (e.g., "Freshggies – Shopify Sales on Fulfillments").
 
 ## Strict Rules
@@ -418,6 +423,19 @@ When multiple tables with similar schemas are available in the schema context:
 "metrics": ["Gross Sales"],
 "order_by": [["Gross Sales", "DESC"]],
 "limit": 10
+}
+
+**Question:** "Which branch in Tamil Nadu has the highest profit?"
+**Schema context:** Table "Branch_Details_Table1" with columns ["Branch_ID", "Branch_Name", "State", "Net_Profit", "Revenue"]
+**Extracted Entities:** Location filter = Tamil Nadu (State column)
+**Output:**
+{
+"query_type": "extrema_lookup",
+"table": "Branch_Details_Table1",
+"select_columns": ["Branch_Name", "State", "Net_Profit"],
+"filters": [{"column": "State", "operator": "LIKE", "value": "%Tamil Nadu%"}],
+"order_by": [["Net_Profit", "DESC"]],
+"limit": 1
 }
 
 **Question:** "Which product category contributes the most to sales?"

@@ -25,15 +25,21 @@ GREETING_CATEGORIES = {
     ],
     'phatic': [  # Mic checks and connectivity capability checks
         r'\b(can|could)\s+you\s+(hear|listen)\s+(to\s+)?me\b',
+        r'\bhear\s+me\b',  # Simple "hear me"
+        r'\b(you)\s+(hear|hearing)\s+me\b',  # "you hear me"
         r'\b(are\s+you)\s+(there|listening|online|ready)\b',
+        r'\b(you)\s+there\b',  # "you there?"
         r'\b(testing)\s+(1|one)\s*,?\s*(2|two)\s*,?\s*(3|three)\b',
         r'\b(mic|microphone)\s+(check|test)\b',
+        r'^(test|testing)$',  # Just "test" or "testing"
         # Tamil Mic Checks
         r'கேக்குதா',  # Kekudha (Can you hear?)
         r'கேட்குதா',  # Ketkudha (Can you hear?)
         r'பேசுறது\s+கேக்குதா',  # Pesuradhu kekudha
         r'பேசுறது\s+கேட்குதா',  # Pesuradhu ketkudha
         r'கேட்கிறதா',  # Ketkiradha (Formal: Is it audible?)
+        r'நான்\s+பேசுறது',  # Naan pesuradhu (What I'm speaking)
+        r'கேக்குது',  # Kekudhu
     ],
     'capability': [  # Questions about what Thara can do
         r'\b(what)\s+(can|could)\s+you\s+(do|help)\b',
@@ -626,17 +632,16 @@ def _detect_greeting_category(text: str) -> str:
 def get_greeting_response(user_input: str = "") -> str:
     """
     Get a dynamic greeting response based on the type of greeting.
-    
+
     Args:
         user_input: The user's greeting text (optional, for context)
-        
+
     Returns:
         Greeting message
     """
-    # Add a small delay to make it feel more natural (1-2 seconds)
-    delay = random.uniform(1.0, 2.0)
-    time.sleep(delay)
-    
+    # Small delay to feel more natural (like Thara is thinking)
+    time.sleep(random.uniform(1.0, 2.0))
+
     # Detect greeting category
     category = _detect_greeting_category(user_input) if user_input else 'casual'
     

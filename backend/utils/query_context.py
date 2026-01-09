@@ -34,6 +34,9 @@ class QueryTurn:
     timestamp: datetime = field(default_factory=datetime.now)
     was_followup: bool = False
     confidence: float = 0.0
+    # NEW: Store actual result values for pronoun resolution
+    # e.g., {"state": "West Bengal", "revenue": 1780000}
+    result_values: Dict[str, Any] = field(default_factory=dict)
 
 
 class QueryContext:
@@ -170,6 +173,11 @@ class QueryContext:
         """
         Generate context prompt for LLM.
         Provides previous query context for follow-up understanding.
+
+        CRITICAL for pronoun resolution:
+        - If user asks "Which state has highest profit?" → Answer: "West Bengal"
+        - Then user asks "In that state, which branch..." → "that state" = West Bengal
+        - We include result_values so LLM can resolve "that", "this", "in that"
         """
         if not self.turns:
             return ""
@@ -182,6 +190,27 @@ class QueryContext:
             f"Question: {last_turn.question}",
             f"Result: {last_turn.result_summary}"
         ]
+
+        # CRITICAL: Add result values for pronoun resolution
+        # This allows "that state", "that branch", "in that region" to be resolved
+        if last_turn.result_values:
+            result_parts = []
+            for key, value in last_turn.result_values.items():
+                if value is not None:
+                    result_parts.append(f"{key}={value}")
+            if result_parts:
+                context_parts.append(f"**Answer values (for 'that/this' resolution):** {', '.join(result_parts)}")
+                # Add explicit pronoun mapping hints
+                for key, value in last_turn.result_values.items():
+                    key_lower = key.lower()
+                    if 'state' in key_lower:
+                        context_parts.append(f"  → 'that state' or 'in that state' refers to: {value}")
+                    elif 'branch' in key_lower:
+                        context_parts.append(f"  → 'that branch' or 'in that branch' refers to: {value}")
+                    elif 'area' in key_lower or 'region' in key_lower or 'location' in key_lower:
+                        context_parts.append(f"  → 'that area/region' refers to: {value}")
+                    elif 'category' in key_lower:
+                        context_parts.append(f"  → 'that category' refers to: {value}")
 
         # Add filters
         if last_turn.filters_applied:

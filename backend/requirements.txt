@@ -18,6 +18,9 @@ sentence-transformers>=2.2.0
 gspread>=5.0.0
 google-auth>=2.0.0
 
+# Google Cloud Translation API
+google-cloud-translate>=3.0.0
+
 # Data Processing
 pandas>=2.0.0
 numpy>=1.24.0

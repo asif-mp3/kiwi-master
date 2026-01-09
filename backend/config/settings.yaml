@@ -17,12 +17,12 @@ google_sheets:
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
-  explainer_max_tokens: 300
-  max_retries: 3
-  model: gemini-2.0-flash-exp
-  planner_max_tokens: 500
+  explainer_max_tokens: 150
+  max_retries: 2
+  model: gemini-2.0-flash
+  planner_max_tokens: 300
   provider: gemini
-  request_timeout_seconds: 90
+  request_timeout_seconds: 30
   temperature: 0.0
 project:
   environment: local
