@@ -22,8 +22,8 @@
  *   - Set BACKEND_URL to your deployed backend URL
  */
 
-// ⚠️ UPDATE THIS URL to your backend
-const BACKEND_URL = "http://localhost:8000";  // Change this!
+// ⚠️ UPDATE THIS URL to your backend (ngrok URL for local dev)
+const BACKEND_URL = "https://604f14b686a9.ngrok-free.app";  // Your ngrok URL
 
 /**
  * Triggered when the sheet content changes.

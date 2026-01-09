@@ -570,10 +570,8 @@ async def data_refresh_events():
     
     async def event_generator():
         try:
-            # Send initial heartbeat
-            yield f"data: {json.dumps({'type': 'connected'})}
-
-"
+            # Send initial heartbeat (SSE format: "data: ...\n\n")
+            yield "data: " + json.dumps({'type': 'connected'}) + "\n\n"
             
             while True:
                 try:
@@ -582,14 +580,10 @@ async def data_refresh_events():
                         sub_queue.get(),
                         timeout=30.0
                     )
-                    yield f"data: {json.dumps(event)}
-
-"
+                    yield "data: " + json.dumps(event) + "\n\n"
                 except asyncio.TimeoutError:
                     # Send heartbeat to keep connection alive
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}
-
-"
+                    yield "data: " + json.dumps({'type': 'heartbeat'}) + "\n\n"
         except asyncio.CancelledError:
             handler.unsubscribe(sub_queue)
             raise
