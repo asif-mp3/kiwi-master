@@ -1,0 +1,53 @@
+cache:
+  query_cache_max_size: 100
+  query_cache_ttl_seconds: 300
+  schema_cache_ttl_seconds: 3600
+  tts_cache_max_size_mb: 500
+  tts_cache_ttl_hours: 24
+duckdb:
+  connection_timeout_seconds: 30
+  max_connections: 10
+  snapshot_path: data_sources/snapshots/latest.duckdb
+google_sheets:
+  cache_check_interval_seconds: 60
+  credentials_path: credentials/service_account.json
+  date_conversion_threshold: 0.5
+  numeric_conversion_threshold: 0.8
+  spreadsheet_id: 1pXd7aGOOBZfhJp4KI__qI3Moj0KS0w2Iwg7kLPUonG4
+llm:
+  api_key_env: GEMINI_API_KEY
+  enable_streaming: true
+  explainer_max_tokens: 150
+  max_retries: 2
+  model: gemini-2.0-flash
+  planner_max_tokens: 300
+  provider: gemini
+  request_timeout_seconds: 30
+  temperature: 0.0
+project:
+  environment: local
+  name: thara_ai
+query:
+  default_limit: 100
+  max_healing_limit: 1000
+  max_healing_retries: 3
+  max_result_rows: 10000
+  profile_sample_rows: 10000
+schema_intelligence:
+  embedding_model: text-embedding-3-large
+  max_tables_in_prompt: 5
+  top_k: 5
+table_routing:
+  correct_granularity: 30
+  data_quality_high: 10
+  date_range_covers_query: 20
+  has_date_dimension: 15
+  has_location_dimension: 15
+  has_metric: 20
+  has_product_dimension: 15
+  is_transactional: 15
+voice:
+  default_voice_id: pNInz6obpgDQGcFmaJgB
+  elevenlabs_api_key_env: ELEVENLABS_API_KEY
+  request_timeout_seconds: 30
+  tamil_voice_id: XrExE9yKIg1WjnnlVkGX

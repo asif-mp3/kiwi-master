@@ -1,0 +1,44 @@
+# Core Dependencies
+google-generativeai>=0.3.0
+pyyaml>=6.0
+jsonschema>=4.0.0
+python-dotenv>=1.0.0
+
+# Web Framework
+streamlit>=1.28.0
+
+# Database
+duckdb>=0.9.0
+
+# Vector Store & Embeddings
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# Google Sheets Integration
+gspread>=5.0.0
+google-auth>=2.0.0
+
+# Google Cloud Translation API
+google-cloud-translate>=3.0.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Voice & Audio
+elevenlabs>=1.0.0
+gtts>=2.4.0
+langdetect>=1.0.9
+pydub>=0.25.1
+scipy>=1.10.0
+
+# Utilities
+requests>=2.31.0
+
+# Authentication
+supabase>=2.0.0
+
+# API Server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6

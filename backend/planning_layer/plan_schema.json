@@ -1,0 +1,192 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "query_type",
+    "table"
+  ],
+  "properties": {
+    "query_type": {
+      "type": "string",
+      "enum": [
+        "metric",
+        "lookup",
+        "filter",
+        "extrema_lookup",
+        "rank",
+        "list",
+        "aggregation_on_subset",
+        "comparison",
+        "percentage",
+        "trend"
+      ]
+    },
+    "table": {
+      "type": "string"
+    },
+    "select_columns": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "metrics": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "filters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "=",
+              ">",
+              "<",
+              ">=",
+              "<=",
+              "!=",
+              "LIKE"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "column",
+          "operator",
+          "value"
+        ]
+      }
+    },
+    "group_by": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "order_by": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string",
+            "enum": [
+              "ASC",
+              "DESC"
+            ]
+          }
+        ]
+      }
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "aggregation_function": {
+      "type": "string"
+    },
+    "aggregation_column": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subset_filters": {
+      "type": "array"
+    },
+    "subset_order_by": {
+      "type": "array"
+    },
+    "subset_limit": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "comparison": {
+      "type": "object",
+      "description": "For comparison query type - compare two periods or values",
+      "properties": {
+        "period_a": {
+          "type": "object",
+          "properties": {
+            "label": { "type": "string" },
+            "table": { "type": "string" },
+            "column": { "type": "string" },
+            "filters": { "type": "array" },
+            "aggregation": { "type": "string" }
+          }
+        },
+        "period_b": {
+          "type": "object",
+          "properties": {
+            "label": { "type": "string" },
+            "table": { "type": "string" },
+            "column": { "type": "string" },
+            "filters": { "type": "array" },
+            "aggregation": { "type": "string" }
+          }
+        },
+        "compare_type": {
+          "type": "string",
+          "enum": ["difference", "percentage_change", "ratio"]
+        }
+      }
+    },
+    "percentage": {
+      "type": "object",
+      "description": "For percentage query type - calculate percentage contribution",
+      "properties": {
+        "numerator": {
+          "type": "object",
+          "properties": {
+            "column": { "type": "string" },
+            "filters": { "type": "array" },
+            "aggregation": { "type": "string" }
+          }
+        },
+        "denominator": {
+          "type": "object",
+          "properties": {
+            "column": { "type": "string" },
+            "filters": { "type": "array" },
+            "aggregation": { "type": "string" }
+          }
+        }
+      }
+    },
+    "trend": {
+      "type": "object",
+      "description": "For trend query type - analyze patterns over time",
+      "properties": {
+        "date_column": { "type": "string" },
+        "value_column": { "type": "string" },
+        "aggregation": { "type": "string" },
+        "period": {
+          "type": "string",
+          "enum": ["daily", "weekly", "monthly"]
+        },
+        "analysis_type": {
+          "type": "string",
+          "enum": ["direction", "pattern", "forecast"]
+        }
+      }
+    }
+  }
+}
