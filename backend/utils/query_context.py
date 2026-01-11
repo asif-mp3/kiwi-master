@@ -22,6 +22,22 @@ class PendingClarification:
 
 
 @dataclass
+class PendingCorrection:
+    """
+    State saved when processing a correction that needs clarification.
+    Used only for NEGATION cases where user says "that's wrong" without specifics.
+    Table corrections are auto-resolved without asking user.
+    """
+    original_question: str              # The correction message (e.g., "that's wrong")
+    previous_turn_index: int            # Index of the turn being corrected
+    correction_type: str                # Type from CorrectionType enum
+    entities: Dict[str, Any]            # Entities from the original query
+    is_tamil: bool = False
+    awaiting_clarification: bool = True  # Waiting for user to specify what to correct
+    created_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
 class QueryTurn:
     """Represents a single query turn in conversation"""
     question: str
@@ -34,9 +50,16 @@ class QueryTurn:
     timestamp: datetime = field(default_factory=datetime.now)
     was_followup: bool = False
     confidence: float = 0.0
-    # NEW: Store actual result values for pronoun resolution
+    # Store actual result values for pronoun resolution
     # e.g., {"state": "West Bengal", "revenue": 1780000}
     result_values: Dict[str, Any] = field(default_factory=dict)
+    # Correction tracking fields
+    was_correction: bool = False                    # This turn was a correction of a previous turn
+    corrected_from_turn: Optional[int] = None       # Index of the turn that was corrected
+    correction_type: Optional[str] = None           # Type of correction: "table", "filter", "metric"
+    # Store query plan and alternatives for re-execution during corrections
+    query_plan: Optional[Dict[str, Any]] = field(default_factory=dict)
+    routing_alternatives: List[tuple] = field(default_factory=list)  # [(table_name, score), ...]
 
 
 class QueryContext:
@@ -64,6 +87,8 @@ class QueryContext:
         self.last_activity: datetime = datetime.now()
         # Clarification state for table disambiguation
         self.pending_clarification: Optional[PendingClarification] = None
+        # Correction state for negation clarification (only for "that's wrong" without specifics)
+        self.pending_correction: Optional[PendingCorrection] = None
 
     def _generate_id(self) -> str:
         """Generate unique conversation ID"""
@@ -131,10 +156,50 @@ class QueryContext:
 
         # 5. Question that doesn't have a verb/action
         action_words = ['show', 'what', 'how', 'give', 'tell', 'list', 'get',
-                       'find', 'calculate', 'total', 'sum', 'count', 'average']
+                       'find', 'calculate', 'total', 'sum', 'count', 'average',
+                       'which', 'who', 'where', 'when', 'why', 'compare', 'display']
         if not any(word in q_lower for word in action_words):
             # No action word - might be a follow-up with just filter change
             return True
+
+        # 6. Check if query is about a completely different dimension/topic
+        # If previous query was about location and new query is about category (or vice versa),
+        # it's likely a new query, not a follow-up
+        if self.turns:
+            prev_turn = self.turns[-1]
+            prev_entities = prev_turn.entities or {}
+
+            # Detect topic shift - asking about different dimensions
+            dimension_keywords = {
+                'category': ['category', 'categories', 'product', 'products', 'item', 'items', 'type', 'types'],
+                'location': ['location', 'area', 'branch', 'city', 'state', 'zone', 'region', 'chennai', 'bangalore', 'mumbai', 'delhi'],
+                'time': ['month', 'year', 'week', 'day', 'date', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'],
+                'metric': ['profit', 'revenue', 'sales', 'cost', 'expense', 'income', 'margin']
+            }
+
+            # Check what dimension the new question is about
+            new_dimension = None
+            for dim, keywords in dimension_keywords.items():
+                if any(kw in q_lower for kw in keywords):
+                    new_dimension = dim
+                    break
+
+            # Check what dimension the previous query was about
+            prev_dimension = None
+            if prev_entities.get('location'):
+                prev_dimension = 'location'
+            elif prev_entities.get('category'):
+                prev_dimension = 'category'
+            elif prev_entities.get('month'):
+                prev_dimension = 'time'
+
+            # If new query explicitly asks about a different dimension than previous context,
+            # and doesn't reference previous context, it's a new query
+            if (new_dimension and prev_dimension and new_dimension != prev_dimension
+                and new_dimension in ['category', 'metric']  # These are likely new topics
+                and 'location' not in q_lower  # Not mentioning location
+                and not any(phrase in q_lower for phrase in ['same', 'also', 'too', 'as well'])):
+                return False
 
         return False
 
@@ -266,6 +331,7 @@ class QueryContext:
         self.active_table = None
         self.active_entities = {}
         self.pending_clarification = None
+        self.pending_correction = None
         self.last_activity = datetime.now()
 
     # ===== CLARIFICATION STATE MANAGEMENT =====
@@ -428,6 +494,101 @@ class QueryContext:
             return best_match
 
         return None
+
+    # ===== CORRECTION STATE MANAGEMENT =====
+    # Used only for NEGATION cases where user says "that's wrong" without specifics
+    # Table/Filter/Metric corrections are auto-resolved without user prompts
+
+    def set_pending_correction_state(
+        self,
+        original_question: str,
+        correction_type: str,
+        is_tamil: bool = False
+    ):
+        """
+        Save state when we need to ask user for correction clarification.
+        Only used for NEGATION cases ("that's wrong" without specifics).
+
+        Args:
+            original_question: User's correction message
+            correction_type: Type of correction (usually "negation")
+            is_tamil: Whether the original was in Tamil
+        """
+        if not self.turns:
+            return
+
+        previous_turn = self.turns[-1]
+        self.pending_correction = PendingCorrection(
+            original_question=original_question,
+            previous_turn_index=len(self.turns) - 1,
+            correction_type=correction_type,
+            entities=previous_turn.entities.copy() if previous_turn.entities else {},
+            is_tamil=is_tamil,
+            awaiting_clarification=True
+        )
+        self.last_activity = datetime.now()
+
+    def has_pending_correction_state(self) -> bool:
+        """Check if we're awaiting user's correction clarification."""
+        return self.pending_correction is not None
+
+    def get_pending_correction_state(self) -> Optional[PendingCorrection]:
+        """Get the pending correction state."""
+        return self.pending_correction
+
+    def clear_pending_correction_state(self):
+        """Clear correction state after resolution."""
+        self.pending_correction = None
+
+    def find_original_turn(self, current_turn: Optional[QueryTurn] = None) -> Optional[QueryTurn]:
+        """
+        Find the original turn before any corrections in a chain.
+
+        If a user makes multiple corrections in sequence, this traverses back
+        to find the original query before any corrections were made.
+
+        Args:
+            current_turn: The turn to trace back from (default: last turn)
+
+        Returns:
+            The original turn before corrections, or None if no turns exist
+        """
+        if not self.turns:
+            return None
+
+        if current_turn is None:
+            current_turn = self.turns[-1]
+
+        # If this turn wasn't a correction, it's the original
+        if not current_turn.was_correction:
+            return current_turn
+
+        # Traverse back through correction chain
+        turn_index = current_turn.corrected_from_turn
+        visited = set()  # Prevent infinite loops
+
+        while turn_index is not None and turn_index >= 0 and turn_index not in visited:
+            visited.add(turn_index)
+            if turn_index < len(self.turns):
+                turn = self.turns[turn_index]
+                if not turn.was_correction:
+                    return turn
+                turn_index = turn.corrected_from_turn
+            else:
+                break
+
+        # Fallback to first turn
+        return self.turns[0] if self.turns else None
+
+    def get_turn_by_index(self, index: int) -> Optional[QueryTurn]:
+        """Get a turn by its index in the conversation history."""
+        if 0 <= index < len(self.turns):
+            return self.turns[index]
+        return None
+
+    def get_last_turn(self) -> Optional[QueryTurn]:
+        """Get the most recent turn."""
+        return self.turns[-1] if self.turns else None
 
     def set_user_name(self, name: str):
         """Store user's name for personalization"""

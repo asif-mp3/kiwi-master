@@ -226,7 +226,34 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
     if entities:
         hint_parts = []
         if entities.get('location'):
-            hint_parts.append(f"- Filter by location/area: {entities['location']}")
+            location = entities['location']
+            # Determine if it's a city or state to help LLM choose correct column
+            known_cities = {
+                'chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad', 'kolkata',
+                'pune', 'ahmedabad', 'jaipur', 'lucknow', 'kanpur', 'nagpur',
+                'indore', 'thane', 'bhopal', 'visakhapatnam', 'coimbatore', 'madurai',
+                'kochi', 'patna', 'jodhpur', 'surat', 'vadodara', 'rajkot',
+                'velachery', 'adyar', 'anna nagar', 't nagar', 'tambaram', 'koyambedu',
+                'nungambakkam', 'mylapore', 'triplicane', 'egmore', 'kodambakkam'
+            }
+            known_states = {
+                'tamil nadu', 'karnataka', 'maharashtra', 'kerala', 'andhra pradesh',
+                'telangana', 'west bengal', 'gujarat', 'rajasthan', 'uttar pradesh',
+                'madhya pradesh', 'bihar', 'odisha', 'punjab', 'haryana', 'jharkhand',
+                'chhattisgarh', 'assam', 'goa', 'uttarakhand', 'himachal pradesh'
+            }
+
+            location_lower = location.lower()
+            if location_lower in known_cities:
+                hint_parts.append(f"- Filter by CITY/BRANCH (NOT State column!): {location} - Use columns like 'Branch', 'Branch_Name', 'City', 'Area Name', 'Area', 'Location' for this filter")
+            elif location_lower in known_states:
+                hint_parts.append(f"- Filter by STATE: {location} - Use the 'State' column for this filter")
+            else:
+                # Check if it looks like a state (contains 'pradesh', 'nadu', etc.)
+                if any(kw in location_lower for kw in ['pradesh', 'nadu', 'bengal', 'kashmir']):
+                    hint_parts.append(f"- Filter by STATE: {location} - Use the 'State' column")
+                else:
+                    hint_parts.append(f"- Filter by location/area: {location} - Try 'Branch', 'City', 'Area Name', or 'State' column based on what exists")
         if entities.get('category'):
             hint_parts.append(f"- Filter by category: {entities['category']}")
         if entities.get('month'):

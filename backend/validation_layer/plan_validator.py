@@ -72,6 +72,105 @@ def normalize_date_formats_in_plan(plan: dict) -> dict:
     return plan
 
 
+def normalize_text_filters_to_like(plan: dict, table_name: str) -> dict:
+    """
+    Ensure text column filters use LIKE with wildcards for flexible matching.
+
+    This fixes issues like "Chennai" not matching "Chennai Main" when the
+    LLM generates an exact match (=) instead of LIKE.
+
+    Rules:
+    - Text columns (VARCHAR, CHAR, TEXT, STRING) should use LIKE with %wildcards%
+    - Numeric columns keep their original operator
+    - Date/timestamp columns with comparison operators (>=, <) are not changed
+    - Values that already have wildcards are not double-wrapped
+    """
+    try:
+        table_schema = get_table_schema(table_name)
+    except:
+        return plan  # Can't check schema, skip normalization
+
+    # Columns that are text-based
+    text_types = ['VARCHAR', 'CHAR', 'TEXT', 'STRING', 'NVARCHAR', 'NCHAR']
+
+    # Columns that should NOT be converted to LIKE (even if text)
+    # These are typically exact-match fields like IDs, codes
+    exact_match_patterns = ['id', 'code', 'key', 'uuid', 'guid']
+
+    def should_use_like(column_name: str, column_type: str, operator: str, value) -> bool:
+        """Determine if a filter should use LIKE instead of ="""
+        # Only consider = operator for conversion
+        if operator != '=':
+            return False
+
+        # Must be a text column
+        if not any(t in column_type.upper() for t in text_types):
+            return False
+
+        # Don't convert ID/code columns
+        col_lower = column_name.lower()
+        if any(pattern in col_lower for pattern in exact_match_patterns):
+            return False
+
+        # Value must be a string
+        if not isinstance(value, str):
+            return False
+
+        # Skip if already has wildcards
+        if '%' in value:
+            return False
+
+        return True
+
+    def process_filters(filters: list):
+        """Process a list of filters and convert appropriate ones to LIKE"""
+        for f in filters:
+            column = f.get('column', '')
+            operator = f.get('operator', '')
+            value = f.get('value', '')
+
+            # Get column type from schema
+            col_type = table_schema.get(column, '')
+
+            if should_use_like(column, col_type, operator, value):
+                # Convert = to LIKE with wildcards
+                old_op = f['operator']
+                old_val = f['value']
+                f['operator'] = 'LIKE'
+                f['value'] = f'%{value}%'
+                print(f"  [Validator] Converted text filter to LIKE: {column} {old_op} '{old_val}' -> {column} LIKE '{f['value']}'")
+
+    # Process main filters
+    if plan.get('filters'):
+        process_filters(plan['filters'])
+
+    # Process subset_filters
+    if plan.get('subset_filters'):
+        process_filters(plan['subset_filters'])
+
+    # Process filters in comparison/period configs
+    for period_key in ['period_a', 'period_b']:
+        if plan.get(period_key) and plan[period_key].get('filters'):
+            # For period configs, we need to get the table from the period
+            period_table = plan[period_key].get('table', table_name)
+            try:
+                period_schema = get_table_schema(period_table)
+                for f in plan[period_key]['filters']:
+                    column = f.get('column', '')
+                    operator = f.get('operator', '')
+                    value = f.get('value', '')
+                    col_type = period_schema.get(column, '')
+
+                    if should_use_like(column, col_type, operator, value):
+                        f['operator'] = 'LIKE'
+                        f['value'] = f'%{value}%'
+                        print(f"  [Validator] Converted {period_key} filter to LIKE: {column} LIKE '%{value}%'")
+            except:
+                pass  # Skip if can't get schema
+
+    return plan
+
+
 def get_table_schema(table_name: str) -> dict:
     """
     Get schema information for a table from DuckDB.
@@ -473,6 +572,10 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
 
     # 4b. Normalize date formats in filter values (DD/MM/YYYY -> YYYY-MM-DD)
     plan = normalize_date_formats_in_plan(plan)
+
+    # 4c. Ensure text filters use LIKE with wildcards for flexible matching
+    # This fixes issues like "Chennai" not matching "Chennai Main"
+    plan = normalize_text_filters_to_like(plan, table)
 
     # 5. Validate columns exist
     select_columns = plan.get("select_columns", [])

@@ -40,7 +40,7 @@ from utils.voice_utils import transcribe_audio
 from utils.memory_detector import detect_memory_intent
 from utils.permanent_memory import update_memory, load_memory
 from utils.greeting_detector import is_greeting, get_greeting_response, detect_schema_inquiry
-from utils.query_context import QueryContext, QueryTurn, ConversationManager, PendingClarification
+from utils.query_context import QueryContext, QueryTurn, ConversationManager, PendingClarification, PendingCorrection
 from utils.personality import TharaPersonality
 from utils.onboarding import OnboardingManager, get_user_name
 from utils.query_cache import get_query_cache, cache_query_result, get_cached_query_result, invalidate_spreadsheet_cache
@@ -180,6 +180,7 @@ class AppState:
         self._profile_store: Optional[ProfileStore] = None
         self._table_router: Optional[TableRouter] = None
         self._query_healer: Optional[QueryHealer] = None
+        self._correction_detector = None  # Lazy-initialized
 
         # Light components - initialize immediately (cheap)
         self.conversation_manager: ConversationManager = ConversationManager()
@@ -268,6 +269,21 @@ class AppState:
     @query_healer.setter
     def query_healer(self, value):
         self._query_healer = value
+
+    @property
+    def correction_detector(self):
+        """Lazy-load correction intent detector on first access"""
+        if self._correction_detector is None:
+            from utils.correction_detector import CorrectionIntentDetector
+            self._correction_detector = CorrectionIntentDetector()
+            # Refresh with known values from profiles
+            if self._profile_store is not None:
+                self._correction_detector.refresh_from_profiles(self._profile_store)
+        return self._correction_detector
+
+    @correction_detector.setter
+    def correction_detector(self, value):
+        self._correction_detector = value
 
     def initialize(self):
         """
@@ -617,6 +633,854 @@ def _reprofile_tables(changed_sheets: List[str], sheets_with_tables: Dict):
         print(f"[Reprofile] Error: {e}")
 
 
+# ============================================================================
+# CORRECTION HANDLERS - Handle user corrections to previous queries
+# ============================================================================
+
+def _handle_correction(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Route correction to appropriate handler based on correction type.
+    """
+    from utils.correction_detector import CorrectionType
+
+    correction_type = correction_intent.correction_type
+
+    if correction_type == CorrectionType.TABLE:
+        return _handle_table_correction(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.FILTER:
+        return _handle_filter_correction(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.METRIC:
+        return _handle_metric_correction(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.NEGATION:
+        return _handle_negation(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.REVERT:
+        return _handle_revert(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.MULTIPLE:
+        return _handle_multiple_corrections(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    return None
+
+
+def _handle_table_correction(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle table correction requests - FULLY AUTOMATIC (no user prompts).
+
+    Strategies:
+    1. Explicit table name mentioned -> use it directly
+    2. Table type hint (summary/raw/category) -> auto-select best matching type
+    3. Ambiguous ("other table") -> auto-select using smart logic
+    """
+    print("    [Table Correction Handler]")
+
+    # Get profile store for table lookups
+    profile_store = app_state.profile_store
+
+    # Case 1: Explicit table name mentioned
+    if correction_intent.explicit_table:
+        explicit_table = correction_intent.explicit_table
+        print(f"      Explicit table: {explicit_table}")
+
+        # Verify table exists
+        if profile_store.get_profile(explicit_table):
+            return _re_execute_with_table(
+                previous_turn=previous_turn,
+                forced_table=explicit_table,
+                ctx=ctx,
+                app_state=app_state,
+                is_tamil=is_tamil,
+                correction_type="table"
+            )
+        else:
+            print(f"      ! Table '{explicit_table}' not found")
+            # Try fuzzy match
+            all_tables = profile_store.get_table_names() or []
+            for table in all_tables:
+                if explicit_table.lower() in table.lower():
+                    print(f"      → Fuzzy match: {table}")
+                    return _re_execute_with_table(
+                        previous_turn=previous_turn,
+                        forced_table=table,
+                        ctx=ctx,
+                        app_state=app_state,
+                        is_tamil=is_tamil,
+                        correction_type="table"
+                    )
+
+    # Case 2: Table type hint or ambiguous correction
+    # Auto-select the best alternative table
+    selected_table = _auto_select_alternative_table(
+        previous_table=previous_turn.table_used,
+        alternatives=previous_turn.routing_alternatives or [],
+        correction_text=question,
+        profile_store=profile_store,
+        table_type_hint=correction_intent.table_type_hint
+    )
+
+    if selected_table:
+        print(f"      Auto-selected table: {selected_table}")
+        return _re_execute_with_table(
+            previous_turn=previous_turn,
+            forced_table=selected_table,
+            ctx=ctx,
+            app_state=app_state,
+            is_tamil=is_tamil,
+            correction_type="table"
+        )
+
+    # Fallback: Re-route the original query
+    print("      ! No suitable alternative found, re-routing query")
+    return None  # Continue normal pipeline to re-route
+
+
+def _auto_select_alternative_table(
+    previous_table: str,
+    alternatives: List[tuple],
+    correction_text: str,
+    profile_store,
+    table_type_hint: Optional[str] = None
+) -> Optional[str]:
+    """
+    Automatically select the best alternative table without asking user.
+
+    Priority:
+    1. If correction mentions keywords (raw, summary, detail) -> match table type
+    2. Pick table type opposite to previous (summary -> transactional)
+    3. Pick highest-scored alternative that isn't the previous table
+    """
+    # Get previous table type
+    prev_profile = profile_store.get_profile(previous_table) if previous_table else {}
+    prev_type = prev_profile.get('table_type', 'unknown') if prev_profile else 'unknown'
+
+    # Check for type hints in correction text
+    type_keywords = {
+        'raw': 'transactional',
+        'detail': 'transactional',
+        'detailed': 'transactional',
+        'transaction': 'transactional',
+        'daily': 'transactional',
+        'individual': 'transactional',
+        'summary': 'summary',
+        'aggregate': 'summary',
+        'aggregated': 'summary',
+        'total': 'summary',
+        'totals': 'summary',
+        'monthly': 'summary',
+        'overall': 'summary',
+        'category': 'category',
+        'breakdown': 'category',
+    }
+
+    target_type = table_type_hint  # Use provided hint first
+
+    # Check for keywords in correction text
+    if not target_type:
+        correction_lower = correction_text.lower()
+        for keyword, table_type in type_keywords.items():
+            if keyword in correction_lower:
+                target_type = table_type
+                print(f"      Detected keyword '{keyword}' -> target type: {table_type}")
+                break
+
+    # If no explicit hint, prefer opposite type
+    if not target_type or target_type == 'other':
+        type_opposites = {
+            'summary': 'transactional',
+            'transactional': 'summary',
+            'aggregate': 'transactional',
+            'category': 'transactional',
+            'unknown': 'transactional'  # Default to transactional for more detail
+        }
+        target_type = type_opposites.get(prev_type, 'transactional')
+        print(f"      Previous type '{prev_type}' -> target opposite: {target_type}")
+
+    # Score and select best alternative
+    best_table = None
+    best_score = -1
+
+    # First try alternatives from routing
+    if alternatives:
+        for item in alternatives:
+            # Handle both tuple (table_name, score) and just table_name
+            if isinstance(item, tuple):
+                table_name, score = item
+            else:
+                table_name = item
+                score = 30  # Default score
+
+            if table_name == previous_table:
+                continue  # Skip previous table
+
+            profile = profile_store.get_profile(table_name)
+            if not profile:
+                continue
+
+            table_type = profile.get('table_type', 'unknown')
+
+            # Boost score if type matches target
+            adjusted_score = score
+            if target_type and table_type == target_type:
+                adjusted_score += 20
+                print(f"      Boosted {table_name} (type={table_type} matches target)")
+
+            if adjusted_score > best_score:
+                best_score = adjusted_score
+                best_table = table_name
+
+    # If no good alternative from routing, search all tables
+    if not best_table:
+        all_tables = profile_store.get_table_names() or []
+        for table_name in all_tables:
+            if table_name == previous_table:
+                continue
+
+            profile = profile_store.get_profile(table_name)
+            if not profile:
+                continue
+
+            table_type = profile.get('table_type', 'unknown')
+
+            # Score based on type match
+            score = 30 if table_type == target_type else 10
+
+            if score > best_score:
+                best_score = score
+                best_table = table_name
+
+    return best_table
+
+
+def _handle_filter_correction(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle filter correction requests.
+
+    Process:
+    1. Parse old_value -> new_value from correction
+    2. Update entities from previous turn
+    3. Re-run query with corrected entities and modified question text
+    """
+    print("    [Filter Correction Handler]")
+
+    # Get entities from previous turn
+    corrected_entities = (previous_turn.entities or {}).copy()
+    old_values = {}
+
+    # Apply filter corrections
+    for correction in (correction_intent.filter_corrections or []):
+        field = correction.get('field')
+        old_value = correction.get('old_value')
+        new_value = correction.get('new_value')
+
+        if not new_value:
+            continue
+
+        # Map field name to entity key
+        field_mapping = {
+            'month': 'month',
+            'location': 'location',
+            'category': 'category',
+            'state': 'location',
+            'city': 'location',
+            'area': 'location',
+            'region': 'location',
+            'inferred': None  # Will try to infer
+        }
+
+        entity_key = field_mapping.get(field, field)
+
+        # If field is inferred, try to determine it
+        if entity_key is None or field == 'inferred':
+            # Check what the new value looks like
+            new_lower = new_value.lower()
+            months = ['january', 'february', 'march', 'april', 'may', 'june',
+                     'july', 'august', 'september', 'october', 'november', 'december',
+                     'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+            if new_lower in months:
+                entity_key = 'month'
+                new_value = new_value.capitalize()
+            else:
+                # Try to match with previous turn's entities
+                for key, prev_value in corrected_entities.items():
+                    if key in ['month', 'location', 'category', 'metric']:
+                        entity_key = key
+                        break
+                if not entity_key:
+                    entity_key = 'location'  # Default assumption
+
+        print(f"      Correcting {entity_key}: {old_value} -> {new_value}")
+        # Store old value for question text replacement
+        # If old_value not explicitly provided, get it from previous turn's entities
+        if old_value:
+            old_values[entity_key] = old_value
+        elif previous_turn.entities and previous_turn.entities.get(entity_key):
+            # Use the previous turn's entity value as old_value for text replacement
+            old_values[entity_key] = previous_turn.entities[entity_key]
+            print(f"      Using previous entity as old_value: {old_values[entity_key]}")
+        corrected_entities[entity_key] = new_value
+
+    # Re-execute with corrected entities and old values for text replacement
+    return _re_execute_with_entities(
+        previous_turn=previous_turn,
+        corrected_entities=corrected_entities,
+        ctx=ctx,
+        app_state=app_state,
+        is_tamil=is_tamil,
+        correction_type="filter",
+        old_values=old_values
+    )
+
+
+def _handle_metric_correction(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle metric correction requests.
+
+    Process:
+    1. Parse old_metric -> new_metric from correction
+    2. Update entities with new metric
+    3. Re-execute query with modified question text
+    """
+    print("    [Metric Correction Handler]")
+
+    # Get entities from previous turn
+    corrected_entities = (previous_turn.entities or {}).copy()
+    old_values = {}
+
+    # Apply metric corrections
+    for correction in (correction_intent.metric_corrections or []):
+        old_metric = correction.get('old_metric')
+        new_metric = correction.get('new_metric')
+
+        if new_metric:
+            print(f"      Correcting metric: {old_metric} -> {new_metric}")
+            # Store old metric for question text replacement
+            # If old_metric not explicitly provided, get it from previous turn's entities
+            if old_metric:
+                old_values['metric'] = old_metric
+            elif previous_turn.entities and previous_turn.entities.get('metric'):
+                old_values['metric'] = previous_turn.entities['metric']
+                print(f"      Using previous entity as old_metric: {old_values['metric']}")
+            corrected_entities['metric'] = new_metric
+
+    # Re-execute with corrected entities and old values for text replacement
+    return _re_execute_with_entities(
+        previous_turn=previous_turn,
+        corrected_entities=corrected_entities,
+        ctx=ctx,
+        app_state=app_state,
+        is_tamil=is_tamil,
+        correction_type="metric",
+        old_values=old_values
+    )
+
+
+def _handle_negation(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle general negation ("that's wrong", "incorrect") with smart auto-resolution.
+
+    Strategies (in order):
+    1. If previous query had low confidence (< 0.6) -> try next best table
+    2. If previous query returned 0 results -> relax filters
+    3. If previous query had multiple alternatives -> try next alternative
+    4. ONLY if no auto-resolution possible -> Ask for clarification
+    """
+    print("    [Negation Handler - Smart Auto-Resolution]")
+
+    # Strategy 1: Low confidence -> try alternative table
+    if previous_turn.confidence < 0.6 and previous_turn.routing_alternatives:
+        print(f"      Previous confidence was low ({previous_turn.confidence:.0%}), trying alternative table")
+        selected_table = _auto_select_alternative_table(
+            previous_table=previous_turn.table_used,
+            alternatives=previous_turn.routing_alternatives,
+            correction_text=question,
+            profile_store=app_state.profile_store,
+            table_type_hint=None
+        )
+        if selected_table:
+            return _re_execute_with_table(
+                previous_turn=previous_turn,
+                forced_table=selected_table,
+                ctx=ctx,
+                app_state=app_state,
+                is_tamil=is_tamil,
+                correction_type="negation_table"
+            )
+
+    # Strategy 2: Zero results -> try relaxing filters or different table
+    result_summary = previous_turn.result_summary or ""
+    if "0 rows" in result_summary or "no data" in result_summary.lower():
+        print("      Previous query returned no results, trying alternative approach")
+        # Try alternative table first
+        if previous_turn.routing_alternatives:
+            selected_table = _auto_select_alternative_table(
+                previous_table=previous_turn.table_used,
+                alternatives=previous_turn.routing_alternatives,
+                correction_text="",
+                profile_store=app_state.profile_store,
+                table_type_hint=None
+            )
+            if selected_table:
+                return _re_execute_with_table(
+                    previous_turn=previous_turn,
+                    forced_table=selected_table,
+                    ctx=ctx,
+                    app_state=app_state,
+                    is_tamil=is_tamil,
+                    correction_type="negation_empty"
+                )
+
+    # Strategy 3: Has alternatives -> try next one
+    if previous_turn.routing_alternatives:
+        selected_table = _auto_select_alternative_table(
+            previous_table=previous_turn.table_used,
+            alternatives=previous_turn.routing_alternatives,
+            correction_text=question,
+            profile_store=app_state.profile_store,
+            table_type_hint=None
+        )
+        if selected_table:
+            print(f"      Trying alternative table: {selected_table}")
+            return _re_execute_with_table(
+                previous_turn=previous_turn,
+                forced_table=selected_table,
+                ctx=ctx,
+                app_state=app_state,
+                is_tamil=is_tamil,
+                correction_type="negation_alternative"
+            )
+
+    # Strategy 4: Ask for clarification (last resort)
+    print("      No auto-resolution possible, asking for clarification")
+    ctx.set_pending_correction_state(
+        original_question=question,
+        correction_type="negation",
+        is_tamil=is_tamil
+    )
+
+    if is_tamil:
+        message = """என்ன தவறு என்று என்னால் புரிந்துகொள்ள முடியவில்லை. தயவுசெய்து குறிப்பிடுங்கள்:
+- வேறு table வேண்டும் என்றால் "summary table பாரு" போன்று சொல்லுங்கள்
+- filter மாற்ற வேண்டும் என்றால் "September மாதம்" போன்று சொல்லுங்கள்
+- வேறு metric வேண்டும் என்றால் "profit காட்டு" போன்று சொல்லுங்கள்"""
+    else:
+        message = """I'm not sure what to correct. Could you be more specific?
+- For a different table, say something like "use the summary table"
+- For a different filter, say "for September" or "in Tamil Nadu"
+- For a different metric, say "show profit instead" """
+
+    return {
+        'success': True,
+        'explanation': message,
+        'data': None,
+        'needs_clarification': True,
+        'is_correction_flow': True
+    }
+
+
+def _handle_revert(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle revert requests ("never mind", "go back to original").
+
+    Process:
+    1. Find the original turn before any corrections in the chain
+    2. Re-execute with original parameters
+    """
+    print("    [Revert Handler]")
+
+    # Find original turn before corrections
+    original_turn = ctx.find_original_turn(previous_turn)
+
+    if original_turn and original_turn != previous_turn:
+        print(f"      Reverting to original query: {original_turn.question[:50]}...")
+
+        # Re-execute original query
+        return _re_execute_turn(
+            turn=original_turn,
+            ctx=ctx,
+            app_state=app_state,
+            is_tamil=is_tamil,
+            mark_as_revert=True
+        )
+    else:
+        # No original to revert to
+        if is_tamil:
+            message = "திரும்பிப் போக எதுவும் இல்லை. புதிய கேள்வி கேளுங்கள்."
+        else:
+            message = "There's nothing to revert to. This was the original query. Please ask a new question."
+
+        return {
+            'success': True,
+            'explanation': message,
+            'data': None
+        }
+
+
+def _handle_multiple_corrections(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle multiple corrections in one message.
+
+    Apply corrections in order: table -> filter -> metric
+    """
+    print("    [Multiple Corrections Handler]")
+
+    corrected_entities = (previous_turn.entities or {}).copy()
+    old_values = {}
+    table_to_use = previous_turn.table_used
+
+    # Apply filter corrections
+    for correction in (correction_intent.filter_corrections or []):
+        field = correction.get('field', 'inferred')
+        old_value = correction.get('old_value')
+        new_value = correction.get('new_value')
+        if new_value:
+            if field == 'inferred':
+                field = 'location'  # Default
+            if old_value:
+                old_values[field] = old_value
+            corrected_entities[field] = new_value
+            print(f"      Applied filter correction: {field}={new_value}")
+
+    # Apply metric corrections
+    for correction in (correction_intent.metric_corrections or []):
+        old_metric = correction.get('old_metric')
+        new_metric = correction.get('new_metric')
+        if new_metric:
+            if old_metric:
+                old_values['metric'] = old_metric
+            corrected_entities['metric'] = new_metric
+            print(f"      Applied metric correction: metric={new_metric}")
+
+    # Apply table correction (if present)
+    if correction_intent.explicit_table or correction_intent.table_type_hint:
+        if correction_intent.explicit_table:
+            table_to_use = correction_intent.explicit_table
+        else:
+            table_to_use = _auto_select_alternative_table(
+                previous_table=previous_turn.table_used,
+                alternatives=previous_turn.routing_alternatives or [],
+                correction_text=question,
+                profile_store=app_state.profile_store,
+                table_type_hint=correction_intent.table_type_hint
+            ) or previous_turn.table_used
+        print(f"      Applied table correction: {table_to_use}")
+
+    # Re-execute with all corrections
+    return _re_execute_with_corrections(
+        previous_turn=previous_turn,
+        corrected_entities=corrected_entities,
+        forced_table=table_to_use,
+        ctx=ctx,
+        app_state=app_state,
+        is_tamil=is_tamil,
+        correction_type="multiple",
+        old_values=old_values
+    )
+
+
+def _handle_pending_correction_response(
+    user_response: str,
+    pending_correction,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle user's response to a correction clarification request.
+    This is called when user was asked "what should I correct?"
+    """
+    print("    [Pending Correction Response Handler]")
+
+    # Get the turn being corrected
+    previous_turn = ctx.get_turn_by_index(pending_correction.previous_turn_index)
+    if not previous_turn:
+        return None
+
+    # Try to detect what the user wants to correct from their response
+    correction_detector = app_state.correction_detector
+    correction_intent = correction_detector.detect(user_response, previous_turn)
+
+    if correction_intent:
+        print(f"      Detected correction type from response: {correction_intent.correction_type.value}")
+        return _handle_correction(
+            correction_intent=correction_intent,
+            previous_turn=previous_turn,
+            question=user_response,
+            ctx=ctx,
+            app_state=app_state,
+            is_tamil=is_tamil
+        )
+
+    return None
+
+
+def _re_execute_with_table(
+    previous_turn,
+    forced_table: str,
+    ctx,
+    app_state,
+    is_tamil: bool,
+    correction_type: str
+) -> Dict[str, Any]:
+    """
+    Re-execute the original query with a different table.
+    """
+    print(f"      [Re-executing with table: {forced_table}]")
+
+    # Get original question
+    original_question = previous_turn.resolved_question or previous_turn.question
+    entities = (previous_turn.entities or {}).copy()
+
+    # Execute with forced table
+    result = _execute_with_forced_table(
+        original_question=previous_turn.question,
+        processing_query=original_question,
+        entities=entities,
+        forced_table=forced_table,
+        is_tamil=is_tamil,
+        ctx=ctx,
+        app_state=app_state
+    )
+
+    # Mark this as a correction turn
+    if result.get('success') and ctx.turns:
+        last_turn = ctx.turns[-1]
+        last_turn.was_correction = True
+        last_turn.corrected_from_turn = len(ctx.turns) - 2  # Previous turn
+        last_turn.correction_type = correction_type
+
+    return result
+
+
+def _re_execute_with_entities(
+    previous_turn,
+    corrected_entities: Dict[str, Any],
+    ctx,
+    app_state,
+    is_tamil: bool,
+    correction_type: str,
+    old_values: Dict[str, Any] = None
+) -> Dict[str, Any]:
+    """
+    Re-execute the original query with corrected entities.
+
+    Args:
+        old_values: Optional dict containing old values for text replacement
+                    e.g., {'metric': 'revenue'} when correcting to 'profit'
+    """
+    import re
+    print(f"      [Re-executing with corrected entities]")
+
+    # Get original question and table
+    original_question = previous_turn.resolved_question or previous_turn.question
+    processing_query = original_question
+    table = previous_turn.table_used
+
+    # For METRIC corrections, we need to modify the question text
+    # because the LLM planner uses the question text to understand intent
+    if correction_type == "metric" and corrected_entities.get('metric'):
+        new_metric = corrected_entities['metric']
+        old_metric = None
+
+        # Try to get old metric from old_values or previous turn entities
+        if old_values and old_values.get('metric'):
+            old_metric = old_values['metric']
+        elif previous_turn.entities and previous_turn.entities.get('metric'):
+            old_metric = previous_turn.entities['metric']
+
+        if old_metric and old_metric.lower() != new_metric.lower():
+            # Replace old metric with new metric in question text
+            print(f"      Replacing '{old_metric}' -> '{new_metric}' in question text")
+            processing_query = re.sub(
+                rf'\b{re.escape(old_metric)}\b',
+                new_metric,
+                processing_query,
+                flags=re.IGNORECASE
+            )
+        else:
+            # No old metric found - try to find common metric words and replace
+            # Look for known metric patterns in the question
+            common_metrics = ['revenue', 'profit', 'sales', 'cost', 'margin', 'income', 'expense', 'total', 'amount', 'quantity', 'count']
+            for metric in common_metrics:
+                if metric.lower() != new_metric.lower() and re.search(rf'\b{metric}\b', processing_query, re.IGNORECASE):
+                    print(f"      Found metric '{metric}' in question, replacing with '{new_metric}'")
+                    processing_query = re.sub(
+                        rf'\b{metric}\b',
+                        new_metric,
+                        processing_query,
+                        flags=re.IGNORECASE
+                    )
+                    break
+
+        print(f"      Modified question: {processing_query}")
+
+    # For FILTER corrections, also replace old filter values with new ones
+    if correction_type == "filter" and old_values:
+        for field, old_val in old_values.items():
+            new_val = corrected_entities.get(field)
+            if old_val and new_val and str(old_val).lower() != str(new_val).lower():
+                print(f"      Replacing filter '{old_val}' -> '{new_val}' in question text")
+                processing_query = re.sub(
+                    rf'\b{re.escape(str(old_val))}\b',
+                    str(new_val),
+                    processing_query,
+                    flags=re.IGNORECASE
+                )
+        print(f"      Modified question: {processing_query}")
+
+    # Execute with corrected entities and modified question
+    result = _execute_with_forced_table(
+        original_question=previous_turn.question,
+        processing_query=processing_query,
+        entities=corrected_entities,
+        forced_table=table,
+        is_tamil=is_tamil,
+        ctx=ctx,
+        app_state=app_state
+    )
+
+    # Mark this as a correction turn
+    if result.get('success') and ctx.turns:
+        last_turn = ctx.turns[-1]
+        last_turn.was_correction = True
+        last_turn.corrected_from_turn = len(ctx.turns) - 2
+        last_turn.correction_type = correction_type
+
+    return result
+
+
+def _re_execute_with_corrections(
+    previous_turn,
+    corrected_entities: Dict[str, Any],
+    forced_table: str,
+    ctx,
+    app_state,
+    is_tamil: bool,
+    correction_type: str,
+    old_values: Dict[str, Any] = None
+) -> Dict[str, Any]:
+    """
+    Re-execute with both entity and table corrections.
+    """
+    import re
+    print(f"      [Re-executing with table={forced_table} and corrected entities]")
+
+    original_question = previous_turn.resolved_question or previous_turn.question
+    processing_query = original_question
+
+    # Apply text replacements for metric/filter corrections
+    if old_values:
+        for field, old_val in old_values.items():
+            new_val = corrected_entities.get(field)
+            if old_val and new_val and str(old_val).lower() != str(new_val).lower():
+                print(f"      Replacing '{old_val}' -> '{new_val}' in question text")
+                processing_query = re.sub(
+                    rf'\b{re.escape(str(old_val))}\b',
+                    str(new_val),
+                    processing_query,
+                    flags=re.IGNORECASE
+                )
+
+    result = _execute_with_forced_table(
+        original_question=previous_turn.question,
+        processing_query=processing_query,
+        entities=corrected_entities,
+        forced_table=forced_table,
+        is_tamil=is_tamil,
+        ctx=ctx,
+        app_state=app_state
+    )
+
+    if result.get('success') and ctx.turns:
+        last_turn = ctx.turns[-1]
+        last_turn.was_correction = True
+        last_turn.corrected_from_turn = len(ctx.turns) - 2
+        last_turn.correction_type = correction_type
+
+    return result
+
+
+def _re_execute_turn(
+    turn,
+    ctx,
+    app_state,
+    is_tamil: bool,
+    mark_as_revert: bool = False
+) -> Dict[str, Any]:
+    """
+    Re-execute a specific turn (used for revert).
+    """
+    print(f"      [Re-executing turn: {turn.question[:50]}...]")
+
+    result = _execute_with_forced_table(
+        original_question=turn.question,
+        processing_query=turn.resolved_question or turn.question,
+        entities=turn.entities or {},
+        forced_table=turn.table_used,
+        is_tamil=is_tamil,
+        ctx=ctx,
+        app_state=app_state
+    )
+
+    if result.get('success') and ctx.turns and mark_as_revert:
+        last_turn = ctx.turns[-1]
+        last_turn.was_correction = True
+        last_turn.correction_type = "revert"
+
+    return result
+
+
 def _execute_with_forced_table(
     original_question: str,
     processing_query: str,
@@ -729,7 +1593,9 @@ def _execute_with_forced_table(
             sql_executed=final_sql,
             was_followup=False,
             confidence=1.0,  # High confidence since user chose
-            result_values=result_values  # NEW: For "that state", "that branch" resolution
+            result_values=result_values,  # For "that state", "that branch" resolution
+            query_plan=plan,  # Store plan for correction re-execution
+            routing_alternatives=[]  # No alternatives when forced
         )
         ctx.add_turn(turn)
 
@@ -982,6 +1848,57 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         # NOTE: Removed hardcoded "Freshggies" STT correction
         # The system should work with any business name via ProfileStore dynamic learning
+
+        # === CHECK FOR PENDING CORRECTION CLARIFICATION ===
+        if ctx.has_pending_correction_state():
+            print("\n[STEP 0.6a/9] CHECKING PENDING CORRECTION...")
+            pending_correction = ctx.get_pending_correction_state()
+            # User was asked what to correct - process their response
+            correction_response = _handle_pending_correction_response(
+                user_response=question,
+                pending_correction=pending_correction,
+                ctx=ctx,
+                app_state=app_state,
+                is_tamil=bool(re.search(r'[\u0B80-\u0BFF]', question))
+            )
+            if correction_response:
+                ctx.clear_pending_correction_state()
+                return correction_response
+            else:
+                # Couldn't match response, clear and continue as normal query
+                ctx.clear_pending_correction_state()
+                print("  ✗ Could not match correction response, treating as new query")
+
+        # === CHECK FOR CORRECTION INTENT ===
+        # Only check if there's previous context to correct
+        if ctx.turns:
+            _step_start = _time.time()
+            print("\n[STEP 0.6b/9] CORRECTION INTENT DETECTION...")
+            previous_turn = ctx.get_last_turn()
+            correction_intent = app_state.correction_detector.detect(question, previous_turn)
+
+            if correction_intent:
+                print(f"  ✓ Correction detected: {correction_intent.correction_type.value}")
+                print(f"    Confidence: {correction_intent.confidence:.0%}")
+                _log_timing("correction_detection", _step_start)
+
+                # Detect Tamil
+                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+
+                # Handle the correction
+                correction_result = _handle_correction(
+                    correction_intent=correction_intent,
+                    previous_turn=previous_turn,
+                    question=question,
+                    ctx=ctx,
+                    app_state=app_state,
+                    is_tamil=is_tamil
+                )
+                if correction_result:
+                    return correction_result
+            else:
+                print("  ✗ No correction intent detected")
+            _log_timing("correction_detection", _step_start)
 
         # === FAST PATH: Greetings & Conversational ===
         _step_start = _time.time()
@@ -1448,7 +2365,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             sql_executed=final_sql if 'final_sql' in dir() else None,
             was_followup=is_followup,
             confidence=confidence,
-            result_values=result_values  # NEW: For "that state", "that branch" resolution
+            result_values=result_values,  # For "that state", "that branch" resolution
+            # Store routing info for correction handlers
+            query_plan=plan,
+            routing_alternatives=routing_result.alternatives if 'routing_result' in dir() and routing_result else []
         )
         ctx.add_turn(turn)
 

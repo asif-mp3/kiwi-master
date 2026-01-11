@@ -78,6 +78,12 @@ When multiple tables with similar schemas are available in the schema context:
    - "which zone performed best" → Use table with "Zone" column
    - **DO NOT** use a category table (e.g., "By_Category") for area/location/pincode questions!
    - Look for tables with "pincode", "area", "zone", or "location" in the name
+   - **CRITICAL - CITY vs STATE Column Selection**:
+     - **CITIES** (Chennai, Bangalore, Mumbai, Delhi, Hyderabad, etc.) → Filter on "Branch", "Branch_Name", "City", "Area Name", "Area", or "Location" column - NEVER use "State" column for cities!
+     - **STATES** (Tamil Nadu, Karnataka, Maharashtra, Kerala, etc.) → Filter on "State" column
+     - Example WRONG: {"column": "State", "operator": "LIKE", "value": "%Chennai%"} - Chennai is a CITY, not a state!
+     - Example CORRECT: {"column": "Branch", "operator": "LIKE", "value": "%Chennai%"} - Use Branch/City column for cities
+     - Example CORRECT: {"column": "State", "operator": "LIKE", "value": "%Tamil Nadu%"} - Use State column for states
    - **CRITICAL - "In [State], which branch/district..."**: When the question asks about branches/districts WITHIN a state:
      - Use a table with BOTH "Branch" and "State" columns
      - Apply a FILTER on the State column (e.g., State LIKE '%Tamil Nadu%')
