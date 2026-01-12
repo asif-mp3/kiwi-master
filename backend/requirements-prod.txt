@@ -1,5 +1,6 @@
-# Production Requirements for Railway (Optimized)
-# Reduced image size by using lighter alternatives where possible
+# Production Requirements for Railway
+# Optimized to reduce image size while keeping ALL core functionality
+# chromadb + sentence-transformers are REQUIRED for schema intelligence
 
 # Core Dependencies
 google-generativeai>=0.3.0
@@ -10,10 +11,9 @@ python-dotenv>=1.0.0
 # Database
 duckdb>=0.9.0
 
-# Vector Store & Embeddings (REQUIRED for schema intelligence)
-# Using specific versions to reduce size
-chromadb==0.4.22
-sentence-transformers==2.2.2
+# Vector Store & Embeddings (CORE - DO NOT REMOVE)
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
 
 # Google Sheets Integration
 gspread>=5.0.0
@@ -26,7 +26,7 @@ google-cloud-translate>=3.0.0
 pandas>=2.0.0
 numpy>=1.24.0
 
-# Voice & Audio (minimal set)
+# Voice & Audio (Production)
 elevenlabs>=1.0.0
 langdetect>=1.0.9
 
@@ -41,8 +41,10 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 
-# EXCLUDED (not needed for production FastAPI):
-# - streamlit (only for local dev UI)
-# - gtts (not used in production)
-# - pydub (not used in production)
-# - scipy (not directly used)
+# ============================================
+# REMOVED (Not used in production FastAPI):
+# ============================================
+# streamlit>=1.28.0          - Only used in legacy auth functions (optional imports)
+# gtts>=2.4.0                - Not used anywhere in codebase
+# pydub>=0.25.1              - Not used anywhere in codebase  
+# scipy>=1.10.0              - Not used anywhere in codebase
