@@ -112,8 +112,13 @@ async def verify_auth_token(request: Request) -> Optional[dict]:
         return None
 
     try:
-        from utils.supabase_auth import verify_token
-        return verify_token(auth_header)
+        # Extract token from Bearer header
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            # For simple admin auth, just verify token is present and valid format (64 char hex)
+            if len(token) == 64 and all(c in '0123456789abcdef' for c in token):
+                return {"id": "admin-user", "email": "admin@thara.ai", "name": "Admin"}
+        return None
     except Exception as e:
         print(f"[Auth] Token verification error: {e}")
         return None
@@ -122,7 +127,7 @@ async def verify_auth_token(request: Request) -> Optional[dict]:
 async def require_auth(request: Request):
     """Dependency that requires authentication"""
     # Skip auth for certain endpoints
-    if request.url.path in ["/", "/api/auth/check", "/api/auth/google", "/api/auth/callback"]:
+    if request.url.path in ["/", "/api/auth/check", "/api/auth/login"]:
         return None
 
     user = await verify_auth_token(request)
@@ -429,23 +434,31 @@ async def text_to_speech_endpoint(request: dict, user: dict = Depends(require_au
 @app.post("/api/auth/login")
 async def login(request: dict):
     """
-    Authenticate user with username/password.
-    Demo mode allows admin/admin123 (configurable via env).
+    Authenticate admin user with username/password.
+    Single admin credentials: HelloThara / MyBizEmpire@2026
     """
     username = request.get("username", "")
     password = request.get("password", "")
 
-    # Get demo credentials from environment (more secure than hardcoded)
-    demo_username = os.getenv("DEMO_USERNAME", "admin")
-    demo_password = os.getenv("DEMO_PASSWORD", "admin123")
+    # Admin credentials
+    admin_username = "HelloThara"
+    admin_password = "MyBizEmpire@2026"
 
-    if username == demo_username and password == demo_password:
+    if username == admin_username and password == admin_password:
+        # Generate a simple token for session management
+        import hashlib
+        import time
+        token_data = f"{username}:{time.time()}"
+        access_token = hashlib.sha256(token_data.encode()).hexdigest()
+
         return {
             "success": True,
             "user": {
-                "name": username,
-                "email": f"{username}@thara.ai"
+                "id": "admin-user",
+                "name": "Admin",
+                "email": "admin@thara.ai"
             },
+            "access_token": access_token,
             "message": "Login successful"
         }
     else:
@@ -466,30 +479,6 @@ async def check_auth(request: Request):
     }
 
 
-@app.get("/api/auth/google")
-async def google_login():
-    """Get Google OAuth URL for login."""
-    try:
-        from utils.supabase_auth import get_google_oauth_url
-        url = get_google_oauth_url()
-        return {"url": url}
-    except Exception as e:
-        print(f"[Auth] Google OAuth error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/auth/callback")
-async def auth_callback(request: dict):
-    """Handle OAuth callback and return tokens."""
-    try:
-        from utils.supabase_auth import handle_oauth_callback
-        code = request.get("code")
-        if not code:
-            raise HTTPException(status_code=400, detail="Authorization code required")
-        return handle_oauth_callback(code)
-    except Exception as e:
-        print(f"[Auth] Callback error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

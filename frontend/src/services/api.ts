@@ -179,7 +179,7 @@ export const api = {
    * Login with username and password.
    * Backend endpoint: POST /api/auth/login
    */
-  login: async (username: string, password: string): Promise<{ success: boolean; user?: { name: string }; error?: string }> => {
+  login: async (username: string, password: string): Promise<{ success: boolean; user?: { name: string }; access_token?: string; error?: string }> => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
@@ -195,7 +195,13 @@ export const api = {
       }
 
       const result = await response.json();
-      return { success: true, user: result.user };
+
+      // Store access token if provided
+      if (result.access_token && typeof window !== 'undefined') {
+        localStorage.setItem('thara_access_token', result.access_token);
+      }
+
+      return { success: true, user: result.user, access_token: result.access_token };
     } catch (e) {
       // Backend not available - don't allow any fallback auth (security risk)
       console.error('[API] Backend not available:', e);
@@ -286,26 +292,6 @@ export const api = {
     }
   },
 
-  /**
-   * Exchange OAuth callback code for user authentication.
-   * Backend endpoint: POST /api/auth/callback
-   */
-  authCallback: async (code: string): Promise<{ access_token: string; user: { name: string; email: string } }> => {
-    const response = await fetch(`${API_BASE_URL}/api/auth/callback`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ code }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'Authentication failed' }));
-      throw new Error(error.detail || 'Failed to authenticate');
-    }
-
-    return await response.json();
-  },
 
   /**
    * Get Google OAuth URL for Sheets access.

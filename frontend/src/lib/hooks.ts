@@ -36,6 +36,32 @@ export function useAppState() {
       }
     };
 
+    // SECURITY: Validate access token exists and is valid format (64 char hex)
+    const validateToken = (): boolean => {
+      const token = localStorage.getItem('thara_access_token');
+      if (!token) return false;
+      // Token must be 64 character hex string (SHA256 hash)
+      if (token.length !== 64) return false;
+      if (!/^[0-9a-f]+$/.test(token)) return false;
+      return true;
+    };
+
+    // Clear all auth data if token is invalid
+    const clearAllAuthData = () => {
+      localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(CHAT_KEY);
+      localStorage.removeItem(CONFIG_KEY);
+      localStorage.removeItem(CHAT_TABS_KEY);
+      localStorage.removeItem('thara_access_token');
+    };
+
+    // CRITICAL: Only restore auth if valid token exists
+    if (!validateToken()) {
+      clearAllAuthData();
+      setIsInitializing(false);
+      return;
+    }
+
     const savedAuth = safeJsonParse<AuthState>(AUTH_KEY);
     const savedChat = safeJsonParse<Message[]>(CHAT_KEY);
     const savedConfig = safeJsonParse<AppConfig>(CONFIG_KEY);
@@ -101,6 +127,7 @@ export function useAppState() {
     localStorage.removeItem(CHAT_KEY);
     localStorage.removeItem(CONFIG_KEY);
     localStorage.removeItem(CHAT_TABS_KEY);
+    localStorage.removeItem('thara_access_token');
   };
 
   const addMessage = (content: string, role: MessageRole = 'user', metadata?: Message['metadata']) => {
