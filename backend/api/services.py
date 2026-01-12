@@ -2502,8 +2502,12 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'error_type': 'invalid_input'
             }
 
-        # Allow short inputs (1-2 chars) ONLY when clarification is pending
-        if len(question_clean) < 3 and not has_pending:
+        # Allow short inputs (1-2 chars) ONLY when clarification is pending OR it's a greeting
+        # Short greetings like "Hi", "Hey", "Yo" should be allowed through
+        short_greetings = ['hi', 'hey', 'yo', 'ok', 'no', 'yes', 'ya', 'na']
+        is_short_greeting = question_clean.lower() in short_greetings
+
+        if len(question_clean) < 3 and not has_pending and not is_short_greeting:
             print("  ✗ Input too short (no pending clarification)")
             print("=" * 60 + "\n")
             return {

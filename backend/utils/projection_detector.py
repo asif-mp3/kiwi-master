@@ -117,12 +117,14 @@ PROJECTION_PATTERNS = {
         r'\b(at|with)\s+(this|the|same)\s+(growth|increase|decrease)\s+rate\b',
     ],
 
-    # Tamil projection patterns
+    # Tamil projection patterns (Tamil script)
     'tamil_projection': [
-        # இந்த போக்கு தொடர்ந்தால் - if this trend continues
-        r'(இந்த|அந்த|இதே)\s*(போக்கு|வளர்ச்சி|pattern|trend)\s*(தொடர்ந்தால்|நீடித்தால்)',
-        # என்னவாக இருக்கும் - what will it be
-        r'(என்னவாக|எவ்வளவாக)\s*(இருக்கும்|வரும்)',
+        # இந்த/அதே போக்கு தொடர்ந்தால் - if this/same trend continues
+        r'(இந்த|அந்த|இதே|அதே)\s*(போக்கு|வளர்ச்சி|pattern|trend)\s*(தொடர்ந்தால்|நீடித்தால்|தொடர்)',
+        # போக்கு தொடர்ந்தால் - if trend continues (without explicit "this")
+        r'(போக்கு|வளர்ச்சி)\s*(தொடர்ந்தால்|நீடித்தால்|தொடர்)',
+        # என்னவாக இருக்கும், எப்படி இருக்கும் - what will it be, how will it be
+        r'(என்னவாக|எவ்வளவாக|எப்படி)\s*(இருக்கும்|வரும்)',
         # கணிக்க, முன்கணிப்பு - predict, forecast
         r'(கணிக்க|முன்கணிப்பு|கணிப்பு|எதிர்பார்க்கலாம்)',
         # அடுத்த மாதம் - next month
@@ -131,6 +133,30 @@ PROJECTION_PATTERNS = {
         r'(project|forecast|predict)\s*(செய்|பண்ணு)',
         # estimate பண்ணு, மதிப்பிடு
         r'(estimate|மதிப்பிடு|மதிப்பீடு)',
+        # விற்பனை எப்படி இருக்கும் - how will sales be (with month context)
+        r'(ஜனவரி|பிப்ரவரி|மார்ச்|ஏப்ரல்|மே|ஜூன்|ஜூலை|ஆகஸ்ட்|செப்டம்பர்|அக்டோபர்|நவம்பர்|டிசம்பர்).*(விற்பனை|வருமானம்|லாபம்).*(எப்படி|என்ன|எவ்வளவு)\s*(இருக்கும்|வரும்)',
+        # எப்படி இருக்கும் as follow-up after trend query
+        r'(விற்பனை|வருமானம்|லாபம்)\s*(எப்படி|என்ன|எவ்வளவு)\s*(இருக்கும்|வரும்)',
+    ],
+
+    # Tanglish projection patterns (Tamil in Roman script)
+    'tanglish_projection': [
+        # "intha trend continue aana" - if this trend continues
+        r'\b(intha|antha|itha|atha)\s+(trend|pattern|growth|rate|pace)\s+(continue|continues)\s*(aana|ana|na|panna)?\b',
+        # "trend continue aana [month] sales evlo irukum"
+        r'\b(trend|pattern)\s+(continue|continues)\s*(aana|ana|na)?\b.*(evlo|evalo|evalavu|enna|yenna)\s*(irukum|varum|irukkum)\b',
+        # "evlo irukum", "enna irukum" - what will it be
+        r'\b(evlo|evalo|evalavu|enna|yenna)\s+(irukum|irukkum|varum)\b',
+        # "aduttha maasam" - next month
+        r'\b(aduttha|adutha|next)\s+(maasam|maatham|month)\b',
+        # "project pannu", "estimate pannu"
+        r'\b(project|forecast|predict|estimate)\s*(pannu|panna|pannunga)\b',
+        # "continue aana" or "continues na" with future question
+        r'\b(continue|continues)\s*(aana|ana|na)\b.*(what|evlo|how\s+much|enna)\b',
+        # Simple "evlo irukum" or "enna irukum" as follow-up
+        r'\b(sales|revenue|profit)\s+(evlo|evalo|enna)\s*(irukum|irukkum|varum)\b',
+        # "intha/antha [something] continue"
+        r'\b(intha|antha)\s+\w*\s*(continue|continues|remain|same)\b',
     ],
 
     # Simple projection triggers (lower confidence)
@@ -361,7 +387,7 @@ class ProjectionIntentDetector:
         if any('future_value' in cat for cat in matched_categories):
             return ProjectionType.FUTURE_VALUE, False
 
-        if 'tamil_projection' in matched_categories:
+        if 'tamil_projection' in matched_categories or 'tanglish_projection' in matched_categories:
             return ProjectionType.CONTINUATION, False
 
         if 'simple_triggers' in matched_categories:
@@ -457,6 +483,7 @@ class ProjectionIntentDetector:
             'goal_based': 0.85,
             'comparison_based': 0.80,
             'tamil_projection': 0.80,
+            'tanglish_projection': 0.80,
             'simple_triggers': 0.60,
         }
 

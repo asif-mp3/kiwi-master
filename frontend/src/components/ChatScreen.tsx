@@ -144,15 +144,15 @@ function TypingPlaceholderPill({
       onClick={() => onSelect(suggestions[currentIndex])}
       className="group relative cursor-pointer"
     >
-      <div className="flex items-center gap-3 h-14 px-6 rounded-full bg-zinc-900/80 border border-zinc-700/50 hover:border-violet-500/50 hover:bg-zinc-800/80 transition-all duration-300 backdrop-blur-xl shadow-lg shadow-black/20">
-        <Sparkles className="w-5 h-5 text-violet-400 shrink-0" />
+      <div className="flex items-center gap-2 sm:gap-3 h-11 sm:h-14 px-4 sm:px-6 rounded-full bg-zinc-900/80 border border-zinc-700/50 hover:border-violet-500/50 hover:bg-zinc-800/80 transition-all duration-300 backdrop-blur-xl shadow-lg shadow-black/20">
+        <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400 shrink-0" />
         <div className="flex-1 overflow-hidden">
-          <span className="text-zinc-400 text-sm font-medium">
+          <span className="text-zinc-400 text-xs sm:text-sm font-medium">
             {displayText}
             <motion.span
               animate={{ opacity: [1, 0] }}
               transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
-              className="inline-block w-0.5 h-4 bg-violet-400 ml-0.5 align-middle"
+              className="inline-block w-0.5 h-3 sm:h-4 bg-violet-400 ml-0.5 align-middle"
             />
           </span>
         </div>
@@ -206,6 +206,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const shouldResumeRecording = useRef(false);
   // Ref mirror for isAlwaysOnMode to avoid stale closures in callbacks
   const isAlwaysOnModeRef = useRef(false);
+  // Track if user manually aborted recording (should not process audio)
+  const userAbortedRef = useRef(false);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -246,6 +248,44 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
   // Fullscreen call mode - hides header for immersive phone-call experience on mobile
   const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
+
+  // Helper to detect concluding/farewell phrases
+  const isConcludingPhrase = (text: string): boolean => {
+    const normalizedText = text.toLowerCase().trim();
+    const concludingPhrases = [
+      // Thank you variations
+      'thank you', 'thanks', 'thank you so much', 'thanks a lot', 'many thanks',
+      // Okay/acknowledgment
+      'okay', 'ok', 'alright', 'all right', 'got it', 'understood',
+      // Farewell
+      'bye', 'goodbye', 'good bye', 'see you', 'take care',
+      // Done/finished
+      'that\'s all', 'that\'s it', 'i\'m done', 'im done', 'done', 'finished',
+      'nothing else', 'no more questions', 'that will be all',
+      // Tamil concluding phrases
+      'நன்றி', 'போய் வருகிறேன்', 'சரி'
+    ];
+
+    // Check for exact match or if text starts with concluding phrase
+    return concludingPhrases.some(phrase =>
+      normalizedText === phrase ||
+      normalizedText.startsWith(phrase + ' ') ||
+      normalizedText.endsWith(' ' + phrase)
+    );
+  };
+
+  // Get a random farewell response
+  const getFarewellResponse = (): string => {
+    const responses = [
+      "You're welcome! Feel free to ask anytime. Goodbye!",
+      "Happy to help! Have a great day!",
+      "Glad I could assist! Take care!",
+      "Anytime! See you next time!",
+      "My pleasure! Don't hesitate to come back if you need anything.",
+      "Thank you for using Thara! Goodbye!"
+    ];
+    return responses[Math.floor(Math.random() * responses.length)];
+  };
 
   useEffect(() => {
     // Scroll to bottom when messages change, chat opens, or switching chats
@@ -619,6 +659,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         console.log('🎤 Recording stopped, processing...');
         stream.getTracks().forEach(track => track.stop());
 
+        // Check if user manually aborted
+        if (userAbortedRef.current) {
+          console.log('⏹️ User aborted resumed recording - skipping processing');
+          userAbortedRef.current = false;
+          setIsProcessingVoice(false);
+          return;
+        }
+
         if (chunks.length === 0) return;
 
         const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
@@ -635,6 +683,31 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             if (shouldResumeRecording.current) {
               resumeRecording();
             }
+            return;
+          }
+
+          // Check if this is a concluding phrase (thank you, bye, etc.)
+          if (isConcludingPhrase(text)) {
+            console.log('👋 Concluding phrase detected in resumed recording:', text);
+
+            // Add user message
+            addMessage(text, 'user');
+
+            // Add farewell response
+            const farewellMsg = getFarewellResponse();
+            addMessage(farewellMsg, 'assistant');
+
+            // Play farewell TTS
+            setIsVoiceMode(true);
+            await playTextToSpeech(farewellMsg);
+
+            // Stop always-on mode and exit fullscreen
+            setIsAlwaysOnMode(false);
+            shouldResumeRecording.current = false;
+            setIsFullscreenVoice(false);
+            setIsProcessingVoice(false);
+
+            toast.success("Conversation ended", { description: "Tap mic to start again" });
             return;
           }
 
@@ -810,6 +883,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       console.log('🎤 Started listening (always-on mode enabled)...');
       setExpandedVoiceSection(null);
 
+      // Reset abort flag for new recording
+      userAbortedRef.current = false;
+
       // Enable fullscreen voice mode for immersive experience
       setIsFullscreenVoice(true);
 
@@ -840,6 +916,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           // Stop all tracks
           stream.getTracks().forEach(track => track.stop());
 
+          // Check if user manually aborted - skip processing entirely
+          if (userAbortedRef.current) {
+            console.log('⏹️ User aborted - skipping audio processing');
+            userAbortedRef.current = false; // Reset for next recording
+            setIsProcessingVoice(false);
+            return;
+          }
+
           // Create audio blob from chunks
           const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
           console.log('📦 Audio blob size:', audioBlob.size, 'bytes');
@@ -853,6 +937,31 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             if (!text || text.trim() === '') {
               console.warn('⚠️ Empty transcription result');
               toast.error("No speech detected", { description: "Please try speaking again." });
+              return;
+            }
+
+            // Check if this is a concluding phrase (thank you, bye, etc.)
+            if (isConcludingPhrase(text)) {
+              console.log('👋 Concluding phrase detected:', text);
+
+              // Add user message
+              addMessage(text, 'user');
+
+              // Add farewell response
+              const farewellMsg = getFarewellResponse();
+              addMessage(farewellMsg, 'assistant');
+
+              // Play farewell TTS
+              setIsVoiceMode(true);
+              await playTextToSpeech(farewellMsg);
+
+              // Stop always-on mode and exit fullscreen
+              setIsAlwaysOnMode(false);
+              shouldResumeRecording.current = false;
+              setIsFullscreenVoice(false);
+              setIsProcessingVoice(false);
+
+              toast.success("Conversation ended", { description: "Tap mic to start again" });
               return;
             }
 
@@ -984,6 +1093,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     } else {
       // Manual stop - user clicked to end always-on mode
       console.log('🛑 Manually stopping recording (ending always-on mode)...');
+
+      // Set abort flag to skip audio processing
+      userAbortedRef.current = true;
 
       // Exit fullscreen voice mode
       setIsFullscreenVoice(false);
@@ -1570,9 +1682,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 1.05 }}
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                className="relative z-10 w-full max-w-3xl flex flex-col items-center justify-between h-full py-8 gap-4 px-6"
+                className="relative z-10 w-full max-w-3xl flex flex-col items-center justify-between h-full py-4 sm:py-8 gap-2 sm:gap-4 px-4 sm:px-6 overflow-hidden"
               >
-                <div className="flex-1 flex flex-col items-center justify-center gap-8 w-full">
+                <div className="flex-1 flex flex-col items-center justify-center gap-4 sm:gap-8 w-full min-h-0">
                   {/* Brand Header */}
                   <motion.div
                     initial={{ opacity: 0, y: -20 }}
@@ -1580,29 +1692,25 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                     transition={{ delay: 0.2 }}
                     className="text-center space-y-2"
                   >
-                    <h1 className="text-4xl font-display font-bold tracking-tight">
+                    <h1 className="text-2xl sm:text-3xl md:text-4xl font-display font-bold tracking-tight">
                       {isRecording ? (
                         <span className="text-violet-400">Listening<span className="animate-pulse">...</span></span>
                       ) : (isProcessingVoice || isProcessingQuery) ? (
                         <span className="text-cyan-400">Processing<span className="animate-pulse">...</span></span>
                       ) : isSpeaking ? (
                         <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
-                      ) : isAlwaysOnMode ? (
-                        <span className="text-emerald-400">Ready<span className="animate-pulse">...</span></span>
                       ) : (
                         <>Hey, <span className="gradient-text">{username}</span></>
                       )}
                     </h1>
-                    <p className="text-zinc-500 text-sm font-medium max-w-md mx-auto">
+                    <p className="text-zinc-500 text-xs sm:text-sm font-medium max-w-md mx-auto px-4">
                       {isRecording
-                        ? "Your voice is being captured securely"
+                        ? "Voice captured securely"
                         : (isProcessingVoice || isProcessingQuery)
-                          ? "Thara is working on your request"
+                          ? "Working on your request..."
                           : isSpeaking
-                            ? "Speaking... tap to stop"
-                            : isAlwaysOnMode
-                              ? "Voice mode active - tap mic to stop"
-                              : "Tap the button below to start a voice conversation"}
+                            ? "Tap to stop"
+                            : "Tap to start voice conversation"}
                     </p>
                   </motion.div>
 
@@ -1631,24 +1739,17 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         stopTextToSpeech();
                         return;
                       }
-                      // If in always-on mode, clicking stops it
-                      if (isAlwaysOnMode) {
-                        handleVoiceToggle();
-                        return;
-                      }
-                      // Otherwise, start always-on mode
-                      if (!isRecording) {
-                        handleVoiceToggle();
-                      }
+                      // Toggle recording on/off
+                      handleVoiceToggle();
                     }}
-                    aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : isAlwaysOnMode ? "Tap to stop voice mode" : "Tap to start recording"}
-                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
+                    aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : "Tap to start recording"}
+                    className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
                       isRecording
                         ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
                         : isSpeaking
                           ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
-                          : isAlwaysOnMode
-                            ? 'bg-emerald-500/20 border-2 border-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.3)]'
+                          : (isProcessingVoice || isProcessingQuery)
+                            ? 'bg-cyan-500/20 border-2 border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'
                             : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
                       }`}
                   >
@@ -1682,16 +1783,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         }}
                       />
                     )}
-                    {/* Pulsing ring when always-on mode is active but idle */}
-                    {isAlwaysOnMode && !isRecording && !isSpeaking && (
+                    {/* Pulsing ring when processing */}
+                    {(isProcessingVoice || isProcessingQuery) && !isRecording && !isSpeaking && (
                       <motion.span
-                        className="absolute inset-0 rounded-full border-2 border-emerald-500"
+                        className="absolute inset-0 rounded-full border-2 border-cyan-500"
                         animate={{
                           scale: [1, 1.3],
                           opacity: [0.6, 0]
                         }}
                         transition={{
-                          duration: 2,
+                          duration: 1.5,
                           repeat: Infinity,
                           ease: "easeOut"
                         }}
