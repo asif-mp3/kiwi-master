@@ -17,7 +17,7 @@ export const VAD_MIN_SPEECH_DURATION = 250; // Minimum speech before checking si
 export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms) - faster polling
 
 // API defaults
-export const DEFAULT_API_BASE_URL = 'http://localhost:8000';
+export const DEFAULT_API_BASE_URL = 'https://asif-mp3-thara-backend.hf.space';
 
 // Get environment variables with fallbacks
 export const getApiBaseUrl = () =>

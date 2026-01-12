@@ -248,7 +248,7 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
       console.log('[DatasetConnection] Verifying URL...');
       // Use a lightweight check - just verify the spreadsheet is accessible
       // For now, we'll do a quick metadata fetch
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/verify-sheet?url=${encodeURIComponent(url)}`);
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'https://asif-mp3-thara-backend.hf.space'}/api/verify-sheet?url=${encodeURIComponent(url)}`);
 
       if (response.ok) {
         const data = await response.json();
