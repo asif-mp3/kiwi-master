@@ -1,0 +1,95 @@
+# ============================================
+# ROOT .dockerignore for Railway Backend
+# ============================================
+# This file MUST be in repo root to prevent
+# Railway from copying frontend into backend image
+
+# Git (huge - never include)
+.git
+.gitignore
+.github
+
+# Frontend (CRITICAL - excludes entire frontend)
+frontend/
+.next/
+out/
+dist/
+node_modules/
+package.json
+package-lock.json
+npm-debug.log
+yarn.lock
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment files (use Railway variables instead)
+.env
+.env.*
+*.env
+
+# Credentials (NEVER in Docker image)
+credentials/
+*.json
+!requirements*.txt
+!package*.json
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+test/
+tests/
+
+# Data files (can be huge)
+*.db
+*.sqlite
+*.duckdb
+data/
+snapshots/
+chroma_db/
+
+# Streamlit (not needed in production)
+.streamlit/
+
+# Large model files
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.h5
+*.pkl
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
