@@ -72,6 +72,6 @@ def execute_advanced_plan(plan: dict):
         # Return empty DataFrame with error info
         df = pd.DataFrame()
         df.attrs['query_type'] = plan.get("query_type")
-        df.attrs['analysis'] = {"error": str(e)}
+        df.attrs['analysis'] = {"error": f"Oops! Something went wrong processing that query. Let's try rephrasing it!"}
         df.attrs['is_advanced_query'] = True
         return df

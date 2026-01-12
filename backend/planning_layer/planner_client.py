@@ -85,8 +85,9 @@ def initialize_gemini_client(config):
     model_name = config.get("model", "gemini-2.5-pro")
     temperature = config.get("temperature", 0.0)
     
-    # Limit output tokens for faster response (JSON plans are concise)
-    max_tokens = config.get("planner_max_tokens", 500)
+    # Output tokens for query plans - comparison queries need more tokens
+    # due to complex JSON with multiple period definitions and filters
+    max_tokens = config.get("planner_max_tokens", 1500)
 
     generation_config = {
         "temperature": temperature,
@@ -135,6 +136,38 @@ def format_schema_context(schema_context) -> str:
     return formatted
 
 
+def _repair_truncated_json(text: str) -> str:
+    """
+    Attempt to repair truncated JSON from LLM responses.
+    Common issues: unterminated strings, missing closing brackets.
+    """
+    # Count brackets to determine what's missing
+    open_braces = text.count('{')
+    close_braces = text.count('}')
+    open_brackets = text.count('[')
+    close_brackets = text.count(']')
+
+    # Check for unterminated string (odd number of unescaped quotes)
+    # Simple heuristic: if JSON ends mid-string, close it
+    if text.rstrip().endswith('"'):
+        pass  # String is closed
+    else:
+        # Check if we're in the middle of a string value
+        last_quote = text.rfind('"')
+        if last_quote > 0:
+            # Check what comes before the last quote
+            before_quote = text[:last_quote].rstrip()
+            if before_quote.endswith(':') or before_quote.endswith(','):
+                # We're likely in an unterminated string value
+                text = text + '"'
+
+    # Add missing closing brackets
+    text = text + ']' * (open_brackets - close_brackets)
+    text = text + '}' * (open_braces - close_braces)
+
+    return text
+
+
 def parse_json_response(response_text: str) -> dict:
     """Parse JSON from LLM response, handling potential formatting issues"""
     # Remove markdown code blocks if present
@@ -159,7 +192,19 @@ def parse_json_response(response_text: str) -> dict:
 
         return parsed
     except json.JSONDecodeError as e:
-        raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
+        # Try to repair truncated JSON (common with token limits)
+        print(f"  [Planner] JSON parse failed, attempting repair...")
+        try:
+            repaired = _repair_truncated_json(text)
+            parsed = json.loads(repaired)
+            print(f"  [Planner] JSON repair successful!")
+
+            if isinstance(parsed, list) and len(parsed) > 0:
+                return parsed[0]
+            return parsed
+        except json.JSONDecodeError:
+            # Repair failed, raise original error
+            raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
 
 
 def call_llm_with_timeout(model, prompt: str, timeout_seconds: int = 60):

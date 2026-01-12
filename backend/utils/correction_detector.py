@@ -24,6 +24,7 @@ class CorrectionType(Enum):
     """Types of corrections a user can make"""
     TABLE = "table"           # "No, use the sales table"
     FILTER = "filter"         # "No, I meant September not October"
+    FILTER_REMOVE = "filter_remove"  # "Consider all months", "Don't limit to November"
     METRIC = "metric"         # "No, show profit not revenue"
     NEGATION = "negation"     # "That's wrong", "Incorrect"
     REVERT = "revert"         # "Actually never mind, go back"
@@ -44,6 +45,10 @@ class CorrectionIntent:
     # Filter correction fields
     filter_corrections: List[Dict[str, Any]] = field(default_factory=list)
     # Each: {"field": "month", "old_value": "October", "new_value": "September"}
+
+    # Filter removal fields (for "consider all months", "don't limit to X")
+    filter_removals: List[str] = field(default_factory=list)
+    # Each: field name to remove, e.g., ["month", "date"] means remove date filters
 
     # Metric correction fields
     metric_corrections: List[Dict[str, Any]] = field(default_factory=list)
@@ -87,6 +92,24 @@ CORRECTION_PATTERNS = {
         r'\bnot\s+(this|that)\s+(table|one|sheet),?\s*(the\s+)?(other|another)?\b',
     ],
 
+    # FILTER REMOVAL - User wants to REMOVE a filter (consider all months, all categories, etc.)
+    'filter_removal': [
+        # "consider all months", "for all months", "across all months"
+        r'\b(consider|for|across|include|check|show)\s+(all|every|entire|the\s+whole)\s+(month|months|time|period|data|year|years)\b',
+        # "don't limit to November", "not just November", "not only for November"
+        r'\b(don\'?t|do\s+not|not)\s+(just|only|limit\s+to|restrict\s+to)\s+(for\s+)?(november|december|january|february|march|april|may|june|july|august|september|october)\b',
+        # "remove the month filter", "without the month filter"
+        r'\b(remove|without|drop|ignore)\s+(the\s+)?(month|date|time)\s*(filter|restriction)?\b',
+        # "all months combined", "entire dataset"
+        r'\b(all\s+months?|entire\s+data|whole\s+data|full\s+data|complete\s+data)\s*(combined|together)?\b',
+        # "don't filter by month", "no month filter"
+        r'\b(don\'?t|do\s+not|no)\s+(filter\s+by|restrict\s+by|limit\s+by)\s+(month|date|time)\b',
+        # Tanglish: "ellaa month um", "all month paaru"
+        r'\b(ellaa|ella|all)\s*(month|months?)\s*(um|paaru|check|show)?\b',
+        # "overall", "total across all", "aggregate all"
+        r'\b(overall|total\s+across\s+all|aggregate\s+all|sum\s+across)\b',
+    ],
+
     # FILTER CORRECTIONS - User wants different filter values
     'filter_replacement': [
         # "I meant September not October", "no I meant Chennai"
@@ -99,6 +122,17 @@ CORRECTION_PATTERNS = {
         r'\b(change|replace|switch)\s+([a-zA-Z0-9_]+)\s+(to|with)\s+([a-zA-Z0-9_]+)\b',
         # "for September" (short form when context is clear)
         r'^(for|in)\s+([a-zA-Z0-9_]+)$',
+        # === NEW PATTERNS FOR ANGRY/FRUSTRATED CORRECTIONS ===
+        # "check bangalore instead", "check for bangalore instead"
+        r'\b(check|show|look|get|give)\s+(for\s+|at\s+)?([a-zA-Z0-9_]+)\s+(instead|now)\b',
+        # "no, bangalore", "no bangalore", "no! bangalore"
+        r'\bno[!,.\s]+\s*([a-zA-Z0-9_]+)\s*(instead|now)?\s*$',
+        # "check bangalore", "use bangalore", "bangalore please"
+        r'\b(check|use|show|try)\s+([a-zA-Z0-9_]+)\s*$',
+        # "not chennai, bangalore" or "not X, Y"
+        r'\bnot\s+([a-zA-Z0-9_]+)[,!.\s]+([a-zA-Z0-9_]+)\b',
+        # "bangalore instead" at end
+        r'\b([a-zA-Z0-9_]+)\s+instead\s*[!.]*\s*$',
     ],
 
     # METRIC CORRECTIONS - User wants different metrics
@@ -163,6 +197,13 @@ CORRECTION_PATTERNS = {
         r'நான்\s+(சொன்னது|கேட்டது|வேண்டியது)\s+([a-zA-Z0-9_]+)',
         # "September மாதம்" (September month)
         r'([a-zA-Z]+)\s+மாதம்',
+        # === ANGRY TAMIL CORRECTIONS ===
+        # "என்னடா இது, bangalore பார்" (what is this, check bangalore)
+        r'(என்னடா|என்னட்டா|என்னய்யா|என்ன).*(bangalore|chennai|mumbai|delhi|kolkata|hyderabad|[a-zA-Z]+)\s*(பார்|பாரு|check|காட்டு)',
+        # "bangalore பார்" (check bangalore)
+        r'\b(bangalore|chennai|mumbai|delhi|kolkata|hyderabad|[a-zA-Z]+)\s+(பார்|பாரு|காட்டு|check)',
+        # "இல்ல, bangalore" (no, bangalore)
+        r'(இல்ல|வேண்டாம்|இல்லை)[,!.\s]+([a-zA-Z0-9_]+)',
     ],
 
     'tamil_negation': [
@@ -331,8 +372,13 @@ class CorrectionIntentDetector:
         if table_matches:
             return self._build_table_intent(question, table_matches, previous_turn)
 
-        # Check for filter corrections
-        filter_matches = [m for cat, m in all_matches if 'filter' in cat]
+        # Check for filter REMOVAL first (higher priority than filter replacement)
+        filter_removal_matches = [m for cat, m in all_matches if cat == 'filter_removal']
+        if filter_removal_matches:
+            return self._build_filter_removal_intent(question, filter_removal_matches, previous_turn)
+
+        # Check for filter corrections (replacement)
+        filter_matches = [m for cat, m in all_matches if 'filter' in cat and cat != 'filter_removal']
         if filter_matches:
             return self._build_filter_intent(question, filter_matches, previous_turn)
 
@@ -365,6 +411,51 @@ class CorrectionIntentDetector:
 
         q_lower = question.lower().strip()
         words = q_lower.split()
+
+        # === HANDLE ANGRY/FRUSTRATED MESSAGES WITH LOCATION ===
+        # Messages like "No! dont you have sense, check bangalore instead"
+        # Extract any known location from anywhere in the message
+        anger_indicators = ['no!', 'no,', 'wrong', 'sense', 'stupid', 'dont', "don't", 'idiot',
+                           'fool', 'instead', 'not this', 'தவறு', 'என்னடா', 'இல்ல', 'அட']
+        has_anger = any(ind in q_lower for ind in anger_indicators)
+
+        if has_anger:
+            # Common locations to check for
+            common_locations = [
+                'bangalore', 'chennai', 'mumbai', 'delhi', 'kolkata', 'hyderabad',
+                'pune', 'ahmedabad', 'jaipur', 'lucknow', 'kanpur', 'nagpur',
+                'coimbatore', 'madurai', 'trichy', 'salem', 'erode', 'tirunelveli',
+                'tamil nadu', 'karnataka', 'maharashtra', 'kerala', 'andhra pradesh',
+                'telangana', 'gujarat', 'rajasthan', 'west bengal', 'uttar pradesh'
+            ]
+
+            # Find location in message
+            for loc in common_locations:
+                if loc in q_lower:
+                    return CorrectionIntent(
+                        correction_type=CorrectionType.FILTER,
+                        confidence=0.85,
+                        filter_corrections=[{
+                            'field': 'location',
+                            'old_value': None,
+                            'new_value': loc.title()
+                        }],
+                        raw_patterns_matched=['angry_location_correction']
+                    )
+
+            # Also check known locations from profiles
+            for loc in self._known_locations:
+                if loc in q_lower:
+                    return CorrectionIntent(
+                        correction_type=CorrectionType.FILTER,
+                        confidence=0.85,
+                        filter_corrections=[{
+                            'field': 'location',
+                            'old_value': None,
+                            'new_value': loc.title() if isinstance(loc, str) else str(loc)
+                        }],
+                        raw_patterns_matched=['angry_location_correction_from_profile']
+                    )
 
         # Very short responses starting with "no" might be corrections
         if len(words) <= 3 and words[0] in ['no', 'nope', 'not']:
@@ -405,6 +496,34 @@ class CorrectionIntentDetector:
                     }],
                     raw_patterns_matched=['implicit_value_correction']
                 )
+
+        # === HANDLE SIMPLE "check X" without anger ===
+        # "check bangalore", "use mumbai", etc.
+        simple_check_patterns = [
+            r'\b(check|use|show|try|for)\s+([a-zA-Z]+)\s*$',
+            r'\b([a-zA-Z]+)\s+(instead|please)\s*$',
+        ]
+
+        for pattern in simple_check_patterns:
+            match = re.search(pattern, q_lower, re.IGNORECASE)
+            if match:
+                groups = [g for g in match.groups() if g]
+                for g in groups:
+                    g_clean = g.strip().lower()
+                    if g_clean in ['check', 'use', 'show', 'try', 'for', 'instead', 'please']:
+                        continue
+                    # Check if it's a location
+                    if g_clean in self._known_locations or g_clean in ['bangalore', 'chennai', 'mumbai', 'delhi', 'kolkata', 'hyderabad']:
+                        return CorrectionIntent(
+                            correction_type=CorrectionType.FILTER,
+                            confidence=0.75,
+                            filter_corrections=[{
+                                'field': 'location',
+                                'old_value': None,
+                                'new_value': g_clean.title()
+                            }],
+                            raw_patterns_matched=['simple_location_correction']
+                        )
 
         return None
 
@@ -478,6 +597,60 @@ class CorrectionIntentDetector:
             explicit_table=explicit_table,
             table_hint=table_hint,
             table_type_hint=table_type_hint,
+            raw_patterns_matched=[str(m.re.pattern) for m in matches]
+        )
+
+    def _build_filter_removal_intent(
+        self,
+        question: str,
+        matches: List[re.Match],
+        previous_turn: Any
+    ) -> CorrectionIntent:
+        """Build a filter removal intent (user wants to remove date/month filter)"""
+
+        q_lower = question.lower()
+        filter_removals = []
+
+        # Detect which filters to remove based on the matched patterns and question content
+        # Check for month/date related removal
+        month_removal_keywords = ['month', 'months', 'november', 'december', 'january', 'february',
+                                   'march', 'april', 'may', 'june', 'july', 'august', 'september',
+                                   'october', 'date', 'time', 'period', 'year', 'years']
+
+        if any(kw in q_lower for kw in month_removal_keywords):
+            filter_removals.append('month')
+            filter_removals.append('date')
+
+        # Check for category removal
+        if 'categor' in q_lower or 'all categories' in q_lower:
+            filter_removals.append('category')
+
+        # Check for location removal
+        if 'location' in q_lower or 'all locations' in q_lower or 'all branches' in q_lower:
+            filter_removals.append('location')
+
+        # Default to month/date if no specific filter mentioned but "all" is present
+        if not filter_removals and ('all' in q_lower or 'entire' in q_lower or 'whole' in q_lower):
+            # Check previous turn for what filter was applied
+            if previous_turn and hasattr(previous_turn, 'entities'):
+                prev_entities = previous_turn.entities or {}
+                if prev_entities.get('month') or prev_entities.get('specific_date'):
+                    filter_removals.append('month')
+                    filter_removals.append('date')
+                if prev_entities.get('category'):
+                    filter_removals.append('category')
+                if prev_entities.get('location'):
+                    filter_removals.append('location')
+
+            # If still no filter detected, default to month/date (most common case)
+            if not filter_removals:
+                filter_removals.append('month')
+                filter_removals.append('date')
+
+        return CorrectionIntent(
+            correction_type=CorrectionType.FILTER_REMOVE,
+            confidence=0.85,
+            filter_removals=list(set(filter_removals)),  # Remove duplicates
             raw_patterns_matched=[str(m.re.pattern) for m in matches]
         )
 
@@ -638,22 +811,6 @@ class CorrectionIntentDetector:
             revert_to_turn=-1,  # -1 means go back to original
             raw_patterns_matched=[str(m.re.pattern) for cat, m in all_matches]
         )
-
-    def detect_with_llm(
-        self,
-        question: str,
-        previous_turn: Any,
-        llm_client: Any = None
-    ) -> Optional[CorrectionIntent]:
-        """
-        LLM-based detection for ambiguous cases.
-
-        This is a fallback when pattern matching is uncertain.
-        Currently a placeholder - implement with actual LLM call if needed.
-        """
-        # This would call the LLM with a structured prompt
-        # For now, return None to indicate no detection
-        return None
 
 
 # Singleton instance for reuse

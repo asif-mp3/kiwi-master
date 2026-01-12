@@ -89,6 +89,8 @@ class QueryContext:
         self.pending_clarification: Optional[PendingClarification] = None
         # Correction state for negation clarification (only for "that's wrong" without specifics)
         self.pending_correction: Optional[PendingCorrection] = None
+        # Date context for time-based queries (e.g., "today is November 14th")
+        self.date_context: Optional[Dict[str, Any]] = None
 
     def _generate_id(self) -> str:
         """Generate unique conversation ID"""
@@ -154,37 +156,123 @@ class QueryContext:
         if any(w in pronouns for w in words[:3]):  # Check first 3 words
             return True
 
-        # 5. Question that doesn't have a verb/action
-        action_words = ['show', 'what', 'how', 'give', 'tell', 'list', 'get',
-                       'find', 'calculate', 'total', 'sum', 'count', 'average',
-                       'which', 'who', 'where', 'when', 'why', 'compare', 'display']
-        if not any(word in q_lower for word in action_words):
-            # No action word - might be a follow-up with just filter change
-            return True
-
-        # 6. Check if query is about a completely different dimension/topic
-        # If previous query was about location and new query is about category (or vice versa),
-        # it's likely a new query, not a follow-up
+        # 5. Check if query is about a DIFFERENT topic/metric - NOT a follow-up
+        # This prevents "Category wise profit margin paaru" from being treated as
+        # a follow-up to "Kids Wear November vs December compare pannu"
         if self.turns:
             prev_turn = self.turns[-1]
             prev_entities = prev_turn.entities or {}
+            prev_question = prev_turn.question.lower() if prev_turn.question else ""
 
-            # Detect topic shift - asking about different dimensions
-            dimension_keywords = {
-                'category': ['category', 'categories', 'product', 'products', 'item', 'items', 'type', 'types'],
-                'location': ['location', 'area', 'branch', 'city', 'state', 'zone', 'region', 'chennai', 'bangalore', 'mumbai', 'delhi'],
-                'time': ['month', 'year', 'week', 'day', 'date', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'],
-                'metric': ['profit', 'revenue', 'sales', 'cost', 'expense', 'income', 'margin']
+            # FRESH QUERY SIGNALS - these indicate user wants a NEW query, not continuation
+            # "Monthly overall summary kaattu" should NOT carry over "profit margin" context
+            fresh_query_patterns = [
+                'summary', 'overview', 'overall', 'full report', 'complete',
+                'all data', 'entire', 'whole', 'everything',
+                'முழு', 'முழுமையான', 'அனைத்து',  # Tamil: full, complete, all
+                'kaattu', 'காட்டு', 'show me all', 'list all',
+                'monthly', 'weekly', 'daily', 'yearly', 'quarterly',  # Time-based summaries
+                'performance', 'report', 'analytics', 'dashboard',
+                'sollu', 'சொல்லு'  # Tamil: tell me
+            ]
+
+            # If query asks for summary/overview, treat as FRESH query
+            # This covers: monthly summary, quarterly performance, overall report, etc.
+            is_fresh_query = any(pattern in q_lower for pattern in fresh_query_patterns)
+
+            # Check if time period is DIFFERENT from previous
+            time_period_changed = (
+                ('monthly' in q_lower and 'monthly' not in prev_question) or
+                ('quarterly' in q_lower and 'quarterly' not in prev_question) or
+                ('weekly' in q_lower and 'weekly' not in prev_question) or
+                ('yearly' in q_lower and 'yearly' not in prev_question) or
+                ('daily' in q_lower and 'daily' not in prev_question)
+            )
+
+            prev_was_specific = bool(
+                'profit' in prev_question or 'margin' in prev_question or
+                'compare' in prev_question or 'vs' in prev_question or
+                prev_entities.get('metric') or prev_entities.get('comparison') or
+                prev_entities.get('category')  # Also reset if previous had category filter
+            )
+
+            # Fresh query OR different time period = NEW query, not follow-up
+            if is_fresh_query and (prev_was_specific or time_period_changed):
+                # User wants fresh summary, not continuation of specific analysis
+                # CRITICAL: Clear active entities to prevent context bleed
+                self._clear_metric_context()
+                return False
+
+            # Even if prev wasn't specific, a fresh query with different intent is NEW
+            if is_fresh_query and self.turns:
+                # Clear context anyway for any fresh query pattern
+                self._clear_metric_context()
+                return False
+
+            # Metric keywords - different metrics = different query intent
+            metric_keywords = {
+                'profit_margin': ['profit margin', 'profit', 'margin', 'லாபம்', 'லாப'],
+                'revenue': ['revenue', 'sales', 'total sales', 'வருவாய்', 'விற்பனை'],
+                'cost': ['cost', 'expense', 'spending', 'செலவு'],
+                'comparison': ['compare', 'comparison', 'vs', 'versus', 'ஒப்பிடு', 'compare pannu'],
+                'growth': ['growth', 'trend', 'increase', 'decrease', 'வளர்ச்சி'],
+                'count': ['count', 'how many', 'number of', 'எத்தனை']
             }
 
-            # Check what dimension the new question is about
-            new_dimension = None
+            # Detect metric in new query
+            new_metrics = set()
+            for metric, keywords in metric_keywords.items():
+                if any(kw in q_lower for kw in keywords):
+                    new_metrics.add(metric)
+
+            # Detect metric in previous query
+            prev_metrics = set()
+            for metric, keywords in metric_keywords.items():
+                if any(kw in prev_question for kw in keywords):
+                    prev_metrics.add(metric)
+
+            # If new query has a different PRIMARY metric, it's NOT a follow-up
+            # e.g., "profit margin" vs "comparison" are clearly different intents
+            if new_metrics and prev_metrics and not new_metrics.intersection(prev_metrics):
+                # Different metrics detected - this is a NEW query
+                return False
+
+            # Check for aggregation patterns - "X wise" means aggregate by X, not filter
+            aggregation_patterns = [
+                'category wise', 'categorywise', 'product wise', 'productwise',
+                'month wise', 'monthwise', 'state wise', 'statewise',
+                'area wise', 'areawise', 'branch wise', 'branchwise',
+                'வகை வாரியாக', 'மாதம் வாரியாக'  # Tamil: category-wise, month-wise
+            ]
+
+            # If new query asks for aggregation and previous had a specific filter, it's NEW
+            is_aggregation_query = any(pattern in q_lower for pattern in aggregation_patterns)
+            prev_had_specific_filter = bool(
+                prev_entities.get('category') or
+                prev_entities.get('location') or
+                prev_entities.get('month')
+            )
+
+            if is_aggregation_query and prev_had_specific_filter:
+                # User wants a breakdown, not a continuation of filtered query
+                return False
+
+            # Check for dimension shift (category, location, time)
+            dimension_keywords = {
+                'category': ['category', 'categories', 'product', 'products', 'item', 'items'],
+                'location': ['location', 'area', 'branch', 'city', 'state', 'zone', 'region'],
+                'time': ['month', 'year', 'week', 'day', 'date', 'january', 'february',
+                         'march', 'april', 'may', 'june', 'july', 'august',
+                         'september', 'october', 'november', 'december']
+            }
+
+            # Detect ALL dimensions in new query (don't break on first match)
+            new_dimensions = set()
             for dim, keywords in dimension_keywords.items():
                 if any(kw in q_lower for kw in keywords):
-                    new_dimension = dim
-                    break
+                    new_dimensions.add(dim)
 
-            # Check what dimension the previous query was about
+            # If query mentions a new dimension AND has new metrics, it's definitely new
             prev_dimension = None
             if prev_entities.get('location'):
                 prev_dimension = 'location'
@@ -193,12 +281,10 @@ class QueryContext:
             elif prev_entities.get('month'):
                 prev_dimension = 'time'
 
-            # If new query explicitly asks about a different dimension than previous context,
-            # and doesn't reference previous context, it's a new query
-            if (new_dimension and prev_dimension and new_dimension != prev_dimension
-                and new_dimension in ['category', 'metric']  # These are likely new topics
-                and 'location' not in q_lower  # Not mentioning location
-                and not any(phrase in q_lower for phrase in ['same', 'also', 'too', 'as well'])):
+            # New query with different focus dimension and no follow-up phrases
+            if (new_dimensions and prev_dimension and
+                prev_dimension not in new_dimensions and
+                not any(phrase in q_lower for phrase in ['same', 'also', 'too', 'as well', 'and'])):
                 return False
 
         return False
@@ -233,6 +319,26 @@ class QueryContext:
         merged['raw_question'] = new_entities.get('raw_question')
 
         return merged
+
+    def set_date_context(self, date_info: Dict[str, Any]):
+        """
+        Set date context for subsequent queries.
+
+        Args:
+            date_info: Dict with month, day, year info
+                       e.g., {'month': 'November', 'day': 14, 'year': 2025}
+        """
+        self.date_context = date_info
+        self.last_activity = datetime.now()
+        print(f"    [QueryContext] Date context set: {date_info}")
+
+    def get_date_context(self) -> Optional[Dict[str, Any]]:
+        """Get current date context if set."""
+        return self.date_context
+
+    def clear_date_context(self):
+        """Clear date context."""
+        self.date_context = None
 
     def get_context_prompt(self) -> str:
         """
@@ -333,6 +439,22 @@ class QueryContext:
         self.pending_clarification = None
         self.pending_correction = None
         self.last_activity = datetime.now()
+
+    def _clear_metric_context(self):
+        """
+        Clear metric-specific context when a fresh query is detected.
+        This prevents context bleed like "profit margin" carrying over to "overall summary".
+
+        Called internally by is_followup() when fresh query signals are detected.
+        Does NOT clear location context (user might still want same location).
+        """
+        if self.active_entities:
+            # Clear metric-related fields that shouldn't carry over to fresh queries
+            keys_to_clear = ['metric', 'comparison', 'category', 'aggregation']
+            for key in keys_to_clear:
+                if key in self.active_entities:
+                    del self.active_entities[key]
+            print(f"    [QueryContext] Cleared metric context for fresh query")
 
     # ===== CLARIFICATION STATE MANAGEMENT =====
 

@@ -129,7 +129,7 @@ function getTableIcon(table: DetectedTable) {
 
 export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '', isLocked = false, isConnectionVerified = false, initialStats }: DatasetConnectionProps) {
   const [url, setUrl] = useState(initialUrl);
-  const [status, setStatus] = useState<'idle' | 'verifying' | 'verified' | 'loading' | 'success' | 'connected' | 'details'>('idle');
+  const [status, setStatus] = useState<'idle' | 'verifying' | 'verified' | 'loading' | 'success' | 'connected' | 'details' | 'add_spreadsheet'>('idle');
   const [currentStep, setCurrentStep] = useState(0);
   const [progress, setProgress] = useState(0);
   const [datasetStats, setDatasetStats] = useState<DatasetStats | null>(initialStats || null);
@@ -141,6 +141,10 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
   // Track URL verification (separate from data loading)
   const [urlVerified, setUrlVerified] = useState(false);
   const [verificationInfo, setVerificationInfo] = useState<{ sheetCount: number; sheetNames: string[] } | null>(null);
+  // Track if we're adding another spreadsheet (append mode)
+  const [isAppendMode, setIsAppendMode] = useState(false);
+  // Track new URL when adding another spreadsheet
+  const [newSpreadsheetUrl, setNewSpreadsheetUrl] = useState('');
 
   // Google Sheets OAuth state
   const [sheetsAuthStatus, setSheetsAuthStatus] = useState<'checking' | 'authorized' | 'not_authorized' | 'not_configured'>('checking');
@@ -307,8 +311,10 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
   // Track loading step descriptions for real progress
   const [loadingMessage, setLoadingMessage] = useState('');
 
-  const startLoadingSimulation = async () => {
-    const sheetId = extractSpreadsheetId(url);
+  const startLoadingSimulation = async (appendMode: boolean = false) => {
+    // Use newSpreadsheetUrl when in append mode, otherwise use main url
+    const loadUrl = appendMode ? newSpreadsheetUrl : url;
+    const sheetId = extractSpreadsheetId(loadUrl);
     if (!sheetId) {
       toast.error('Invalid URL', { description: 'Please enter a valid Google Sheets URL.' });
       return;
@@ -317,7 +323,7 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     setStatus('loading');
     setProgress(0);
     setCurrentStep(1);
-    setLoadingMessage('Connecting to Google Sheets...');
+    setLoadingMessage(appendMode ? 'Adding spreadsheet...' : 'Connecting to Google Sheets...');
 
     // Start with step 1, the API call will drive actual progress
     // We use a slow animation that caps at 90% until complete
@@ -337,7 +343,7 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
           setLoadingMessage('Detecting sheets and tables...');
         } else if (animatedProgress < 60) {
           setCurrentStep(3);
-          setLoadingMessage('Creating DuckDB snapshot...');
+          setLoadingMessage(appendMode ? 'Appending to DuckDB snapshot...' : 'Creating DuckDB snapshot...');
         } else if (animatedProgress < 80) {
           setCurrentStep(4);
           setLoadingMessage('Generating embeddings...');
@@ -349,26 +355,36 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     }, 200); // Slower animation - takes ~36s to reach 90%
 
     try {
-      console.log('[DatasetConnection] Starting API call to load dataset:', url);
-      const response = await api.loadDataset(url);
+      console.log('[DatasetConnection] Starting API call to load dataset:', loadUrl, 'append:', appendMode);
+      const response = await api.loadDataset(loadUrl, appendMode);
       console.log('[DatasetConnection] API Response:', response);
 
       clearInterval(progressAnimation);
 
       if (response.success && response.stats) {
+        // When appending, the backend returns merged stats
+        // Just use the response stats directly
         setDatasetStats(response.stats);
         setCurrentStep(LOADING_STEPS.length + 1);
         setProgress(100);
-        setLoadingMessage('Complete!');
+        setLoadingMessage(appendMode ? 'Spreadsheet added!' : 'Complete!');
         setStatus('success');
         setLocalVerified(true); // Fresh connection verified locally
 
         console.log('[DatasetConnection] Dataset loaded successfully:', response.stats);
+        if (appendMode) {
+          console.log('[DatasetConnection] Loaded spreadsheets:', response.stats.loadedSpreadsheets);
+        }
+
+        // Clear append mode state
+        setIsAppendMode(false);
+        setNewSpreadsheetUrl('');
 
         // Show success briefly, then switch to connected
         setTimeout(() => {
-          // Pass both URL and stats to parent
-          onSuccess(url, {
+          // Pass the URL (or the new spreadsheet URL if appending) and stats to parent
+          const finalUrl = appendMode ? loadUrl : url;
+          onSuccess(finalUrl, {
             totalTables: response.stats.totalTables || 0,
             totalRecords: response.stats.totalRecords || 0,
             sheetCount: response.stats.sheetCount || 0,
@@ -386,12 +402,18 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
       clearInterval(progressAnimation);
       console.error('[DatasetConnection] Error loading dataset:', error);
 
-      setStatus('idle');
+      // Reset to appropriate state based on mode
+      setStatus(appendMode ? 'connected' : 'idle');
       setProgress(0);
       setCurrentStep(0);
       setLoadingMessage('');
-      setLocalVerified(false);
-      setUrlVerified(false);
+      if (!appendMode) {
+        setLocalVerified(false);
+        setUrlVerified(false);
+      }
+      // Clear append mode state on error too
+      setIsAppendMode(false);
+      setNewSpreadsheetUrl('');
 
       let errorDescription = 'Could not connect to the dataset.';
       if (error.message) {
@@ -886,13 +908,88 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                   </Button>
                 </motion.div>
 
+                {/* Add Another Spreadsheet Button */}
+                <motion.div variants={itemVariants}>
+                  <Button
+                    onClick={() => setStatus('add_spreadsheet')}
+                    disabled={!isVerified || isRefreshing}
+                    variant="outline"
+                    className="w-full h-12 rounded-xl font-bold transition-all duration-300 border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 text-emerald-400"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 mr-2" />
+                    Add Another Spreadsheet
+                  </Button>
+                </motion.div>
+
                 {/* Hint */}
                 <motion.p
                   variants={itemVariants}
                   className="text-xs text-center text-zinc-500"
                 >
-                  {isRefreshing ? 'Syncing with Google Sheets...' : 'Click refresh to sync latest data'}
+                  {isRefreshing ? 'Syncing with Google Sheets...' : 'Add more spreadsheets to combine data from multiple sources'}
                 </motion.p>
+              </motion.div>
+            )}
+
+            {/* ADD_SPREADSHEET State - Form to add another spreadsheet */}
+            {status === 'add_spreadsheet' && (
+              <motion.div
+                key="add_spreadsheet"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Info Banner */}
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                      <FileSpreadsheet className="w-5 h-5 text-emerald-500" />
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-emerald-400">Add Another Spreadsheet</span>
+                      <p className="text-xs text-emerald-500/60">
+                        Data will be merged with your existing {datasetStats?.totalTables || 0} tables
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                    New Spreadsheet URL
+                  </label>
+                  <Input
+                    value={newSpreadsheetUrl}
+                    onChange={(e) => setNewSpreadsheetUrl(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                    className="h-12 bg-background border-border rounded-xl focus:border-emerald-500/50 transition-all"
+                  />
+                  <p className="text-xs text-muted-foreground ml-1">
+                    Paste another Google Sheets URL to combine with your existing data
+                  </p>
+                </div>
+
+                <div className="flex gap-3">
+                  <Button
+                    onClick={() => {
+                      setStatus('connected');
+                      setNewSpreadsheetUrl('');
+                    }}
+                    variant="outline"
+                    className="flex-1 h-12 rounded-xl"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={() => startLoadingSimulation(true)}
+                    disabled={!newSpreadsheetUrl}
+                    className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Add & Merge Data
+                  </Button>
+                </div>
               </motion.div>
             )}
 

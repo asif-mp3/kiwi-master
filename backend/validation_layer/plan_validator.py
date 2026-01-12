@@ -87,7 +87,7 @@ def normalize_text_filters_to_like(plan: dict, table_name: str) -> dict:
     """
     try:
         table_schema = get_table_schema(table_name)
-    except:
+    except (KeyError, ValueError, RuntimeError):
         return plan  # Can't check schema, skip normalization
 
     # Columns that are text-based
@@ -165,7 +165,7 @@ def normalize_text_filters_to_like(plan: dict, table_name: str) -> dict:
                         f['operator'] = 'LIKE'
                         f['value'] = f'%{value}%'
                         print(f"  [Validator] Converted {period_key} filter to LIKE: {column} LIKE '%{value}%'")
-            except:
+            except (KeyError, ValueError, RuntimeError):
                 pass  # Skip if can't get schema
 
     return plan
@@ -239,9 +239,13 @@ def validate_columns_exist(columns: list, table_name: str):
     """
     if not columns:
         return
-    
-    # Allow wildcard
-    if columns == ["*"]:
+
+    # Allow wildcard - check for "*" in any form
+    if columns == ["*"] or "*" in columns:
+        return
+
+    # Also check if columns is just the string "*"
+    if isinstance(columns, str) and columns == "*":
         return
 
     table_schema = get_table_schema(table_name)
@@ -251,6 +255,9 @@ def validate_columns_exist(columns: list, table_name: str):
     column_map = {col.lower(): col for col in available_columns}
 
     for column in columns:
+        # Skip wildcard if mixed with other columns
+        if column == "*":
+            continue
         column_lower = column.lower()
 
         # 1. Exact match (case-insensitive)

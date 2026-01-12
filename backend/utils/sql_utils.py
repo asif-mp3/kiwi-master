@@ -22,8 +22,13 @@ def quote_identifier(name: str) -> str:
         >>> quote_identifier("Profit_Margin_%")
         '"Profit_Margin_%"'
     """
+    # Never quote the SQL wildcard - it should remain unquoted
+    if name == "*":
+        return "*"
+
     # Special characters that require quoting in SQL identifiers
-    special_chars = [' ', '-', '.', '(', ')', '%', '#', '@', '/', '\\', '+', '*', '&', '$']
+    # Note: '*' removed from this list as it's handled above
+    special_chars = [' ', '-', '.', '(', ')', '%', '#', '@', '/', '\\', '+', '&', '$']
     if any(char in name for char in special_chars) or (name and name[0].isdigit()):
         return f'"{name}"'
     return name

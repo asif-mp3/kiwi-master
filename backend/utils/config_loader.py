@@ -15,8 +15,15 @@ Usage:
 import yaml
 import threading
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+
+
+@dataclass
+class DemoModeConfig:
+    """Demo mode configuration for auto-loading sheets."""
+    enabled: bool = False
+    auto_load_spreadsheets: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -35,6 +42,7 @@ class GoogleSheetsConfig:
     cache_check_interval_seconds: int = 60
     numeric_conversion_threshold: float = 0.8
     date_conversion_threshold: float = 0.5
+    demo_mode: Optional[DemoModeConfig] = None
 
 
 @dataclass
@@ -135,6 +143,16 @@ def _load_raw_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _parse_demo_mode(demo_raw: Optional[dict]) -> Optional[DemoModeConfig]:
+    """Parse demo_mode configuration from raw dict."""
+    if not demo_raw:
+        return None
+    return DemoModeConfig(
+        enabled=demo_raw.get("enabled", False),
+        auto_load_spreadsheets=demo_raw.get("auto_load_spreadsheets", []),
+    )
+
+
 def _parse_config(raw: dict) -> Config:
     """Parse raw dict into typed Config object."""
     return Config(
@@ -149,6 +167,7 @@ def _parse_config(raw: dict) -> Config:
             cache_check_interval_seconds=raw.get("google_sheets", {}).get("cache_check_interval_seconds", 60),
             numeric_conversion_threshold=raw.get("google_sheets", {}).get("numeric_conversion_threshold", 0.8),
             date_conversion_threshold=raw.get("google_sheets", {}).get("date_conversion_threshold", 0.5),
+            demo_mode=_parse_demo_mode(raw.get("google_sheets", {}).get("demo_mode")),
         ),
         llm=LLMConfig(
             api_key_env=raw.get("llm", {}).get("api_key_env", "GEMINI_API_KEY"),
@@ -247,3 +266,92 @@ def get_llm_config() -> LLMConfig:
 def get_voice_config() -> VoiceConfig:
     """Get voice/TTS configuration."""
     return get_config().voice
+
+
+# =============================================================================
+# API Key Validation
+# =============================================================================
+
+def validate_api_keys(raise_on_missing: bool = False) -> Dict[str, bool]:
+    """
+    Validate that required API keys are present in environment.
+
+    Args:
+        raise_on_missing: If True, raise ValueError for missing keys
+
+    Returns:
+        Dict mapping key name to whether it's present
+    """
+    import os
+
+    config = get_config()
+
+    required_keys = {
+        "GEMINI_API_KEY": config.llm.api_key_env,
+        "ELEVENLABS_API_KEY": config.voice.elevenlabs_api_key_env,
+    }
+
+    results = {}
+    missing = []
+
+    for display_name, env_var in required_keys.items():
+        value = os.getenv(env_var, "")
+        is_present = bool(value and len(value) > 10)  # Basic validation
+        results[display_name] = is_present
+        if not is_present:
+            missing.append(display_name)
+
+    if raise_on_missing and missing:
+        raise ValueError(
+            f"Missing required API keys: {', '.join(missing)}. "
+            "Please set these environment variables."
+        )
+
+    return results
+
+
+def validate_config() -> List[str]:
+    """
+    Validate configuration and return list of warnings.
+
+    Returns:
+        List of warning messages (empty if all OK)
+    """
+    import os
+    from pathlib import Path
+
+    warnings = []
+    config = get_config()
+
+    # Check API keys
+    api_keys = validate_api_keys(raise_on_missing=False)
+    for key, present in api_keys.items():
+        if not present:
+            warnings.append(f"⚠️  {key} not set - related features will not work")
+
+    # Check credentials file
+    creds_path = Path(config.google_sheets.credentials_path)
+    if not creds_path.exists():
+        warnings.append(f"⚠️  Google credentials not found at {creds_path}")
+
+    # Check config file exists
+    if not _config_path.exists():
+        warnings.append("⚠️  config/settings.yaml not found - using defaults")
+
+    # Check voice config
+    if not config.voice.default_voice_id:
+        warnings.append("⚠️  voice.default_voice_id not configured")
+
+    return warnings
+
+
+def print_startup_validation() -> None:
+    """Print configuration validation during startup."""
+    warnings = validate_config()
+
+    if warnings:
+        print("\n  Configuration Warnings:")
+        for warning in warnings:
+            print(f"    {warning}")
+    else:
+        print("  Configuration: ✓ All validated")

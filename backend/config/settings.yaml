@@ -12,15 +12,20 @@ google_sheets:
   cache_check_interval_seconds: 60
   credentials_path: credentials/service_account.json
   date_conversion_threshold: 0.5
+  demo_mode:
+    auto_load_spreadsheets:
+    - 1pXd7aGOOBZfhJp4KI__qI3Moj0KS0w2Iwg7kLPUonG4
+    - 1dSae1JI3AZfh7aa71JYeL0PKacq2loBxILY-0LJJlhw
+    enabled: true
   numeric_conversion_threshold: 0.8
-  spreadsheet_id: 1pXd7aGOOBZfhJp4KI__qI3Moj0KS0w2Iwg7kLPUonG4
+  spreadsheet_id: 1dSae1JI3AZfh7aa71JYeL0PKacq2loBxILY-0LJJlhw
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
   explainer_max_tokens: 150
   max_retries: 2
   model: gemini-2.0-flash
-  planner_max_tokens: 300
+  planner_max_tokens: 2000
   provider: gemini
   request_timeout_seconds: 30
   temperature: 0.0

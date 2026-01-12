@@ -69,9 +69,12 @@ export const api = {
   /**
    * Connect to a dataset URL.
    * Backend endpoint: POST /api/load-dataset
+   *
+   * @param url - Google Sheets URL or spreadsheet ID
+   * @param append - If true, adds to existing data instead of replacing (for multi-spreadsheet support)
    */
-  loadDataset: async (url: string): Promise<LoadDataResponse> => {
-    console.log('[API] loadDataset called with URL:', url);
+  loadDataset: async (url: string, append: boolean = false): Promise<LoadDataResponse> => {
+    console.log('[API] loadDataset called with URL:', url, 'append:', append);
 
     const response = await handleResponse(
       await fetch(`${API_BASE_URL}/api/load-dataset`, {
@@ -80,7 +83,7 @@ export const api = {
           'Content-Type': 'application/json',
           ...getAuthHeaders(),
         },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, append }),
       })
     );
 
@@ -244,7 +247,14 @@ export const api = {
       throw new Error('TTS request failed');
     }
 
-    return response.blob();
+    // Get blob and ensure correct MIME type for browser compatibility
+    const blob = await response.blob();
+    // Re-create blob with explicit audio/mpeg type if needed
+    if (blob.type !== 'audio/mpeg') {
+      console.log('[API] Converting blob from', blob.type, 'to audio/mpeg');
+      return new Blob([blob], { type: 'audio/mpeg' });
+    }
+    return blob;
   },
 
   // ============================================================================
@@ -354,6 +364,43 @@ export const api = {
     );
 
     return await response.json();
+  },
+
+  // ============================================================================
+  // Demo Mode / Dataset Status
+  // ============================================================================
+
+  /**
+   * Check if dataset is pre-loaded (demo mode).
+   * Backend endpoint: GET /api/dataset-status
+   */
+  getDatasetStatus: async (): Promise<{
+    loaded: boolean;
+    demo_mode: boolean;
+    total_tables?: number;
+    tables?: string[];
+    original_sheets?: string[];
+    total_records?: number;
+    detected_tables?: DetectedTable[];
+    loaded_spreadsheets?: string[];
+    error?: string;
+  }> => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/dataset-status`, {
+        headers: {
+          ...getAuthHeaders(),
+        },
+      });
+
+      if (!response.ok) {
+        return { loaded: false, demo_mode: false };
+      }
+
+      return await response.json();
+    } catch (e) {
+      console.error('[API] getDatasetStatus error:', e);
+      return { loaded: false, demo_mode: false };
+    }
   },
 
 };

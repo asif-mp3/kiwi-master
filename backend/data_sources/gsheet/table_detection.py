@@ -19,6 +19,28 @@ sys.path.insert(0, str(TABLE_DETECTOR_PATH))
 # Import table detector functions
 from custom_detector import detect_tables_custom
 from table_cleaner import clean_detected_tables
+import re
+
+
+def _sanitize_sheet_name(sheet_name: str) -> str:
+    """
+    Convert sheet name to a clean, lowercase snake_case format for table_id.
+
+    Examples:
+        "Payroll Summary" -> "payroll_summary"
+        "Staff Maintenance" -> "staff_maintenance"
+        "Sales-2024" -> "sales_2024"
+        "Department Summary (Q1)" -> "department_summary_q1"
+    """
+    # Convert to lowercase
+    name = sheet_name.lower()
+    # Replace spaces, hyphens, and special chars with underscores
+    name = re.sub(r'[\s\-\(\)\[\]]+', '_', name)
+    # Remove any remaining non-alphanumeric characters except underscores
+    name = re.sub(r'[^a-z0-9_]', '', name)
+    # Remove leading/trailing underscores and collapse multiple underscores
+    name = re.sub(r'_+', '_', name).strip('_')
+    return name or 'unknown_sheet'
 
 
 def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str, Any]]:
@@ -41,34 +63,40 @@ def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str,
     try:
         # Step 1: Detect tables using custom detector
         detected_tables = detect_tables_custom(df)
-        
+
         if not detected_tables:
-            # Fallback: treat entire sheet as one table
+            # Fallback: treat entire sheet as one table with meaningful name
+            # Convert sheet name to snake_case for table_id
+            sanitized_name = _sanitize_sheet_name(sheet_name)
             print(f"      ⚠️  No tables detected in '{sheet_name}', using entire sheet")
             return [{
-                'table_id': 'table_0',
+                'table_id': f'{sanitized_name}_table_1',
                 'row_range': (0, int(len(df))),
                 'col_range': (0, int(len(df.columns))),
                 'dataframe': df,
                 'sheet_name': sheet_name
             }]
-        
+
         # Step 2: Clean detected tables (remove title rows, set headers, etc.)
         cleaned_tables = clean_detected_tables(detected_tables, keep_title=True)
-        
-        # Step 3: Add sheet context to each table
-        for table in cleaned_tables:
+
+        # Step 3: Add sheet context and update table_id with meaningful names
+        sanitized_name = _sanitize_sheet_name(sheet_name)
+        for i, table in enumerate(cleaned_tables):
             table['sheet_name'] = sheet_name
-        
+            # Replace generic table_0, table_1 with meaningful names like payroll_summary_table_1
+            table['table_id'] = f'{sanitized_name}_table_{i + 1}'
+
         return cleaned_tables
         
     except Exception as e:
         print(f"      ⚠️  Error detecting tables in '{sheet_name}': {e}")
         print(f"      → Falling back to treating entire sheet as one table")
-        
-        # Fallback: treat entire sheet as one table
+
+        # Fallback: treat entire sheet as one table with meaningful name
+        sanitized_name = _sanitize_sheet_name(sheet_name)
         return [{
-            'table_id': 'table_0',
+            'table_id': f'{sanitized_name}_table_1',
             'row_range': (0, int(len(df))),
             'col_range': (0, int(len(df.columns))),
             'dataframe': df,
@@ -88,22 +116,3 @@ def get_table_name(sheet_name: str, table_index: int) -> str:
         Formatted table name: {SheetName}_Table{N}
     """
     return f"{sheet_name}_Table{table_index}"
-
-
-def extract_table_title(table_info: Dict[str, Any]) -> str:
-    """
-    Extract a human-readable title for the table.
-    
-    Args:
-        table_info: Table information dict
-    
-    Returns:
-        Title string (either detected title or generated from table_id)
-    """
-    if 'title' in table_info and table_info['title']:
-        return table_info['title']
-    
-    # Generate title from table_id
-    table_id = table_info.get('table_id', 'Unknown')
-    sheet_name = table_info.get('sheet_name', 'Unknown')
-    return f"Table from {sheet_name} ({table_id})"

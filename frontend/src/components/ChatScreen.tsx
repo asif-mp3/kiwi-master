@@ -72,7 +72,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { ChatTab } from '@/lib/types';
 import { DatasetConnection, DatasetStats } from './DatasetConnection';
-import { VOICE_RECORDING_TIMEOUT, VOICE_MODE_TIMEOUT } from '@/lib/constants';
+import { DatasetInfoPopover, DatasetInfo } from './DatasetInfoPopover';
+import {
+  VOICE_RECORDING_TIMEOUT,
+  VOICE_MODE_TIMEOUT,
+  VAD_SILENCE_THRESHOLD,
+  VAD_SILENCE_DURATION,
+  VAD_MIN_SPEECH_DURATION,
+  VAD_CHECK_INTERVAL
+} from '@/lib/constants';
 
 interface ChatScreenProps {
   onLogout: () => void;
@@ -193,6 +201,17 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState('');
 
+  // Always-on voice mode state
+  const [isAlwaysOnMode, setIsAlwaysOnMode] = useState(false);
+  const shouldResumeRecording = useRef(false);
+  // Ref mirror for isAlwaysOnMode to avoid stale closures in callbacks
+  const isAlwaysOnModeRef = useRef(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    isAlwaysOnModeRef.current = isAlwaysOnMode;
+  }, [isAlwaysOnMode]);
+
   // Audio ref to control TTS playback (stop functionality)
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -202,6 +221,13 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   // Timeout refs for cleanup (prevent memory leaks)
   const voiceModeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Voice Activity Detection (VAD) refs for fast silence detection
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vadIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const silenceStartRef = useRef<number | null>(null);
+  const speechStartRef = useRef<number | null>(null);
 
   /* New State for Voice Section Toggles - REMOVED, replaced with suggestion UI */
   const [expandedVoiceSection, setExpandedVoiceSection] = useState<'plan' | 'data' | 'schema' | null>(null);
@@ -213,6 +239,13 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [isProcessingQuery, setIsProcessingQuery] = useState(false);
   const [isCurrentInputVoice, setIsCurrentInputVoice] = useState(false);
   const [hasTamilInput, setHasTamilInput] = useState(false);
+
+  // Demo mode state - when true, show info button instead of connection dialog
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [demoDatasetInfo, setDemoDatasetInfo] = useState<DatasetInfo | null>(null);
+
+  // Fullscreen call mode - hides header for immersive phone-call experience on mobile
+  const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
 
   useEffect(() => {
     // Scroll to bottom when messages change, chat opens, or switching chats
@@ -236,7 +269,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     };
   }, [messages.length, showChat, activeChatId]);
 
-  // Cleanup timeouts on unmount to prevent memory leaks
+  // Cleanup timeouts and VAD on unmount to prevent memory leaks
   useEffect(() => {
     return () => {
       if (voiceModeTimeoutRef.current) {
@@ -245,14 +278,24 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       if (recordingTimeoutRef.current) {
         clearTimeout(recordingTimeoutRef.current);
       }
+      if (vadIntervalRef.current) {
+        clearInterval(vadIntervalRef.current);
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, []);
 
-  // Push-to-talk: Track if recording was started via push-to-talk
-  const isPushToTalkRef = useRef(false);
-
-  // Ref to hold the latest handleVoiceToggle function (avoids stale closure in useEffect)
-  const handleVoiceToggleRef = useRef<() => void>(() => {});
+  // Helper to stop VAD monitoring
+  const stopVAD = () => {
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current);
+      vadIntervalRef.current = null;
+    }
+    silenceStartRef.current = null;
+    speechStartRef.current = null;
+  };
 
   const activeChat = getCurrentChat();
 
@@ -274,17 +317,83 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
 
+  // EFFECT: Check for demo mode (pre-loaded dataset) on mount
+  // If backend has pre-loaded data, skip the connection dialog entirely
+  useEffect(() => {
+    const checkDemoMode = async () => {
+      try {
+        const response = await api.getDatasetStatus();
+        if (response.loaded && response.demo_mode) {
+          console.log("✅ Demo mode: Dataset pre-loaded, skipping connection dialog");
+          setIsConnectionVerified(true);
+          hasVerifiedOnce.current = true;
+
+          // Set demo mode flag and dataset info for the info popover
+          setIsDemoMode(true);
+          const demoInfo: DatasetInfo = {
+            totalTables: response.total_tables || 0,
+            totalRecords: response.total_records || 0,
+            sheetCount: response.original_sheets?.length || response.tables?.length || 2,
+            sheets: response.original_sheets || [],  // Use original sheet names, not DuckDB table names
+            detectedTables: response.detected_tables || []
+          };
+          setDemoDatasetInfo(demoInfo);
+
+          // Create a chat if none exists, and mark it as having demo data
+          if (!activeChatId) {
+            createNewChat();
+          }
+
+          // Update the active chat with demo dataset info
+          const currentChatId = activeChatId || chatTabs[0]?.id;
+          if (currentChatId) {
+            // Cast to ChatTab stats format which requires detectedTables
+            setDatasetForChat('demo://preloaded', 'ready', {
+              totalTables: demoInfo.totalTables,
+              totalRecords: demoInfo.totalRecords,
+              sheetCount: demoInfo.sheetCount,
+              sheets: demoInfo.sheets,
+              detectedTables: demoInfo.detectedTables || []
+            }, currentChatId);
+          }
+        }
+      } catch (error) {
+        // Not in demo mode, normal flow continues
+        console.log("Demo mode check: Not in demo mode or backend not ready");
+        setIsDemoMode(false);
+      }
+    };
+
+    // Only check once on mount
+    if (!hasVerifiedOnce.current) {
+      checkDemoMode();
+    }
+  }, [activeChatId, chatTabs, createNewChat, setDatasetForChat]);
+
   const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false, isVoiceInput: boolean = false) => {
     if (!activeChatId) {
       createNewChat();
     }
 
-    // Check for dataset connection
+    // Check for dataset connection (allow demo mode)
     const currentChat = activeChatId ? chatTabs.find(t => t.id === activeChatId) : null;
-    if (!currentChat || currentChat.datasetStatus !== 'ready') {
-      setIsDatasetModalOpen(true);
-      toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
-      return;
+    if (!isConnectionVerified && (!currentChat || currentChat.datasetStatus !== 'ready')) {
+      // Double-check demo mode before showing error
+      try {
+        const statusResp = await api.getDatasetStatus();
+        if (statusResp.loaded) {
+          setIsConnectionVerified(true);
+          // Continue with the message
+        } else {
+          setIsDatasetModalOpen(true);
+          toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
+          return;
+        }
+      } catch {
+        setIsDatasetModalOpen(true);
+        toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
+        return;
+      }
     }
 
     // Detect Tamil characters in input
@@ -314,10 +423,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           setExpandedVoiceSection('plan');
         }
 
-        // Clear processing state BEFORE TTS so VoiceVisualizer shows during playback
-        setIsProcessingQuery(false);
-        setIsCurrentInputVoice(false);
-        setHasTamilInput(false);
+        // NOTE: Keep isProcessingQuery=true until TTS is ready to play
+        // This prevents "Ready..." gap while fetching TTS audio (2-4 seconds)
+        // isProcessingQuery will be cleared inside playTextToSpeech
 
         // Play TTS response with Rachel voice
         console.log('🔊 shouldPlayTTS:', shouldPlayTTS);
@@ -328,6 +436,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           await playTextToSpeech(response.explanation);
         } else {
           console.log('⚠️ TTS disabled (flag not set)');
+          // Clear processing state since we're not playing TTS
+          setIsProcessingQuery(false);
+          setIsProcessingVoice(false);
+          setIsCurrentInputVoice(false);
+          setHasTamilInput(false);
         }
 
       } else {
@@ -368,21 +481,33 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         audioRef.current = null;
       }
 
-      setIsSpeaking(true);
+      // Set message ID for loading indicator (but NOT speaking yet)
       setSpeakingMessageId(messageId || null);
-      console.log('🔊 Playing TTS for:', text.substring(0, 50) + '...');
+      console.log('🔊 Fetching TTS for:', text.substring(0, 50) + '...');
 
-      // Call TTS endpoint via API service
+      // Call TTS endpoint via API service (this takes time - ~2-4 seconds)
       const audioBlob = await api.textToSpeech(text);
       console.log('✅ Received audio blob:', audioBlob.size, 'bytes');
 
       // Check if audio blob is valid
       if (!audioBlob || audioBlob.size === 0) {
         console.error('❌ Empty audio blob received');
-        setIsSpeaking(false);
         setSpeakingMessageId(null);
         return;
       }
+
+      // Clear processing state RIGHT BEFORE setting speaking state
+      // This ensures seamless transition: Processing -> Speaking (no "Ready..." gap)
+      setIsProcessingQuery(false);
+      setIsProcessingVoice(false);
+      setIsCurrentInputVoice(false);
+      setHasTamilInput(false);
+
+      // NOW set speaking state - audio is ready to play
+      setIsSpeaking(true);
+
+      // Haptic feedback when TTS is actually ready to play
+      navigator.vibrate?.(100);
 
       // Create audio URL and play
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -397,6 +522,18 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         setSpeakingMessageId(null);
         audioRef.current = null;
         URL.revokeObjectURL(audioUrl);
+
+        // Auto-resume recording if in always-on mode
+        // Use ref (shouldResumeRecording) instead of state (isAlwaysOnMode) to avoid stale closure
+        if (shouldResumeRecording.current) {
+          console.log('🎤 Always-on mode: Auto-resuming recording after TTS');
+          // Small delay to ensure audio is fully released, then resume
+          setTimeout(() => {
+            if (shouldResumeRecording.current) {
+              resumeRecording();
+            }
+          }, 100);
+        }
       };
 
       audio.onerror = () => {
@@ -412,7 +549,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
       try {
         await audio.play();
-        audio.playbackRate = 1.15;  // 30% faster playback
+        audio.playbackRate = 1.1;  // 30% faster playback
         console.log('▶️ TTS playback started at 1.3x speed');
       } catch (playError) {
         // Handle autoplay policy - browser blocks audio without user interaction
@@ -448,6 +585,156 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       audioRef.current = null;
       setIsSpeaking(false);
       setSpeakingMessageId(null);
+    }
+  };
+
+  // Resume recording for always-on voice mode
+  const resumeRecording = async () => {
+    // Use ref check to avoid stale closure issues
+    if (!shouldResumeRecording.current) {
+      console.log('🎤 Not resuming: always-on mode disabled');
+      return;
+    }
+
+    console.log('🎤 Auto-resuming recording in always-on mode...');
+
+    // Check again in case user clicked stop
+    if (!shouldResumeRecording.current) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        console.log('🎤 Recording stopped, processing...');
+        stream.getTracks().forEach(track => track.stop());
+
+        if (chunks.length === 0) return;
+
+        const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+        console.log('📦 Audio blob size:', audioBlob.size, 'bytes');
+
+        try {
+          setIsProcessingVoice(true);
+          const text = await api.transcribeAudio(audioBlob);
+          console.log('✅ Transcribed text:', text);
+
+          if (!text || text.trim() === '') {
+            console.warn('⚠️ Empty transcription - waiting for next input...');
+            // In always-on mode, just resume listening instead of showing error
+            if (shouldResumeRecording.current) {
+              resumeRecording();
+            }
+            return;
+          }
+
+          setIsVoiceMode(true);
+          setIsProcessingVoice(false);
+
+          // Send transcribed message WITH TTS enabled
+          await handleSendMessage(text, true, true);
+
+          // Note: TTS onended will call resumeRecording again
+
+        } catch (err) {
+          console.error('❌ Voice processing error:', err);
+          toast.error("Voice processing failed");
+          setIsProcessingVoice(false);
+          // Resume recording despite error in always-on mode
+          if (shouldResumeRecording.current) {
+            resumeRecording();
+          }
+        }
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+      console.log('🔴 Recording resumed in always-on mode');
+
+      // === VAD for resumed recording ===
+      try {
+        const audioContext = new AudioContext();
+        audioContextRef.current = audioContext;
+
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.3;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        speechStartRef.current = Date.now();
+        silenceStartRef.current = null;
+
+        console.log('🎙️ VAD started for resumed recording...');
+
+        vadIntervalRef.current = setInterval(() => {
+          if (!analyserRef.current || recorder.state !== 'recording') {
+            stopVAD();
+            return;
+          }
+
+          analyser.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+          const now = Date.now();
+          const speechDuration = now - (speechStartRef.current || now);
+
+          if (speechDuration < VAD_MIN_SPEECH_DURATION) {
+            return;
+          }
+
+          if (average < VAD_SILENCE_THRESHOLD) {
+            if (!silenceStartRef.current) {
+              silenceStartRef.current = now;
+            } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
+              console.log('✋ VAD: Silence detected - stopping resumed recording');
+              stopVAD();
+              if (recorder.state === 'recording') {
+                recorder.stop();
+                setIsRecording(false);
+              }
+            }
+          } else {
+            silenceStartRef.current = null;
+          }
+        }, VAD_CHECK_INTERVAL);
+
+      } catch (vadError) {
+        console.warn('⚠️ VAD setup failed in resume:', vadError);
+      }
+
+      // Fallback timeout
+      if (recordingTimeoutRef.current) {
+        clearTimeout(recordingTimeoutRef.current);
+      }
+      recordingTimeoutRef.current = setTimeout(() => {
+        stopVAD();
+        if (recorder.state === 'recording') {
+          console.log('⏱️ Max timeout in resumed recording');
+          recorder.stop();
+          setIsRecording(false);
+        }
+        recordingTimeoutRef.current = null;
+      }, VOICE_RECORDING_TIMEOUT);
+
+    } catch (err) {
+      console.error('❌ Failed to resume recording:', err);
+      setIsAlwaysOnMode(false);
+      shouldResumeRecording.current = false;
+      toast.error("Microphone access lost");
     }
   };
 
@@ -490,7 +777,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       return;
     }
 
-    if (!activeChat.datasetUrl) {
+    // In demo mode, datasetUrl might be 'demo://preloaded' or connection is verified
+    if (!activeChat.datasetUrl && !isConnectionVerified) {
       toast.error("Please connect a dataset first", {
         description: "Thara needs data to answer your questions."
       });
@@ -509,9 +797,25 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       isTogglingVoiceRef.current = false;
     }, 300);
 
+    // Haptic feedback for mobile
+    if (newIsRecording) {
+      // Short vibration pulse when starting to record
+      navigator.vibrate?.(50);
+    } else {
+      // Double-pulse when stopping
+      navigator.vibrate?.([30, 50, 30]);
+    }
+
     if (newIsRecording) { // Started listening
-      console.log('🎤 Started listening...');
+      console.log('🎤 Started listening (always-on mode enabled)...');
       setExpandedVoiceSection(null);
+
+      // Enable fullscreen voice mode for immersive experience
+      setIsFullscreenVoice(true);
+
+      // Enable always-on mode
+      setIsAlwaysOnMode(true);
+      shouldResumeRecording.current = true;
 
       try {
         // Request microphone access
@@ -556,9 +860,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             console.log('🔊 Enabling voice mode for TTS...');
             setIsVoiceMode(true);
 
-            // Stop voice processing UI BEFORE sending message
-            // This allows VoiceVisualizer to show during query processing & TTS
-            setIsProcessingVoice(false);
+            // NOTE: Keep isProcessingVoice=true until handleSendMessage sets isProcessingQuery
+            // This prevents "Ready..." gap between transcription and query processing
 
             // Send transcribed message WITH TTS enabled and mark as voice input
             console.log('📤 Sending transcribed message with TTS...');
@@ -590,14 +893,80 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         setMediaRecorder(recorder);
         console.log('🔴 Recording started...');
 
-        // Auto-stop after timeout
+        // === VOICE ACTIVITY DETECTION (VAD) for phone-call-like experience ===
+        try {
+          // Create AudioContext for analyzing audio levels
+          const audioContext = new AudioContext();
+          audioContextRef.current = audioContext;
+
+          const source = audioContext.createMediaStreamSource(stream);
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.3;
+          source.connect(analyser);
+          analyserRef.current = analyser;
+
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          speechStartRef.current = Date.now();
+          silenceStartRef.current = null;
+
+          console.log('🎙️ VAD started - listening for silence...');
+
+          // Check audio levels periodically
+          vadIntervalRef.current = setInterval(() => {
+            if (!analyserRef.current || recorder.state !== 'recording') {
+              stopVAD();
+              return;
+            }
+
+            analyser.getByteFrequencyData(dataArray);
+            // Calculate average audio level
+            const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+            const now = Date.now();
+            const speechDuration = now - (speechStartRef.current || now);
+
+            // Only check for silence after minimum speech duration
+            if (speechDuration < VAD_MIN_SPEECH_DURATION) {
+              return;
+            }
+
+            if (average < VAD_SILENCE_THRESHOLD) {
+              // Silence detected
+              if (!silenceStartRef.current) {
+                silenceStartRef.current = now;
+                console.log('🔇 Silence started...');
+              } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
+                // Silence duration exceeded - stop recording
+                console.log('✋ VAD: Silence detected for', VAD_SILENCE_DURATION, 'ms - stopping recording');
+                stopVAD();
+                if (recorder.state === 'recording') {
+                  recorder.stop();
+                  setIsRecording(false);
+                }
+              }
+            } else {
+              // Speech detected - reset silence timer
+              if (silenceStartRef.current) {
+                console.log('🗣️ Speech resumed');
+              }
+              silenceStartRef.current = null;
+            }
+          }, VAD_CHECK_INTERVAL);
+
+        } catch (vadError) {
+          console.warn('⚠️ VAD setup failed, using timeout fallback:', vadError);
+        }
+
+        // Fallback: Auto-stop after max timeout (in case VAD fails)
         // Clear any previous timeout before setting a new one
         if (recordingTimeoutRef.current) {
           clearTimeout(recordingTimeoutRef.current);
         }
         recordingTimeoutRef.current = setTimeout(() => {
+          stopVAD();
           if (recorder.state === 'recording') {
-            console.log('⏱️ Auto-stopping after timeout...');
+            console.log('⏱️ Max timeout reached - stopping recording');
             recorder.stop();
             setIsRecording(false);
           }
@@ -613,8 +982,19 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       }
 
     } else {
-      // Manual stop
-      console.log('🛑 Manually stopping recording...');
+      // Manual stop - user clicked to end always-on mode
+      console.log('🛑 Manually stopping recording (ending always-on mode)...');
+
+      // Exit fullscreen voice mode
+      setIsFullscreenVoice(false);
+
+      // Disable always-on mode
+      setIsAlwaysOnMode(false);
+      shouldResumeRecording.current = false;
+
+      // Clean up VAD
+      stopVAD();
+
       // Clear the auto-stop timeout since we're manually stopping
       if (recordingTimeoutRef.current) {
         clearTimeout(recordingTimeoutRef.current);
@@ -625,42 +1005,6 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       }
     }
   };
-
-  // Keep the ref updated with the latest handleVoiceToggle function
-  useEffect(() => {
-    handleVoiceToggleRef.current = handleVoiceToggle;
-  });
-
-  // Push-to-talk: Shift key hold to record (desktop)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Only trigger if Shift is pressed, not already recording, and not typing in an input
-      if (e.key === 'Shift' && !isRecording && !isPushToTalkRef.current) {
-        const activeElement = document.activeElement;
-        const isTyping = activeElement?.tagName === 'INPUT' || activeElement?.tagName === 'TEXTAREA';
-        if (!isTyping) {
-          isPushToTalkRef.current = true;
-          handleVoiceToggleRef.current();
-        }
-      }
-    };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      // Stop recording when Shift is released (only if started via push-to-talk)
-      if (e.key === 'Shift' && isPushToTalkRef.current && isRecording) {
-        isPushToTalkRef.current = false;
-        handleVoiceToggleRef.current();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, [isRecording]);
 
   const handleDatasetSuccess = (url: string, stats: DatasetStats) => {
     console.log('[ChatScreen] Dataset connected with stats:', stats);
@@ -679,7 +1023,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       totalRecords: stats.totalRecords,
       sheetCount: stats.sheetCount,
       sheets: stats.sheets,
-      detectedTables: stats.detectedTables
+      detectedTables: stats.detectedTables || []
     }, chatIdToUse);
 
     // Dataset just loaded successfully - mark as verified immediately (no need to re-verify)
@@ -971,76 +1315,114 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/50 to-background" />
         </div>
 
-        {/* Header */}
-        <header className="relative z-20 flex items-center justify-between px-3 sm:px-6 py-3 sm:py-5">
-          <div className="flex items-center gap-2 sm:gap-4">
+        {/* Header - hidden in fullscreen voice mode for immersive experience */}
+        {isFullscreenVoice && !showChat ? (
+          /* Floating exit button in fullscreen voice mode */
+          <div className="absolute top-4 right-4 z-30">
             <Button
               variant="ghost"
-              size="icon"
-              aria-label={showChatsPanel ? "Close sidebar" : "Open sidebar"}
-              onClick={() => setShowChatsPanel(!showChatsPanel)}
-              className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
+              size="sm"
+              onClick={() => {
+                setIsFullscreenVoice(false);
+                // Also stop recording if active
+                if (isRecording) {
+                  handleVoiceToggle();
+                }
+              }}
+              className="h-9 px-3 rounded-xl glass border border-white/20 bg-black/30 hover:bg-black/50 text-white/80 hover:text-white transition-all backdrop-blur-sm"
             >
-              {showChatsPanel ? (
-                <PanelLeftClose className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400" />
-              ) : (
-                <PanelLeft className="w-4 h-4 sm:w-5 sm:h-5 text-zinc-400" />
-              )}
+              <X className="w-4 h-4 mr-1.5" />
+              <span className="text-xs font-medium">Exit</span>
             </Button>
-            {!showChatsPanel && chatTabs.length > 0 && (
-              <span className="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-violet-500/20 text-violet-400 rounded-full hidden sm:inline">
-                {chatTabs.length} chats
-              </span>
-            )}
           </div>
-
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Dataset Button - shows honest state */}
-            <Button
-              variant="ghost"
-              onClick={() => setIsDatasetModalOpen(true)}
-              className={cn(
-                "h-9 sm:h-11 px-2 sm:px-4 rounded-xl glass border transition-all gap-1.5 sm:gap-2",
-                activeChat?.datasetStatus === 'ready' && isConnectionVerified
-                  ? "border-violet-500/50 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
-                  : "border-border hover:border-violet-500/30 hover:bg-accent"
-              )}
-            >
-              <Table className={cn("w-4 h-4", activeChat?.datasetStatus === 'ready' && isConnectionVerified ? "text-violet-400" : "text-zinc-400")} />
-              <span className="text-xs sm:text-sm font-medium hidden sm:inline">
-                {activeChat?.datasetStatus === 'ready' && isConnectionVerified
-                  ? 'Connected'
-                  : 'Connect Data'}
-              </span>
-            </Button>
-
-            {/* Sync Button - Only show when dataset is connected */}
-            {activeChat?.datasetStatus === 'ready' && isConnectionVerified && (
+        ) : (
+          <header className="relative z-20 flex items-center justify-between px-3 sm:px-6 py-3 sm:py-5">
+            <div className="flex items-center gap-2 sm:gap-4">
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={handleSyncDataset}
-                disabled={isSyncing}
-                aria-label="Sync dataset"
-                className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 transition-all"
+                aria-label={showChatsPanel ? "Close sidebar" : "Open sidebar"}
+                onClick={() => setShowChatsPanel(!showChatsPanel)}
+                className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
               >
-                <RefreshCw className={cn("w-4 h-4 text-emerald-400", isSyncing && "animate-spin")} />
+                {showChatsPanel ? (
+                  <PanelLeftClose className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400" />
+                ) : (
+                  <PanelLeft className="w-4 h-4 sm:w-5 sm:h-5 text-zinc-400" />
+                )}
               </Button>
-            )}
+              {!showChatsPanel && chatTabs.length > 0 && (
+                <span className="px-2 py-0.5 text-[10px] sm:text-xs font-bold bg-violet-500/20 text-violet-400 rounded-full hidden sm:inline">
+                  {chatTabs.length} chats
+                </span>
+              )}
+            </div>
 
-            <DatasetConnection
-              isOpen={isDatasetModalOpen}
-              onClose={() => setIsDatasetModalOpen(false)}
-              onSuccess={handleDatasetSuccess}
-              initialUrl={activeChat?.datasetUrl || ''}
-              isLocked={activeChat?.datasetStatus === 'ready'}
-              isConnectionVerified={isConnectionVerified}
-              initialStats={activeChat?.datasetStats}
-            />
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Dataset Button - shows info popover in demo mode, or connection dialog otherwise */}
+            {isDemoMode ? (
+              /* Demo Mode: Show simple info button with popover */
+              <DatasetInfoPopover
+                datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
+                isConnected={isConnectionVerified}
+              />
+            ) : (
+              /* Non-Demo Mode: Show connect/connected button */
+              <>
+                <Button
+                  variant="ghost"
+                  onClick={() => setIsDatasetModalOpen(true)}
+                  className={cn(
+                    "h-9 sm:h-11 px-2 sm:px-4 rounded-xl glass border transition-all gap-1.5 sm:gap-2",
+                    activeChat?.datasetStatus === 'ready' && isConnectionVerified
+                      ? "border-violet-500/50 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
+                      : "border-border hover:border-violet-500/30 hover:bg-accent"
+                  )}
+                >
+                  <Table className={cn("w-4 h-4", activeChat?.datasetStatus === 'ready' && isConnectionVerified ? "text-violet-400" : "text-zinc-400")} />
+                  <span className="text-xs sm:text-sm font-medium hidden sm:inline">
+                    {activeChat?.datasetStatus === 'ready' && isConnectionVerified
+                      ? 'Connected'
+                      : 'Connect Data'}
+                  </span>
+                </Button>
+
+                {/* Sync Button - Only show when dataset is connected (non-demo mode) */}
+                {activeChat?.datasetStatus === 'ready' && isConnectionVerified && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handleSyncDataset}
+                    disabled={isSyncing}
+                    aria-label="Sync dataset"
+                    className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 transition-all"
+                  >
+                    <RefreshCw className={cn("w-4 h-4 text-emerald-400", isSyncing && "animate-spin")} />
+                  </Button>
+                )}
+
+                <DatasetConnection
+                  isOpen={isDatasetModalOpen}
+                  onClose={() => setIsDatasetModalOpen(false)}
+                  onSuccess={handleDatasetSuccess}
+                  initialUrl={activeChat?.datasetUrl || ''}
+                  isLocked={activeChat?.datasetStatus === 'ready'}
+                  isConnectionVerified={isConnectionVerified}
+                  initialStats={activeChat?.datasetStats}
+                />
+              </>
+            )}
 
             <Button
               variant="ghost"
-              onClick={() => setShowChat(!showChat)}
+              onClick={() => {
+                const newShowChat = !showChat;
+                setShowChat(newShowChat);
+                // Exit fullscreen voice mode when switching to chat
+                if (newShowChat) {
+                  setIsFullscreenVoice(false);
+                }
+              }}
               className={cn(
                 "h-9 sm:h-11 px-2 sm:px-4 rounded-xl border transition-all gap-1.5 sm:gap-2",
                 showChat
@@ -1129,7 +1511,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-        </header>
+          </header>
+        )}
 
         {/* Settings Dialog */}
         <Dialog open={showSettings} onOpenChange={setShowSettings}>
@@ -1204,6 +1587,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         <span className="text-cyan-400">Processing<span className="animate-pulse">...</span></span>
                       ) : isSpeaking ? (
                         <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
+                      ) : isAlwaysOnMode ? (
+                        <span className="text-emerald-400">Ready<span className="animate-pulse">...</span></span>
                       ) : (
                         <>Hey, <span className="gradient-text">{username}</span></>
                       )}
@@ -1214,8 +1599,10 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         : (isProcessingVoice || isProcessingQuery)
                           ? "Thara is working on your request"
                           : isSpeaking
-                            ? "Speaking... tap the button to stop"
-                            : "Tap the button below to start a voice conversation"}
+                            ? "Speaking... tap to stop"
+                            : isAlwaysOnMode
+                              ? "Voice mode active - tap mic to stop"
+                              : "Tap the button below to start a voice conversation"}
                     </p>
                   </motion.div>
 
@@ -1238,36 +1625,31 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                       repeat: Infinity,
                       ease: "easeInOut"
                     } : {}}
-                    onClick={isSpeaking ? stopTextToSpeech : undefined}
-                    onPointerDown={(e) => {
-                      if (isSpeaking) return;
-                      // Start recording on touch/hold
+                    onClick={() => {
+                      // If speaking, stop TTS
+                      if (isSpeaking) {
+                        stopTextToSpeech();
+                        return;
+                      }
+                      // If in always-on mode, clicking stops it
+                      if (isAlwaysOnMode) {
+                        handleVoiceToggle();
+                        return;
+                      }
+                      // Otherwise, start always-on mode
                       if (!isRecording) {
-                        isPushToTalkRef.current = true;
                         handleVoiceToggle();
                       }
                     }}
-                    onPointerUp={() => {
-                      // Stop recording on release (only if push-to-talk)
-                      if (isPushToTalkRef.current && isRecording) {
-                        isPushToTalkRef.current = false;
-                        handleVoiceToggle();
-                      }
-                    }}
-                    onPointerLeave={() => {
-                      // Stop if finger/cursor leaves the button while recording
-                      if (isPushToTalkRef.current && isRecording) {
-                        isPushToTalkRef.current = false;
-                        handleVoiceToggle();
-                      }
-                    }}
-                    aria-label={isRecording ? "Release to stop recording" : isSpeaking ? "Stop speaking" : "Hold to record"}
-                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center touch-none ${
+                    aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : isAlwaysOnMode ? "Tap to stop voice mode" : "Tap to start recording"}
+                    className={`relative w-16 h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
                       isRecording
                         ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
                         : isSpeaking
                           ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
-                          : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
+                          : isAlwaysOnMode
+                            ? 'bg-emerald-500/20 border-2 border-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.3)]'
+                            : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
                       }`}
                   >
                     {/* Pulsing ring when recording */}
@@ -1295,6 +1677,21 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         }}
                         transition={{
                           duration: 1.2,
+                          repeat: Infinity,
+                          ease: "easeOut"
+                        }}
+                      />
+                    )}
+                    {/* Pulsing ring when always-on mode is active but idle */}
+                    {isAlwaysOnMode && !isRecording && !isSpeaking && (
+                      <motion.span
+                        className="absolute inset-0 rounded-full border-2 border-emerald-500"
+                        animate={{
+                          scale: [1, 1.3],
+                          opacity: [0.6, 0]
+                        }}
+                        transition={{
+                          duration: 2,
                           repeat: Infinity,
                           ease: "easeOut"
                         }}

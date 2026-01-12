@@ -70,6 +70,7 @@ class DetectedTable(BaseModel):
 class LoadDataRequest(BaseModel):
     """Request to load a Google Sheets dataset"""
     url: str = Field(..., description="Google Sheets URL or spreadsheet ID")
+    append: bool = Field(default=False, description="If True, append to existing data instead of replacing")
 
 
 class DatasetStats(BaseModel):
@@ -80,6 +81,7 @@ class DatasetStats(BaseModel):
     sheets: List[str]
     detectedTables: List[DetectedTable]
     profiledTables: Optional[int] = None  # Number of tables profiled for intelligent routing
+    loadedSpreadsheets: Optional[List[str]] = None  # List of all loaded spreadsheet IDs
 
 
 class LoadDataResponse(BaseModel):

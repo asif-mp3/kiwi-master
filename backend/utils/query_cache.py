@@ -65,14 +65,11 @@ class QueryCache:
     def normalize_question(question: str) -> str:
         """
         Normalize question for better cache matching.
-        Improves cache hit rate from ~5% to ~20-30%.
 
-        Normalization steps:
-        1. Lowercase and strip whitespace
-        2. Remove trailing punctuation (?!.)
-        3. Standardize whitespace (multiple spaces -> single)
-        4. Remove common filler words that don't affect query meaning
-        5. Standardize common variations (e.g., "sep" -> "september")
+        For Tamil/non-ASCII text: Only basic normalization (whitespace, punctuation)
+        to avoid incorrect cache collisions.
+
+        For English text: More aggressive normalization for better hit rate.
 
         Args:
             question: Raw user question
@@ -89,7 +86,15 @@ class QueryCache:
         # Step 3: Standardize whitespace
         q = ' '.join(q.split())
 
-        # Step 4: Remove common filler words that don't change query meaning
+        # Check if question contains non-ASCII (Tamil, etc.)
+        # If so, skip aggressive normalization to avoid cache collisions
+        has_non_ascii = any(ord(c) > 127 for c in q)
+        if has_non_ascii:
+            # For Tamil/non-English: Only basic normalization
+            # This prevents different Tamil queries from colliding
+            return q
+
+        # Step 4: Remove common filler words (ENGLISH ONLY)
         filler_words = [
             'please', 'can you', 'could you', 'show me', 'tell me',
             'what is', "what's", 'give me', 'i want to know', 'i need',

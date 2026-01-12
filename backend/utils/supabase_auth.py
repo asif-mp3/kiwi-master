@@ -342,8 +342,8 @@ def streamlit_logout():
         try:
             client = get_supabase_client()
             client.auth.sign_out()
-        except:
-            pass
+        except Exception:
+            pass  # Sign out failures are non-critical
 
         st.session_state.authenticated = False
         st.session_state.user = None

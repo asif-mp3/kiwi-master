@@ -207,47 +207,15 @@ def _is_simple_aggregation(result_df, query_plan):
     return False
 
 
-def _generate_fast_explanation(result_df, query_plan):
-    """Generate a quick template-based explanation without LLM (saves ~2s)."""
-    import time
-    start = time.time()
-
-    agg_func = query_plan.get("aggregation_function", "") if query_plan else ""
-    agg_col = query_plan.get("aggregation_column", "") if query_plan else ""
-
-    # Get the value from the result
-    if len(result_df.columns) > 0:
-        value = result_df.iloc[0, 0]
-    else:
-        value = 0
-
-    formatted = _format_number_natural(value)
-
-    # Clean up column name for display
-    col_display = agg_col.replace("_", " ").lower() if agg_col else "value"
-
-    templates = {
-        "SUM": f"The total {col_display} is {formatted}.",
-        "AVG": f"The average {col_display} is {formatted}.",
-        "COUNT": f"There are {formatted} records.",
-        "MAX": f"The highest {col_display} is {formatted}.",
-        "MIN": f"The lowest {col_display} is {formatted}.",
-    }
-
-    result = templates.get(agg_func, f"The result is {formatted}.")
-    elapsed = (time.time() - start) * 1000
-    print(f"⚡ FAST PATH explanation generated [{elapsed:.0f}ms]")
-    return result
-
-
-def explain_results(result_df, query_plan=None, original_question=None):
+def explain_results(result_df, query_plan=None, original_question=None, raw_user_message=None):
     """
     Generate a natural language explanation of query results using LLM.
 
     Args:
         result_df: DataFrame containing query results
         query_plan: Optional dict containing the query plan (for context)
-        original_question: Optional string containing the user's original question
+        original_question: Optional string containing the processed/translated question
+        raw_user_message: Optional string - the user's ORIGINAL message (preserves emotional tone)
 
     Returns:
         str: Natural language explanation of the results
@@ -260,6 +228,7 @@ def explain_results(result_df, query_plan=None, original_question=None):
     if original_question:
         try:
             from langdetect import detect
+            from langdetect.lang_detect_exception import LangDetectException
             import re
             # Check for Tamil characters
             tamil_pattern = re.compile(r'[\u0B80-\u0BFF]')
@@ -269,15 +238,29 @@ def explain_results(result_df, query_plan=None, original_question=None):
                 detected = detect(original_question)
                 if detected == 'ta':
                     question_language = "Tamil"
-        except:
-            pass
+        except (ImportError, Exception):
+            pass  # Language detection is optional
     
     if result_df.empty:
-        # Provide helpful message in the detected language
+        # Provide helpful message in Thara's charming personality
+        # NOTE: Pure Tamil for Tamil responses, pure English for English responses
+        # This ensures proper TTS pronunciation (no Tanglish mixing)
         if question_language == "Tamil":
-            return "கோரப்பட்ட தகவல் கிடைக்கவில்லை. பெயர் சரியாக உள்ளதா என்று சரிபார்க்கவும்."
+            no_data_responses = [
+                "ஹ்ம்ம், இதற்கு தகவல் கிடைக்கவில்லை! வேறு விதமாக கேட்கலாமா?",
+                "அச்சச்சோ! இதற்கு எந்த தகவலும் இல்லை போல. வேறு தேதி அல்லது பெயர் முயற்சிக்கலாமா?",
+                "ஓ! இதற்கு ஒன்றும் கிடைக்கவில்லை. வேறு வழியில் தேடலாமா?",
+                "அட! இந்த தேடலுக்கு தகவல் இல்லை. வேறு எதாவது முயற்சிக்கலாமா?",
+            ]
         else:
-            return "No data found for the requested criteria. Please check if the name or value is spelled correctly."
+            no_data_responses = [
+                "Hmm, I couldn't find any data for that! Want to try a different filter or spelling?",
+                "Oops! Looks like there's no data matching that. Maybe try a different date range or check the spelling?",
+                "Aww, nothing came up for that search! Let's try tweaking the criteria - what do you think?",
+                "No luck with that one! The data might be under a different name - want me to help you explore?",
+            ]
+        import random
+        return random.choice(no_data_responses)
     
     # Build context for the LLM
     context = {
@@ -315,9 +298,13 @@ Context:
 """
     
     if original_question:
-        prompt += f"\nOriginal Question: {original_question}\n"
+        prompt += f"\nProcessed Question: {original_question}\n"
         prompt += f"Question Language: {question_language}\n"
-    
+
+    # Include original message for emotion detection (CRITICAL for empathetic responses)
+    if raw_user_message:
+        prompt += f"\n**User's Original Message (check for emotions!):** {raw_user_message}\n"
+
     prompt += f"""
 Instructions:
 1. **Respond in {question_language} language**
@@ -358,6 +345,17 @@ GOOD (natural): "about 63 lakhs"
 
 **For EXTREMA (max, min, top N):**
 - Direct: "Velachery leads with around 85 thousand"
+
+**For SUMMARY/OVERVIEW questions:**
+- Give the big picture first: "Overall, business looks healthy..."
+- Mention 2-3 key metrics with rounded values
+- Highlight any standout category/area
+- Keep it under 3-4 sentences
+
+**For IMPACT/CORRELATION questions:**
+- State the relationship: "Sales has a stronger impact on profit than cost"
+- Explain why briefly: "Higher sales directly boost margins"
+- Suggest actionable insight if relevant
 
 **AVOID (CRITICAL):**
 - DON'T spell out large numbers word by word (sounds robotic)
@@ -516,3 +514,73 @@ def _fallback_advanced_explanation(context):
             return f"{emoji} Sales are relatively stable - from {formatted_start} to {formatted_end}"
 
     return "Analysis completed but no specific insights available."
+
+
+def generate_off_topic_response(user_message: str, is_tamil: bool = False) -> str:
+    """
+    Generate an LLM response for off-topic/non-data queries.
+
+    Uses the LLM to create natural, charming responses that gently redirect
+    the user back to data queries while engaging with their off-topic message.
+
+    Args:
+        user_message: The user's off-topic message
+        is_tamil: Whether the user is speaking Tamil
+
+    Returns:
+        str: LLM-generated charming response
+    """
+    import time
+    _start = time.time()
+
+    language_instruction = "Tamil (use Tamil script with some English words naturally mixed in - Tanglish style)" if is_tamil else "English"
+
+    prompt = f"""You are Thara, a charming, warm, and delightful personal data assistant.
+The user just said something off-topic (not about data/spreadsheets).
+
+**YOUR PERSONALITY:**
+- Sweet, playful, and engaging - like a best friend who happens to love data
+- Never cold or robotic - always warm and personable
+- Gently redirect to data, but FIRST engage with what they said
+- Use light humor when appropriate
+
+**USER'S MESSAGE:** "{user_message}"
+
+**YOUR TASK:**
+1. First, acknowledge/respond to what they said in a friendly way
+2. Then smoothly redirect to data queries
+3. Keep it SHORT (2-3 sentences max)
+4. Respond in {language_instruction}
+
+**EXAMPLES OF GOOD RESPONSES:**
+- User: "Did you have breakfast?" → "Haha, data is my breakfast! Speaking of which, want to check your sales numbers today?"
+- User: "Tell me a joke" → "Here's one: Why did the spreadsheet go to therapy? Too many broken cells! Now, what insights shall I find for you?"
+- User: "What's the weather?" → "I'm more of an indoor girl - spreadsheets are my sunshine! But I'd love to help with your data questions!"
+- User: "நீ யாரு?" → "நான் தாரா, உங்க data bestie! Sales, trends, profits - எது வேணும்னாலும் கேளுங்க!"
+
+**AVOID:**
+- Being dismissive ("I can't help with that")
+- Being preachy or lecture-y
+- Long explanations
+- Generic responses that don't engage with their message
+
+Generate a charming response:"""
+
+    try:
+        model = get_explainer_model()
+        response = model.generate_content(prompt)
+        result = response.text.strip()
+
+        elapsed = (time.time() - _start) * 1000
+        print(f"✅ Off-topic LLM response generated [{elapsed:.0f}ms]")
+        return result
+
+    except Exception as e:
+        # Fallback to simple response if LLM fails
+        elapsed = (time.time() - _start) * 1000
+        print(f"⚠️ Off-topic LLM failed ({e}), using fallback [{elapsed:.0f}ms]")
+
+        if is_tamil:
+            return "Haha interesting! Naan data expert - sales, trends pathi kelu! Enna paakanum?"
+        else:
+            return "Haha, that's fun! But my superpower is data - ask me about sales, trends, or insights!"

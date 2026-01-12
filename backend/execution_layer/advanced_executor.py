@@ -78,7 +78,7 @@ def execute_comparison(
             "data": [],
             "calculation_result": None,
             "analysis": {
-                "error": "Could not retrieve values for comparison",
+                "error": "Hmm, I couldn't find data for both periods! Check if the dates or filters are correct?",
                 "period_a_value": value_a,
                 "period_b_value": value_b
             }
@@ -156,7 +156,7 @@ def execute_percentage(
             "data": [],
             "calculation_result": None,
             "analysis": {
-                "error": "Could not calculate percentage",
+                "error": "Oops! Couldn't calculate the percentage - missing data or the total is zero. Try different criteria?",
                 "numerator": numerator_value,
                 "denominator": denominator_value
             }
@@ -187,6 +187,7 @@ def execute_trend(
 
     Example question: "How are daily sales trending this month?"
     Handles both date columns and text-based quarter columns (e.g., "Q3 2025").
+    Supports filters for specific time periods or locations.
     """
     trend = plan.get("trend", {})
     table = plan.get("table")
@@ -194,11 +195,33 @@ def execute_trend(
     value_column = trend.get("value_column")
     aggregation = trend.get("aggregation", "SUM")
     analysis_type = trend.get("analysis_type", "direction")
+    filters = plan.get("filters", [])
 
     # Get time series data
     quoted_table = f'"{table}"' if ' ' in table or '-' in table or table[0].isdigit() else table
     quoted_date = f'"{date_column}"' if date_column and (' ' in date_column or '-' in date_column) else date_column
     quoted_value = f'"{value_column}"' if value_column and (' ' in value_column or '-' in value_column) else value_column
+
+    # Build filter clause from plan filters
+    filter_conditions = [f"{quoted_date} IS NOT NULL", f"{quoted_value} IS NOT NULL"]
+    for f in filters:
+        col = f.get("column", "")
+        op = f.get("operator", "=")
+        val = f.get("value")
+
+        # Quote column name if needed
+        quoted_col = f'"{col}"' if col and (' ' in col or '-' in col) else col
+
+        if val is not None:
+            if isinstance(val, str):
+                filter_conditions.append(f"{quoted_col} {op} '{val}'")
+            else:
+                filter_conditions.append(f"{quoted_col} {op} {val}")
+
+    where_clause = " AND ".join(filter_conditions)
+
+    if filters:
+        print(f"  📋 Applying {len(filters)} filter(s) to trend query")
 
     # Check if date_column is a text-based quarter column (e.g., "Q3 2025")
     is_quarter = _is_quarter_column(conn, table, date_column)
@@ -209,7 +232,7 @@ def execute_trend(
         sql = f"""
             SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
             FROM {quoted_table}
-            WHERE {quoted_date} IS NOT NULL AND {quoted_value} IS NOT NULL
+            WHERE {where_clause}
             GROUP BY {quoted_date}
             ORDER BY
                 CAST(REGEXP_EXTRACT({quoted_date}, '(\\d{{4}})', 1) AS INTEGER),
@@ -220,7 +243,7 @@ def execute_trend(
         sql = f"""
             SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
             FROM {quoted_table}
-            WHERE {quoted_date} IS NOT NULL AND {quoted_value} IS NOT NULL
+            WHERE {where_clause}
             GROUP BY {quoted_date}
             ORDER BY {quoted_date}
         """
@@ -231,7 +254,7 @@ def execute_trend(
             return {
                 "data": [],
                 "calculation_result": None,
-                "analysis": {"error": "No data found for trend analysis"}
+                "analysis": {"error": "Hmm, no data found for the trend! Try a different date range or filter?"}
             }
 
         # Filter both arrays together to ensure alignment (avoid index mismatch if NULLs exist)
@@ -243,7 +266,7 @@ def execute_trend(
             return {
                 "data": [{"date": str(d), "value": v} for d, v in result],
                 "calculation_result": None,
-                "analysis": {"error": "Not enough data points for trend analysis"}
+                "analysis": {"error": "Aww, not quite enough data points to show a trend! Need at least 2 periods."}
             }
 
         # Check for constant values (no variance)
@@ -252,6 +275,7 @@ def execute_trend(
             constant_value = values[0]
             first_period = str(dates[0])
             last_period = str(dates[-1])
+            time_unit = _detect_time_unit_from_column(date_column)
             return {
                 "data": [{"date": str(d), "value": v} for d, v in result],
                 "calculation_result": 0,
@@ -268,12 +292,20 @@ def execute_trend(
                     "total_change": 0,
                     "percentage_change": 0,
                     "is_constant": True,
-                    "message": f"Value has been constant at {constant_value} from {first_period} to {last_period}"
+                    "message": f"Value has been constant at {constant_value} from {first_period} to {last_period}",
+                    # Additional fields for projection support
+                    "slope": 0,
+                    "normalized_slope": 0,
+                    "values": values[-12:],
+                    "time_unit": time_unit
                 }
             }
 
         # Analyze trend
         trend_analysis = _analyze_trend(values)
+
+        # Detect time unit from column name for projection support
+        time_unit = _detect_time_unit_from_column(date_column)
 
         return {
             "data": [{"date": str(d), "value": v} for d, v in result],
@@ -289,7 +321,12 @@ def execute_trend(
                 "avg_value": statistics.mean(values),
                 "data_points": len(values),
                 "total_change": values[-1] - values[0],
-                "percentage_change": ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else None
+                "percentage_change": ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else None,
+                # Additional fields for projection support
+                "slope": trend_analysis["slope"],
+                "normalized_slope": trend_analysis.get("normalized_slope", 0),
+                "values": values[-12:],  # Store last 12 data points for projection calculations
+                "time_unit": time_unit
             }
         }
 
@@ -297,7 +334,7 @@ def execute_trend(
         return {
             "data": [],
             "calculation_result": None,
-            "analysis": {"error": str(e)}
+            "analysis": {"error": f"Oops! Something went wrong with the trend analysis. ({str(e)})"}
         }
 
 
@@ -451,6 +488,36 @@ def _calculate_comparison(value_a: float, value_b: float, compare_type: str) -> 
         return value_b - value_a
 
 
+def _detect_time_unit_from_column(column_name: str) -> str:
+    """
+    Detect time unit from column name for projection support.
+
+    Args:
+        column_name: Name of the date/time column
+
+    Returns:
+        Time unit string: "month", "week", "day", "quarter", "year"
+    """
+    if not column_name:
+        return "month"
+
+    col_lower = column_name.lower()
+
+    if 'month' in col_lower:
+        return 'month'
+    elif 'week' in col_lower:
+        return 'week'
+    elif 'day' in col_lower or 'date' in col_lower:
+        return 'day'
+    elif 'quarter' in col_lower or col_lower.startswith('q'):
+        return 'quarter'
+    elif 'year' in col_lower:
+        return 'year'
+
+    # Default to month as most common in business data
+    return 'month'
+
+
 def _analyze_trend(values: List[float]) -> Dict[str, Any]:
     """
     Analyze trend direction from a list of values.
@@ -495,59 +562,3 @@ def _analyze_trend(values: List[float]) -> Dict[str, Any]:
     }
 
 
-def format_comparison_result(analysis: Dict[str, Any], language: str = "en") -> str:
-    """Format comparison analysis into human-readable text."""
-    if "error" in analysis:
-        return analysis["error"]
-
-    period_a = analysis.get("period_a_label", "Period A")
-    period_b = analysis.get("period_b_label", "Period B")
-    value_a = analysis.get("period_a_value", 0)
-    value_b = analysis.get("period_b_value", 0)
-    direction = analysis.get("direction", "changed")
-    pct_change = analysis.get("percentage_change")
-
-    if language == "ta":
-        if direction == "increased":
-            return f"{period_a} முதல் {period_b} வரை விற்பனை {abs(pct_change):.1f}% அதிகரித்தது"
-        elif direction == "decreased":
-            return f"{period_a} முதல் {period_b} வரை விற்பனை {abs(pct_change):.1f}% குறைந்தது"
-        else:
-            return f"{period_a} மற்றும் {period_b} இடையே மாற்றம் இல்லை"
-    else:
-        if direction == "increased":
-            return f"Sales increased by {abs(pct_change):.1f}% from {period_a} to {period_b}"
-        elif direction == "decreased":
-            return f"Sales decreased by {abs(pct_change):.1f}% from {period_a} to {period_b}"
-        else:
-            return f"Sales remained stable between {period_a} and {period_b}"
-
-
-def format_trend_result(analysis: Dict[str, Any], language: str = "en") -> str:
-    """Format trend analysis into human-readable text."""
-    if "error" in analysis:
-        return analysis["error"]
-
-    # Use custom message if available (for constant values)
-    if analysis.get("message"):
-        return f"{analysis.get('direction_emoji', '')} {analysis['message']}"
-
-    direction = analysis.get("direction", "unknown")
-    emoji = analysis.get("direction_emoji", "")
-    pct_change = analysis.get("percentage_change")
-    confidence = analysis.get("confidence", "medium")
-
-    if language == "ta":
-        if direction == "increasing":
-            return f"{emoji} விற்பனை அதிகரிக்கிறது ({pct_change:.1f}% மாற்றம்)"
-        elif direction == "decreasing":
-            return f"{emoji} விற்பனை குறைகிறது ({pct_change:.1f}% மாற்றம்)"
-        else:
-            return f"{emoji} விற்பனை நிலையாக உள்ளது"
-    else:
-        if direction == "increasing":
-            return f"{emoji} Sales are trending upward ({pct_change:.1f}% total change)"
-        elif direction == "decreasing":
-            return f"{emoji} Sales are trending downward ({pct_change:.1f}% total change)"
-        else:
-            return f"{emoji} Sales are relatively stable"

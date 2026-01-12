@@ -224,19 +224,3 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
         error_msg = f"ElevenLabs TTS failed: {str(e)}"
         print(f"❌ TTS Error: {error_msg}")
         raise Exception(error_msg)
-
-
-def save_audio_temp(audio_bytes: bytes) -> str:
-    """
-    Save audio bytes to a temporary file.
-    
-    Args:
-        audio_bytes: Audio data
-        
-    Returns:
-        Path to temporary audio file
-    """
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-    temp_file.write(audio_bytes)
-    temp_file.close()
-    return temp_file.name

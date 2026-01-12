@@ -176,11 +176,14 @@ def _get_credentials(scopes: List[str]):
 
     Priority:
     1. User OAuth tokens (if user is logged in and has authorized Sheets)
-    2. Service account (fallback for development/service accounts)
+    2. Service account from environment variable (for Railway/cloud deployment)
+    3. Service account from file (for local development)
 
     Returns:
         Google credentials object compatible with gspread
     """
+    import json
+
     # Get user from thread-local storage (thread-safe)
     current_user = get_current_user()
 
@@ -195,13 +198,26 @@ def _get_credentials(scopes: List[str]):
         except Exception as e:
             print(f"[GSheet] OAuth credentials failed: {e}, falling back to service account")
 
-    # Fallback to service account
+    # Try service account from environment variable (for cloud deployment)
+    service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if service_account_json:
+        try:
+            print(f"[GSheet] Using service account from environment variable")
+            service_account_info = json.loads(service_account_json)
+            return ServiceAccountCredentials.from_service_account_info(
+                service_account_info,
+                scopes=scopes
+            )
+        except Exception as e:
+            print(f"[GSheet] Failed to load service account from env: {e}")
+
+    # Fallback to service account file (for local development)
     config = _load_config()
     gs_config = config.get("google_sheets", {})
     credentials_path = gs_config.get("credentials_path", "credentials/service_account.json")
 
     if os.path.exists(credentials_path):
-        print(f"[GSheet] Using service account credentials")
+        print(f"[GSheet] Using service account credentials from file")
         return ServiceAccountCredentials.from_service_account_file(
             credentials_path,
             scopes=scopes
@@ -210,7 +226,8 @@ def _get_credentials(scopes: List[str]):
     # No credentials available
     raise ValueError(
         "No Google Sheets credentials available. "
-        "Either authorize with Google Sheets OAuth or configure a service account."
+        "Set GOOGLE_SERVICE_ACCOUNT_JSON environment variable, "
+        "authorize with Google Sheets OAuth, or configure a service account file."
     )
 
 
@@ -635,7 +652,7 @@ def fetch_sheets():
     return sheets_data
 
 
-def fetch_sheets_with_tables() -> Dict[str, List[Dict[str, Any]]]:
+def fetch_sheets_with_tables(spreadsheet_id: str = None) -> Dict[str, List[Dict[str, Any]]]:
     """
     Fetches all tabs from Google Sheet and detects multiple tables within each sheet.
 
@@ -644,6 +661,9 @@ def fetch_sheets_with_tables() -> Dict[str, List[Dict[str, Any]]]:
     2. Adds source_id to each detected table for atomic tracking
     3. Fetches RAW data WITHOUT type inference first
     4. Detects tables, then applies type inference to each detected table
+
+    Args:
+        spreadsheet_id: Optional spreadsheet ID. If None, reads from config.
 
     Returns:
         Dict mapping sheet_name to list of detected tables.
@@ -660,15 +680,17 @@ def fetch_sheets_with_tables() -> Dict[str, List[Dict[str, Any]]]:
     from data_sources.gsheet.table_detection import detect_and_clean_tables
     from data_sources.gsheet.sheet_hasher import compute_sheet_hash, get_source_id
 
-    config = _load_config()
-    gs_config = config["google_sheets"]
-    spreadsheet_id = gs_config["spreadsheet_id"]
+    # Use provided spreadsheet_id or fall back to config
+    if spreadsheet_id is None:
+        config = _load_config()
+        gs_config = config["google_sheets"]
+        spreadsheet_id = gs_config["spreadsheet_id"]
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     credentials = _get_credentials(scopes)
 
     client = gspread.authorize(credentials)
-    spreadsheet = client.open_by_key(gs_config["spreadsheet_id"])
+    spreadsheet = client.open_by_key(spreadsheet_id)
 
     sheets_with_tables = {}
     total_sheets = len(spreadsheet.worksheets())

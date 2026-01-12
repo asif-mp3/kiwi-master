@@ -829,8 +829,8 @@ class ProfileStore:
                 available = ", ".join(self.get_table_names()[:5])
                 more = f"... and {len(self._profiles) - 5} more" if len(self._profiles) > 5 else ""
                 if language == 'ta':
-                    return f"'{table_name}' என்ற அட்டவணை கிடைக்கவில்லை. கிடைக்கும் அட்டவணைகள்: {available}{more}"
-                return f"I couldn't find a table called '{table_name}'. Available tables: {available}{more}"
+                    return f"Hmm, '{table_name}' table கிடைக்கல! Available tables: {available}{more}"
+                return f"Hmm, I can't find a table called '{table_name}'! Here's what I have: {available}{more}"
             return self._format_brief_summary(profile, language)
         else:
             return self._format_all_tables_summary(language)

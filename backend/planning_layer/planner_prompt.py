@@ -54,6 +54,10 @@ You must output ONLY valid JSON matching this exact schema:
   - **CRITICAL for time-bounded percentages**: If the question mentions a specific time period (e.g., "August sales", "this month", "last week"), BOTH numerator AND denominator MUST have the same time filter! Otherwise you'll divide by ALL-TIME totals and get wrong percentages.
   - Example: "What % of August sales is from UPI?" → numerator filters: [UPI + August dates], denominator filters: [August dates only]
 - **trend**: Analyze trends over time. Use for questions like "How are sales trending?", "Are sales going up?", "What's the pattern?". Requires "trend" object with date_column, value_column, and analysis_type.
+  - **CRITICAL for time-filtered trends**: If the question mentions a specific month or time period (e.g., "December trend", "trend for November", "how did sales trend last month"), you MUST add date filters to the "filters" array!
+  - Example: "Show me the sales trend for December" → filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
+  - Example: "Trend for Chennai in November" → filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
+  - Without these filters, the trend will include ALL dates, not just the requested period!
 
 ## Table Selection
 
@@ -119,15 +123,32 @@ When multiple tables with similar schemas are available in the schema context:
         - "1/11/2025" = November 1, 2025 → filter value: "2025-11-01"
         - "15/3/2024" = March 15, 2024 → filter value: "2024-03-15"
         - "15-Nov-2025" = November 15, 2025 → filter value: "2025-11-15"
-    - For datetime columns (dtype: datetime64), use >= and <= comparisons with ISO format
-    - For exact date match, use LIKE with ISO format: {"column": "Date", "operator": "LIKE", "value": "%2025-11-15%"}
-    - **For month-based ranges (Aug 2025, December 2025)**: Use >= and < operators, NOT LIKE:
+    - **For datetime columns (dtype: datetime64)**: ALWAYS use >= and < operators for date filtering, NEVER use LIKE!
+    - **For specific date match**: Use TWO filters with >= and < to bracket the date:
+        - "November 15th" → [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}]
+        - "December 1st" → [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2025-12-02"}]
+    - **For month-based ranges (Aug 2025, December 2025)**: Use >= and < operators:
         - "August 2025" → {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}
         - "December 2025" → {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}
     - **CRITICAL for comparison queries**: When comparing two months, ALWAYS use >= and < operators for date filtering, NEVER use LIKE
     - **NEVER** use DD/MM/YYYY format in filter values - always convert to ISO (YYYY-MM-DD)
+    - **NEVER use LIKE for datetime columns** - LIKE is only for text columns like names, categories, etc.
+    - **For "today's" / "yesterday's" queries**: When user says "today's sales", "yesterday's orders", etc., check the entity hints for current_date/time_period context and apply date filters accordingly. If date context is provided in entity hints (e.g., date_context: {month: 'November', day: 14}), use it to build proper date filters.
 10. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
 11. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
+    - **CRITICAL - "Sales" is NOT a category filter!**: When users say "total sales", "show me sales", "what are the sales", they are asking for the METRIC (revenue/gross sales), NOT filtering by a category called "Sales". DO NOT add a filter like {"column": "Category", "operator": "LIKE", "value": "%Sales%"} for these queries. Instead, aggregate on a sales/revenue column.
+    - **"Sales" as a metric**: "Total sales", "Show me sales", "What are the sales" → Aggregate on "Gross sales", "Net sales", "Revenue", or "Sale Amount" column
+    - **"Sales" as a category**: ONLY filter on Category if user says "Sales category", "products in Sales", "items under Sales category"
+    - **CRITICAL - Date-specific sales queries**: When user asks "What is the sales on [date]?", "[date] enna sales?", "Total sales for [date]", use query_type "aggregation_on_subset" with SUM, NOT "filter"!
+    - **CRITICAL - "Total X" aggregation queries**: When user asks "total payroll", "total salary", "total expenses", "sum of X", "overall budget", etc., ALWAYS use query_type "aggregation_on_subset" with aggregation_function "SUM". NEVER use "list" query type for totals!
+        - "Total payroll" / "What is the total payroll?" → aggregation_on_subset with SUM(Salary)
+        - "Total expenses" → aggregation_on_subset with SUM(Expense or Amount column)
+        - "Sum of all salaries" → aggregation_on_subset with SUM(Salary)
+        - "Overall budget" → aggregation_on_subset with SUM(Budget column)
+        - Using "list" with limit:100 gives WRONG results by only summing first 100 rows!
+        - "November 15th enna sales?" → aggregation_on_subset with SUM(Sale_Amount), date filters
+        - "What was the total sales on Dec 1st?" → aggregation_on_subset with SUM(Sale_Amount), date filters
+        - Use "filter" query type ONLY when user explicitly asks to LIST/SHOW transactions (e.g., "Show me transactions on Nov 15")
 12. **Pivoted Date Columns**: If the table has columns formatted like 'Metric-Date' (e.g., "Gross sales-01/11/2025"), and the user asks for a specific date (e.g., "Nov 1st"), you MUST select the exact column name that matches the date (e.g., "Gross sales-01/11/2025"). Do not look for a generic "Date" column in these tables.
 13. **GRAND TOTAL Columns**: If a pivoted table has columns ending with '-GRAND TOTAL' (e.g., "Gross sales-GRAND TOTAL", "Orders-GRAND TOTAL"), and the user asks for "total", "overall", or "entire month" aggregation, you MUST use the GRAND TOTAL column. Do NOT try to use a generic column name like "Gross sales" - use the exact column name with "-GRAND TOTAL" suffix.
     - For summing across all categories: Use query_type "aggregation_on_subset" with aggregation_function "SUM" and aggregation_column "Gross sales-GRAND TOTAL"
@@ -236,13 +257,13 @@ When multiple tables with similar schemas are available in the schema context:
 }
 
 **Question:** "Show sales data from November 15th"
-**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – November" with columns ["Date", "Orders", "Gross sales"]
+**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – November" with columns ["Date", "Orders", "Gross sales"] where Date is datetime64[ns]
 **Output:**
 {
 "query_type": "filter",
 "table": "Freshggies – Shopify Sales on Fulfillments – November",
 "select_columns": ["*"],
-"filters": [{"column": "Date", "operator": "LIKE", "value": "%15/11/%"}],
+"filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
 "limit": 100
 }
 
@@ -343,6 +364,20 @@ When multiple tables with similar schemas are available in the schema context:
   "period_a": {"label": "August 2025", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}], "aggregation": "SUM"},
   "period_b": {"label": "December 2025", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
   "compare_type": "difference"
+}
+}
+
+**Question:** "Compare revenue for Chennai between November and December"
+**Schema context:** Table "Daily_Sales_Transactions_Table1" with columns ["Date", "Branch_Name", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Extracted Entities:** Location = Chennai (Branch_Name column), All months = November, December
+**Output:**
+{
+"query_type": "comparison",
+"table": "Daily_Sales_Transactions_Table1",
+"comparison": {
+  "period_a": {"label": "November", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}], "aggregation": "SUM"},
+  "period_b": {"label": "December", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
+  "compare_type": "percentage_change"
 }
 }
 
@@ -483,14 +518,27 @@ When multiple tables with similar schemas are available in the schema context:
 "subset_limit": null
 }
 
-**Question:** "What is the sales amount recorded on 15-Nov-2025?"
+**Question:** "What is the total sales on 15-Nov-2025?" (or "November 15th enna sales?")
+**Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Daily_Sales",
+"aggregation_function": "SUM",
+"aggregation_column": "Sale_Amount",
+"subset_filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
+**Question:** "Show all transactions from November 15th" (LISTING rows, not total)
 **Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
 **Output:**
 {
 "query_type": "filter",
 "table": "Daily_Sales",
-"select_columns": ["Date", "Sale_Amount"],
-"filters": [{"column": "Date", "operator": "LIKE", "value": "%2025-11-15%"}],
+"select_columns": ["Date", "Sale_Amount", "Category"],
+"filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
 "limit": 100
 }
 
@@ -501,8 +549,34 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "Daily_Sales",
 "select_columns": ["Date", "Sale_Amount", "Category"],
-"filters": [{"column": "Date", "operator": "LIKE", "value": "%2025-08%"}],
+"filters": [{"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}],
 "limit": 100
+}
+
+**Question:** "What was the total sales in August 2025?"
+**Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Daily_Sales",
+"aggregation_function": "SUM",
+"aggregation_column": "Sale_Amount",
+"subset_filters": [{"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
+**Question:** "What is the total payroll?" (or "Total salary expenses")
+**Schema context:** Table "Staff_Maintenance_Table" with columns ["Emp_ID", "Name", "Department", "Salary", "Status"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Staff_Maintenance_Table",
+"aggregation_function": "SUM",
+"aggregation_column": "Salary",
+"subset_filters": [],
+"subset_order_by": [],
+"subset_limit": null
 }
 
 **Question:** "What payment modes are used in this data?"
@@ -815,6 +889,119 @@ When multiple tables with similar schemas are available in the schema context:
 "aggregation_function": "SUM",
 "order_by": [["Revenue", "DESC"]],
 "limit": 1
+}
+
+**Question:** "What trends can be observed in sales over time?"
+**Schema context:** Table "Daily_Sales_Table1" with columns ["Date", "Gross sales", "Orders", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Daily_Sales_Table1",
+"trend": {
+  "date_column": "Date",
+  "value_column": "Gross sales",
+  "aggregation": "SUM",
+  "analysis_type": "direction"
+}
+}
+
+**Question:** "காலப்போக்கில் sales trend எப்படி உள்ளது?" (Tamil: How is the sales trend over time?)
+**Schema context:** Table "Monthly_Sales_Table1" with columns ["Date", "Sale_Amount", "Profit"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Monthly_Sales_Table1",
+"trend": {
+  "date_column": "Date",
+  "value_column": "Sale_Amount",
+  "aggregation": "SUM",
+  "analysis_type": "direction"
+}
+}
+
+**Question:** "Give a high-level business summary of this dataset"
+**Schema context:** Table "Sales_Summary_Table1" with columns ["Category", "Total_Sales", "Total_Profit", "Orders", "Avg_Order_Value"]
+**Output:**
+{
+"query_type": "list",
+"table": "Sales_Summary_Table1",
+"select_columns": ["Category", "Total_Sales", "Total_Profit", "Orders", "Avg_Order_Value"],
+"limit": 50
+}
+
+**Question:** "Which factor affects profit the most: cost or sales?"
+**Schema context:** Table "Profit_Analysis_Table1" with columns ["Month", "Gross_Sales", "Cost", "Net_Profit", "Tax"]
+**Output:**
+{
+"query_type": "list",
+"table": "Profit_Analysis_Table1",
+"select_columns": ["Month", "Gross_Sales", "Cost", "Net_Profit"],
+"limit": 50
+}
+
+**Question:** "How does cost impact profit margins?"
+**Schema context:** Table "Cost_Analysis_Table1" with columns ["Product", "Cost", "Revenue", "Profit_Margin"]
+**Output:**
+{
+"query_type": "rank",
+"table": "Cost_Analysis_Table1",
+"select_columns": ["Product", "Cost", "Revenue", "Profit_Margin"],
+"order_by": [["Profit_Margin", "DESC"]],
+"limit": 20
+}
+
+**Question:** "Show me the sales trend for December"
+**Schema context:** Table "Daily_Sales_Table1" with columns ["Date", "Sale_Amount", "Branch"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Daily_Sales_Table1",
+"filters": [
+  {"column": "Date", "operator": ">=", "value": "2025-12-01"},
+  {"column": "Date", "operator": "<", "value": "2026-01-01"}
+],
+"trend": {
+  "date_column": "Date",
+  "value_column": "Sale_Amount",
+  "aggregation": "SUM",
+  "analysis_type": "direction"
+}
+}
+
+**Question:** "Show sales trend for Chennai across months"
+**Schema context:** Table "Branch_Sales_Table1" with columns ["Date", "Sale_Amount", "Branch_Name", "State"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Branch_Sales_Table1",
+"filters": [
+  {"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}
+],
+"trend": {
+  "date_column": "Date",
+  "value_column": "Sale_Amount",
+  "aggregation": "SUM",
+  "analysis_type": "direction"
+}
+}
+
+**Question:** "How did sales trend in November for Tamil Nadu?"
+**Schema context:** Table "State_Sales_Table1" with columns ["Date", "Revenue", "State"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "State_Sales_Table1",
+"filters": [
+  {"column": "State", "operator": "LIKE", "value": "%Tamil Nadu%"},
+  {"column": "Date", "operator": ">=", "value": "2025-11-01"},
+  {"column": "Date", "operator": "<", "value": "2025-12-01"}
+],
+"trend": {
+  "date_column": "Date",
+  "value_column": "Revenue",
+  "aggregation": "SUM",
+  "analysis_type": "direction"
+}
 }
 
 Remember: Output ONLY the JSON. No explanations, no markdown code blocks, just raw JSON.

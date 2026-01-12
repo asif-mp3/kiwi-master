@@ -319,10 +319,3 @@ def select_table_hybrid(
         return (sorted_tables[0][0], 0.3, "Fallback: largest table")
 
     return (None, 0.0, "No tables available")
-
-
-def invalidate_selector_model():
-    """Invalidate cached selector model (call when config changes)."""
-    global _selector_model
-    with _selector_model_lock:
-        _selector_model = None

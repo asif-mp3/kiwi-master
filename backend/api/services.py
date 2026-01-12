@@ -39,7 +39,8 @@ from schema_intelligence.chromadb_client import SchemaVectorStore
 from utils.voice_utils import transcribe_audio
 from utils.memory_detector import detect_memory_intent
 from utils.permanent_memory import update_memory, load_memory
-from utils.greeting_detector import is_greeting, get_greeting_response, detect_schema_inquiry
+from utils.greeting_detector import is_greeting, get_greeting_response, detect_schema_inquiry, is_non_query_conversational, get_non_query_response, is_date_context_statement, get_date_context_response
+from explanation_layer.explainer_client import generate_off_topic_response
 from utils.query_context import QueryContext, QueryTurn, ConversationManager, PendingClarification, PendingCorrection
 from utils.personality import TharaPersonality
 from utils.onboarding import OnboardingManager, get_user_name
@@ -49,6 +50,56 @@ from analytics_engine.duckdb_manager import DuckDBManager
 import yaml
 import numpy as np
 import math
+
+
+def _resolve_top_references(question: str, previous_turn) -> str:
+    """
+    Resolve "top X" references in question using previous query's result_values.
+
+    Examples:
+    - "top category" → "Sarees" (if Sarees was top in previous rank query)
+    - "best performing state" → "West Bengal" (if WB was top)
+    - "highest selling product" → "Product ABC" (if ABC was top)
+
+    This prevents the LLM from misinterpreting what "top" refers to.
+    """
+    if not previous_turn:
+        return question
+
+    result_values = getattr(previous_turn, 'result_values', {}) or {}
+    if not result_values:
+        return question
+
+    # Patterns for "top X" references
+    top_patterns = [
+        # (pattern, dimension_keywords)
+        (r'\b(top|best|highest|leading|first)\s+(category|categories)', ['category', 'product_category']),
+        (r'\b(top|best|highest|leading|first)\s+(product|item|products|items)', ['product', 'item', 'product_name']),
+        (r'\b(top|best|highest|leading|first)\s+(state|states)', ['state', 'state_name']),
+        (r'\b(top|best|highest|leading|first)\s+(branch|branches|store|stores)', ['branch', 'store', 'branch_name']),
+        (r'\b(top|best|highest|leading|first)\s+(region|regions|area|areas)', ['region', 'area']),
+        (r'\b(top|best|highest|leading|first)\s+(employee|employees|person|salesperson)', ['employee', 'salesperson', 'employee_name']),
+        (r'\b(top|best|highest|leading|first)\s+(seller|sellers)', ['category', 'product', 'item']),
+        (r'\b(top|best|highest|leading|first)\s+(performing|one)', ['category', 'product', 'state', 'branch', 'employee']),
+    ]
+
+    for pattern, dimension_keys in top_patterns:
+        # Use IGNORECASE flag so match indices work on original question
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            # Find the matching dimension in result_values
+            for dim_key in dimension_keys:
+                for col_name, col_value in result_values.items():
+                    if dim_key in col_name.lower():
+                        # Replace the "top X" reference with actual value
+                        matched_text = match.group(0)
+                        if col_value and isinstance(col_value, str):
+                            # Replace pattern with actual value in original question
+                            new_question = question[:match.start()] + col_value + question[match.end():]
+                            print(f"    [Top Reference Resolved] '{matched_text}' → '{col_value}'")
+                            return new_question
+
+    return question
 
 
 def _extract_result_values(result, plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -172,8 +223,14 @@ class AppState:
         # State flags
         self.data_loaded: bool = False
         self.current_spreadsheet_id: Optional[str] = None
+        self.loaded_spreadsheet_ids: List[str] = []  # Track all loaded spreadsheets for multi-sheet support
         self._user_name_loaded: bool = False
         self.last_sync_time: Optional[str] = None  # ISO format timestamp of last sync
+
+        # Dataset metadata for display (populated during load)
+        self.detected_tables: List[Dict[str, Any]] = []  # Stores DetectedTable info for UI
+        self.original_sheet_names: List[str] = []  # Original sheet names without prefixes
+        self.total_records: int = 0  # Total records across all tables
 
         # Lazy-initialized heavy components (use underscore prefix)
         self._vector_store: Optional[SchemaVectorStore] = None
@@ -319,28 +376,22 @@ def extract_spreadsheet_id(url: str) -> Optional[str]:
     return None
 
 
-def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
+def load_dataset_service(url: str, user_id: str = None, append: bool = False) -> Dict[str, Any]:
     """
     Load data from Google Sheets with profiling.
     Now includes table profiling for intelligent routing.
 
+    MULTI-SPREADSHEET SUPPORT:
+    - When append=False (default): Clears existing data, loads fresh
+    - When append=True: Adds to existing data without clearing
+
     Args:
         url: Google Sheets URL or ID
         user_id: Optional user ID for OAuth credentials
+        append: If True, append to existing data instead of replacing
     """
     try:
-        print(f"[Dataset] Starting load for URL: {url}")
-
-        # FORCE RELOAD: Reset data_loaded flag so we fetch fresh data
-        # This is called when user explicitly syncs (new URL or re-sync)
-        app_state.data_loaded = False
-        print(f"[Dataset] Reset data_loaded flag - will fetch fresh data")
-
-        # Set current user for OAuth credentials
-        if user_id:
-            from data_sources.gsheet.connector import set_current_user
-            set_current_user(user_id)
-            print(f"[Dataset] Using credentials for user: {user_id}")
+        print(f"[Dataset] Starting load for URL: {url} (append={append})")
 
         spreadsheet_id = extract_spreadsheet_id(url)
         if not spreadsheet_id:
@@ -349,9 +400,24 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
                 'error': 'Invalid Google Sheets URL or ID'
             }
 
+        # Check if this spreadsheet is already loaded (when appending)
+        if append and spreadsheet_id in app_state.loaded_spreadsheet_ids:
+            print(f"[Dataset] Spreadsheet {spreadsheet_id} already loaded, skipping")
+            return {
+                'success': True,
+                'message': 'Spreadsheet already loaded',
+                'stats': None
+            }
+
+        # Set current user for OAuth credentials
+        if user_id:
+            from data_sources.gsheet.connector import set_current_user
+            set_current_user(user_id)
+            print(f"[Dataset] Using credentials for user: {user_id}")
+
         print(f"[Dataset] Extracted spreadsheet ID: {spreadsheet_id}")
 
-        # Update config with new spreadsheet ID
+        # Update config with new spreadsheet ID (for backward compatibility)
         config_path = project_root / "config" / "settings.yaml"
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
@@ -365,10 +431,24 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         app_state.initialize()
         store = app_state.vector_store
 
-        # Fetch sheets with multi-table detection
-        print(f"[Dataset] Fetching sheets with tables...")
-        sheets_with_tables = fetch_sheets_with_tables()
+        # Fetch sheets with multi-table detection (pass spreadsheet_id directly)
+        print(f"[Dataset] Fetching sheets with tables from {spreadsheet_id[:20]}...")
+        sheets_with_tables = fetch_sheets_with_tables(spreadsheet_id)
         print(f"[Dataset] Fetched {len(sheets_with_tables)} sheets")
+
+        # Add spreadsheet prefix to sheet names to avoid collisions across spreadsheets
+        # Format: "SpreadsheetName_SheetName" where SpreadsheetName is first 10 chars of ID
+        spreadsheet_prefix = spreadsheet_id[:10]
+        prefixed_sheets_with_tables = {}
+        for sheet_name, tables in sheets_with_tables.items():
+            # Prefix sheet name for uniqueness across spreadsheets
+            prefixed_sheet_name = f"{spreadsheet_prefix}_{sheet_name}"
+            # Update table info with prefixed sheet name
+            for table in tables:
+                table['sheet_name'] = prefixed_sheet_name
+                table['original_sheet_name'] = sheet_name  # Keep original for display
+                table['spreadsheet_id'] = spreadsheet_id
+            prefixed_sheets_with_tables[prefixed_sheet_name] = tables
 
         # OPTIMIZATION: Populate sheet cache so first query doesn't re-fetch
         from data_sources.gsheet.connector import get_sheet_cache
@@ -376,24 +456,42 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         sheet_cache.set_cached_data(spreadsheet_id, sheets_with_tables)
         print(f"[Dataset] Populated sheet cache for 300s TTL")
 
-        # Clear and rebuild vector store
-        print(f"[Dataset] Clearing vector store...")
-        store.clear_collection()
-        print(f"[Dataset] Loading snapshot...")
-        load_snapshot(sheets_with_tables, full_reset=True)
-        print(f"[Dataset] Rebuilding vector store...")
-        store.rebuild()
+        if append and app_state.data_loaded:
+            # APPEND MODE: Don't clear existing data
+            print(f"[Dataset] APPEND MODE: Adding to existing data...")
+            # Load snapshot in append mode (full_reset=False)
+            load_snapshot(prefixed_sheets_with_tables, full_reset=False, changed_sheets=list(prefixed_sheets_with_tables.keys()))
+            print(f"[Dataset] Appended {len(prefixed_sheets_with_tables)} sheets to existing snapshot")
+            # Rebuild vector store incrementally
+            store.rebuild()
+        else:
+            # REPLACE MODE: Clear and rebuild
+            if not append:
+                app_state.data_loaded = False
+                app_state.loaded_spreadsheet_ids = []  # Reset list
+                app_state.detected_tables = []  # Reset detected tables
+                app_state.original_sheet_names = []  # Reset sheet names
+                app_state.total_records = 0  # Reset record count
+                print(f"[Dataset] REPLACE MODE: Clearing existing data...")
 
-        # === NEW: Profile all tables for intelligent routing ===
+            # Clear and rebuild vector store
+            print(f"[Dataset] Clearing vector store...")
+            store.clear_collection()
+            print(f"[Dataset] Loading snapshot...")
+            load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+            print(f"[Dataset] Rebuilding vector store...")
+            store.rebuild()
+
+        # === Profile tables for intelligent routing ===
         print(f"[Dataset] Profiling tables for intelligent routing...")
         profiler = DataProfiler()
         db = DuckDBManager()
         tables = db.list_tables()
 
-        # CRITICAL: Clear old profiles first to prevent stale data
-        # This ensures profiles match exactly what's in DuckDB
-        app_state.profile_store.clear_profiles()
-        print(f"  [Profile] Cleared old profiles")
+        if not append:
+            # Clear old profiles only in replace mode
+            app_state.profile_store.clear_profiles()
+            print(f"  [Profile] Cleared old profiles")
 
         profile_count = 0
         profile_errors = []
@@ -431,13 +529,13 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         # Refresh entity extractor with learned values from profiles
         app_state.entity_extractor.refresh_from_profiles(app_state.profile_store)
 
-        # Build response
-        total_tables = sum(len(tables) for tables in sheets_with_tables.values())
+        # Build response - gather all sheets across all loaded spreadsheets
+        total_tables = sum(len(tbls) for tbls in prefixed_sheets_with_tables.values())
         total_records = 0
         detected_tables = []
 
-        for sheet_name, tables in sheets_with_tables.items():
-            for table in tables:
+        for sheet_name, tables_list in prefixed_sheets_with_tables.items():
+            for table in tables_list:
                 df = table.get('dataframe')
                 actual_rows = len(df) if df is not None else 0
                 # Ensure all column names are strings (some tables have numeric headers)
@@ -446,19 +544,41 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
                 detected_tables.append({
                     'table_id': table.get('table_id', ''),
                     'title': table.get('title', ''),
-                    'sheet_name': sheet_name,
+                    'sheet_name': table.get('original_sheet_name', sheet_name),  # Use original for display
                     'source_id': table.get('source_id', ''),
                     'sheet_hash': table.get('sheet_hash', ''),
                     'row_range': table.get('row_range', [0, 0]),
                     'col_range': table.get('col_range', [0, 0]),
                     'total_rows': actual_rows,
                     'columns': actual_columns,
-                    'preview_data': []
+                    'preview_data': [],
+                    'spreadsheet_id': table.get('spreadsheet_id', spreadsheet_id)
                 })
                 total_records += actual_rows
 
         app_state.data_loaded = True
         app_state.current_spreadsheet_id = spreadsheet_id
+
+        # Track this spreadsheet in loaded list
+        if spreadsheet_id not in app_state.loaded_spreadsheet_ids:
+            app_state.loaded_spreadsheet_ids.append(spreadsheet_id)
+
+        # Store detected tables metadata for UI (append mode merges, replace mode replaces)
+        original_sheets = list(set(
+            t.get('original_sheet_name', t.get('sheet_name', ''))
+            for tables_list in prefixed_sheets_with_tables.values()
+            for t in tables_list
+        ))
+        if append:
+            # Merge with existing data
+            app_state.detected_tables.extend(detected_tables)
+            app_state.original_sheet_names.extend([s for s in original_sheets if s not in app_state.original_sheet_names])
+            app_state.total_records += total_records
+        else:
+            # Replace mode - set fresh
+            app_state.detected_tables = detected_tables
+            app_state.original_sheet_names = original_sheets
+            app_state.total_records = total_records
 
         # Record sync time for change detection
         from datetime import datetime
@@ -474,16 +594,18 @@ def load_dataset_service(url: str, user_id: str = None) -> Dict[str, Any]:
         data_summary = app_state.onboarding.get_data_summary(profiles)
 
         print(f"[Dataset] Successfully loaded: {total_tables} tables, {total_records} records")
+        print(f"[Dataset] Total loaded spreadsheets: {len(app_state.loaded_spreadsheet_ids)}")
 
         return {
             'success': True,
             'stats': {
                 'totalTables': total_tables,
                 'totalRecords': total_records,
-                'sheetCount': len(sheets_with_tables),
-                'sheets': list(sheets_with_tables.keys()),
+                'sheetCount': len(prefixed_sheets_with_tables),
+                'sheets': [t.get('original_sheet_name', k) for k, tables_list in prefixed_sheets_with_tables.items() for t in tables_list[:1]] or list(prefixed_sheets_with_tables.keys()),
                 'detectedTables': detected_tables,
-                'profiledTables': profile_count
+                'profiledTables': profile_count,
+                'loadedSpreadsheets': app_state.loaded_spreadsheet_ids
             },
             'data_summary': data_summary
         }
@@ -634,6 +756,298 @@ def _reprofile_tables(changed_sheets: List[str], sheets_with_tables: Dict):
 
 
 # ============================================================================
+# PROJECTION HANDLERS - Handle projection/forecast queries
+# ============================================================================
+
+def _handle_projection(
+    projection_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle projection requests using previous trend/comparison context.
+
+    Args:
+        projection_intent: Detected ProjectionIntent
+        previous_turn: Previous QueryTurn with trend data
+        question: Original user question
+        ctx: QueryContext
+        app_state: AppState
+        is_tamil: Whether response should be in Tamil
+
+    Returns:
+        Response dict with projected value and explanation
+    """
+    from analytics_engine.projection_calculator import (
+        get_projection_calculator,
+        extract_trend_context,
+    )
+    from utils.projection_detector import ProjectionType
+
+    print("    [Projection Handler]")
+
+    # Extract trend context from previous turn
+    trend_context = extract_trend_context(previous_turn)
+
+    if not trend_context:
+        print("      ! No trend context available in previous turn")
+
+        # Check if this was a rank query - provide more specific guidance
+        query_plan = getattr(previous_turn, 'query_plan', {}) or {}
+        query_type = query_plan.get('query_type', '')
+        result_values = getattr(previous_turn, 'result_values', {}) or {}
+
+        # Try to extract what item user is asking about
+        item_name = None
+        item_type = None
+        dimension_map = {
+            'category': 'Category', 'product_category': 'Category',
+            'product': 'Product', 'item': 'Product',
+            'state': 'State', 'branch': 'Branch',
+            'region': 'Region', 'area': 'Area',
+            'employee': 'Employee'
+        }
+
+        for col_name, col_value in result_values.items():
+            col_lower = col_name.lower()
+            for pattern, label in dimension_map.items():
+                if pattern in col_lower and isinstance(col_value, str):
+                    item_name = col_value
+                    item_type = label.lower()
+                    break
+            if item_name:
+                break
+
+        if query_type in ['rank', 'extrema_lookup', 'aggregation_on_subset'] and item_name:
+            # User is asking about a specific item from rank query
+            print(f"      → Previous was rank query with top item: {item_name}")
+
+            # Check if user is referring to "top item" / "leading category" pattern
+            leading_patterns_ta = ['முன்னணி', 'முதல்', 'டாப்', 'அதிகமான', 'best', 'top', 'highest']
+            is_referring_to_top = any(p in question.lower() for p in leading_patterns_ta)
+
+            if is_tamil:
+                if is_referring_to_top:
+                    message = (
+                        f"ஓ, நீங்கள் முன்னணி {item_type or 'item'} '{item_name}' பற்றி கேட்கிறீர்கள்! "
+                        f"அதன் போக்கை முதலில் பார்க்கணும். "
+                        f"இப்படி கேளுங்க: '{item_name} மாதவாரி விற்பனை போக்கு காட்டு'"
+                    )
+                else:
+                    message = (
+                        f"'{item_name}' பற்றிய போக்கு தகவல் இல்லை. "
+                        f"போக்கை பார்க்க, '{item_name} மாதவாரி விற்பனை போக்கை காட்டு' என்று கேளுங்கள்."
+                    )
+            else:
+                if is_referring_to_top:
+                    message = (
+                        f"Oh, you're asking about the top {item_type or 'item'} '{item_name}'! "
+                        f"To project its future, I need to see its trend first. "
+                        f"Try asking: 'Show me the monthly sales trend for {item_name}'"
+                    )
+                else:
+                    message = (
+                        f"I don't have trend data for {item_name} yet. "
+                        f"To project, first ask: 'Show me the sales trend for {item_name} across months'"
+                    )
+        else:
+            message = (
+                "முந்தைய கேள்வியில் போக்கு தகவல் இல்லை. முதலில் ஒரு போக்கு கேள்வி கேளுங்கள், எ.கா.: 'மாதவாரியான விற்பனை போக்கை காட்டு'"
+                if is_tamil else
+                "I don't have trend data from your previous question. "
+                "Please ask a trend question first, like 'Show me the sales trend across months'."
+            )
+
+        return {
+            'success': True,
+            'explanation': message,
+            'data': None,
+            'is_projection': True,
+            'projection_failed': True,
+            'error_type': 'no_trend_context'
+        }
+
+    print(f"      Trend context extracted:")
+    print(f"        Direction: {trend_context.direction}")
+    print(f"        Slope: {trend_context.slope:.2f}")
+    print(f"        End value: {trend_context.end_value:.2f}")
+    print(f"        Data points: {trend_context.data_points}")
+
+    # Calculate projection
+    calculator = get_projection_calculator()
+    result = calculator.calculate(
+        trend_context=trend_context,
+        target_period=projection_intent.target_period or 'next_period',
+        periods_ahead=projection_intent.target_period_count,
+        target_value=projection_intent.target_value
+    )
+
+    print(f"      Projection calculated:")
+    print(f"        Projected value: {result.projected_value:.2f}")
+    print(f"        Confidence: {result.confidence_level.value} ({result.confidence_score:.0%})")
+    print(f"        Method: {result.method_used.value}")
+
+    # Generate natural language explanation
+    explanation = _generate_projection_explanation(
+        result=result,
+        trend_context=trend_context,
+        projection_intent=projection_intent,
+        is_tamil=is_tamil
+    )
+
+    # Store projection turn in context for potential follow-ups
+    from utils.query_context import QueryTurn
+    projection_turn = QueryTurn(
+        question=question,
+        resolved_question=question,
+        entities=previous_turn.entities.copy() if previous_turn.entities else {},
+        table_used=previous_turn.table_used or '',
+        filters_applied=previous_turn.filters_applied if previous_turn.filters_applied else [],
+        result_summary=f"Projection: {result.projected_value:.0f} ({result.confidence_level.value} confidence)",
+        was_followup=True,
+        confidence=result.confidence_score,
+        result_values={
+            'projected_value': result.projected_value,
+            'confidence_level': result.confidence_level.value,
+            'confidence_score': result.confidence_score,
+            'base_value': result.base_value,
+            'expected_change': result.expected_change,
+            'expected_change_percent': result.expected_change_percent,
+            'projection_period': result.projection_period,
+            'method_used': result.method_used.value
+        },
+        query_plan={
+            'query_type': 'projection',
+            'projection': {
+                'type': projection_intent.projection_type.value,
+                'target_period': result.projection_period,
+                'periods_ahead': result.periods_ahead
+            },
+            'analysis': {
+                'direction': trend_context.direction,
+                'slope': trend_context.slope,
+                'normalized_slope': trend_context.normalized_slope,
+                'end_value': trend_context.end_value,
+                'values': trend_context.values
+            }
+        }
+    )
+    ctx.add_turn(projection_turn)
+
+    # Build response
+    return {
+        'success': True,
+        'explanation': explanation,
+        'data': [{
+            'period': result.projection_period,
+            'projected_value': result.projected_value,
+            'confidence': result.confidence_level.value,
+            'confidence_score': result.confidence_score,
+            'range_low': result.range_low,
+            'range_high': result.range_high,
+            'base_value': result.base_value,
+            'expected_change': result.expected_change,
+            'expected_change_percent': result.expected_change_percent
+        }],
+        'is_projection': True,
+        'projection_details': {
+            'method': result.method_used.value,
+            'confidence_score': result.confidence_score,
+            'confidence_level': result.confidence_level.value,
+            'periods_ahead': result.periods_ahead,
+            'trend_direction': trend_context.direction,
+            'trend_slope': trend_context.slope
+        }
+    }
+
+
+def _generate_projection_explanation(
+    result,
+    trend_context,
+    projection_intent,
+    is_tamil: bool
+) -> str:
+    """
+    Generate natural language explanation for projection.
+
+    Uses Indian number formatting (lakhs/crores) and is TTS-friendly.
+    """
+    from explanation_layer.explainer_client import _format_number_indian
+
+    # Format numbers for natural speech
+    projected = _format_number_indian(result.projected_value)
+    base = _format_number_indian(result.base_value)
+    change = _format_number_indian(abs(result.expected_change))
+    change_pct = abs(result.expected_change_percent)
+
+    # Confidence qualifiers
+    conf_level = result.confidence_level.value
+    if conf_level == 'high':
+        conf_en = "Based on the strong trend"
+        conf_ta = "வலுவான போக்கின் அடிப்படையில்"
+    elif conf_level == 'medium':
+        conf_en = "Based on current trends"
+        conf_ta = "தற்போதைய போக்கின் அடிப்படையில்"
+    else:
+        conf_en = "With some uncertainty"
+        conf_ta = "சில நிச்சயமின்மையுடன்"
+
+    # Direction words
+    if result.expected_change > 0:
+        dir_en = "up"
+        dir_ta = "அதிகரிப்பு"
+    elif result.expected_change < 0:
+        dir_en = "down"
+        dir_ta = "குறைவு"
+    else:
+        dir_en = "stable"
+        dir_ta = "மாற்றமில்லாமல்"
+
+    # Format period name for natural speech
+    period = result.projection_period
+    if period:
+        period = period.replace('_', ' ').replace('next ', 'next ')
+        # Capitalize first letter of each word
+        period = ' '.join(word.capitalize() for word in period.split())
+
+    if is_tamil:
+        explanation = f"{conf_ta}, {period} விற்பனை சுமார் {projected} ஆக இருக்கும் என்று எதிர்பார்க்கப்படுகிறது."
+
+        if result.expected_change != 0:
+            if result.expected_change > 0:
+                explanation += f" இது தற்போதைய {base} இலிருந்து சுமார் {change} ({change_pct:.0f}%) {dir_ta}."
+            else:
+                explanation += f" இது தற்போதைய {base} இலிருந்து சுமார் {change} ({change_pct:.0f}%) {dir_ta}."
+        else:
+            explanation += " போக்கு நிலையானதாக இருப்பதால், மதிப்பு மாறாமல் இருக்கும்."
+
+        # Add confidence range for lower confidence
+        if conf_level == 'low':
+            range_low = _format_number_indian(result.range_low)
+            range_high = _format_number_indian(result.range_high)
+            explanation += f" மதிப்பு {range_low} முதல் {range_high} வரை இருக்கலாம்."
+
+    else:
+        explanation = f"{conf_en}, {period} sales would be around {projected}."
+
+        if result.expected_change != 0:
+            explanation += f" That's about {change} ({change_pct:.0f}%) {dir_en} from current."
+        else:
+            explanation += " The stable trend suggests values will remain similar."
+
+        # Add confidence range for lower confidence
+        if conf_level == 'low':
+            range_low = _format_number_indian(result.range_low)
+            range_high = _format_number_indian(result.range_high)
+            explanation += f" It could range from {range_low} to {range_high}."
+
+    return explanation
+
+
+# ============================================================================
 # CORRECTION HANDLERS - Handle user corrections to previous queries
 # ============================================================================
 
@@ -657,6 +1071,9 @@ def _handle_correction(
 
     elif correction_type == CorrectionType.FILTER:
         return _handle_filter_correction(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
+
+    elif correction_type == CorrectionType.FILTER_REMOVE:
+        return _handle_filter_removal(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
 
     elif correction_type == CorrectionType.METRIC:
         return _handle_metric_correction(correction_intent, previous_turn, question, ctx, app_state, is_tamil)
@@ -707,7 +1124,8 @@ def _handle_table_correction(
                 ctx=ctx,
                 app_state=app_state,
                 is_tamil=is_tamil,
-                correction_type="table"
+                correction_type="table",
+                correction_message=question  # Pass angry message for emotional response
             )
         else:
             print(f"      ! Table '{explicit_table}' not found")
@@ -722,7 +1140,8 @@ def _handle_table_correction(
                         ctx=ctx,
                         app_state=app_state,
                         is_tamil=is_tamil,
-                        correction_type="table"
+                        correction_type="table",
+                        correction_message=question  # Pass angry message for emotional response
                     )
 
     # Case 2: Table type hint or ambiguous correction
@@ -743,7 +1162,8 @@ def _handle_table_correction(
             ctx=ctx,
             app_state=app_state,
             is_tamil=is_tamil,
-            correction_type="table"
+            correction_type="table",
+            correction_message=question  # Pass angry message for emotional response
         )
 
     # Fallback: Re-route the original query
@@ -944,6 +1364,7 @@ def _handle_filter_correction(
         corrected_entities[entity_key] = new_value
 
     # Re-execute with corrected entities and old values for text replacement
+    # Pass user's correction message for emotional intelligence (apologies, etc.)
     return _re_execute_with_entities(
         previous_turn=previous_turn,
         corrected_entities=corrected_entities,
@@ -951,8 +1372,276 @@ def _handle_filter_correction(
         app_state=app_state,
         is_tamil=is_tamil,
         correction_type="filter",
-        old_values=old_values
+        old_values=old_values,
+        user_correction_message=question  # Pass user's angry message for empathy
     )
+
+
+def _handle_filter_removal(
+    correction_intent,
+    previous_turn,
+    question: str,
+    ctx,
+    app_state,
+    is_tamil: bool
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle filter removal requests (e.g., "consider all months", "don't limit to November").
+
+    CRITICAL: This function preserves the original query plan structure (query_type, aggregation, etc.)
+    and only removes the date-related filters. This ensures "highest selling day for UPI" stays as
+    an extrema_lookup query even when removing the month filter, instead of becoming a trend analysis.
+
+    Process:
+    1. Get filter_removals list from correction_intent
+    2. Get the ORIGINAL query_plan from previous turn (preserves query_type, aggregation, etc.)
+    3. Remove date-related filters from subset_filters in the plan
+    4. Re-execute with the MODIFIED PLAN (not regenerated from scratch)
+    """
+    import copy
+    import time
+    print("    [Filter Removal Handler - Preserving Query Structure]")
+
+    # Get filters to remove
+    filter_removals = correction_intent.filter_removals or []
+    print(f"      Filters to remove: {filter_removals}")
+
+    # Get the ORIGINAL query plan from previous turn
+    original_plan = previous_turn.query_plan
+    if not original_plan:
+        print("      WARNING: No original query_plan found, falling back to re-execution")
+        # Fallback to entity-based re-execution if no plan stored
+        corrected_entities = (previous_turn.entities or {}).copy()
+        for filter_name in filter_removals:
+            filter_to_entity_mapping = {
+                'month': ['month', 'specific_date', 'date_range', 'time_period'],
+                'date': ['month', 'specific_date', 'date_range', 'time_period'],
+                'category': ['category'],
+                'location': ['location', 'state', 'city', 'branch'],
+            }
+            for entity_key in filter_to_entity_mapping.get(filter_name, [filter_name]):
+                if entity_key in corrected_entities:
+                    corrected_entities.pop(entity_key)
+        return _re_execute_with_entities(
+            previous_turn=previous_turn,
+            corrected_entities=corrected_entities,
+            ctx=ctx,
+            app_state=app_state,
+            is_tamil=is_tamil,
+            correction_type="filter_removal",
+            old_values={},
+            user_correction_message=question
+        )
+
+    # Deep copy the plan to avoid modifying the original
+    modified_plan = copy.deepcopy(original_plan)
+    removed_filters = []
+
+    # Define which columns are date-related
+    date_related_columns = ['Date', 'date', 'month', 'Month', 'year', 'Year', 'time', 'Time',
+                           'created_at', 'updated_at', 'timestamp', 'Timestamp']
+
+    # Remove date-related filters from subset_filters
+    if 'subset_filters' in modified_plan and modified_plan['subset_filters']:
+        original_filters = modified_plan['subset_filters']
+        new_filters = []
+
+        for f in original_filters:
+            column = f.get('column', '')
+            # Check if this filter is date-related (should be removed)
+            is_date_filter = any(dc.lower() in column.lower() for dc in date_related_columns)
+
+            if is_date_filter and any(fr in ['month', 'date', 'time', 'year'] for fr in filter_removals):
+                removed_filters.append(f"  {column} {f.get('operator')} {f.get('value')}")
+                print(f"      Removed filter: {column} {f.get('operator')} {f.get('value')}")
+            else:
+                new_filters.append(f)
+
+        modified_plan['subset_filters'] = new_filters
+        print(f"      Filters kept: {len(new_filters)}, Removed: {len(removed_filters)}")
+
+    # Also remove from filters array if present
+    if 'filters' in modified_plan and modified_plan['filters']:
+        original_filters = modified_plan['filters']
+        new_filters = []
+
+        for f in original_filters:
+            column = f.get('column', '')
+            is_date_filter = any(dc.lower() in column.lower() for dc in date_related_columns)
+
+            if is_date_filter and any(fr in ['month', 'date', 'time', 'year'] for fr in filter_removals):
+                removed_filters.append(f"  {column} {f.get('operator')} {f.get('value')}")
+                print(f"      Removed filter from 'filters': {column}")
+            else:
+                new_filters.append(f)
+
+        modified_plan['filters'] = new_filters
+
+    print(f"      Query type preserved: {modified_plan.get('query_type')}")
+    print(f"      Modified plan subset_filters: {modified_plan.get('subset_filters')}")
+
+    # Execute with the modified plan directly (skip planner!)
+    return _execute_with_modified_plan(
+        modified_plan=modified_plan,
+        original_question=previous_turn.question,
+        original_entities=previous_turn.entities or {},
+        ctx=ctx,
+        app_state=app_state,
+        is_tamil=is_tamil,
+        correction_type="filter_removal",
+        user_correction_message=question
+    )
+
+
+def _execute_with_modified_plan(
+    modified_plan: Dict[str, Any],
+    original_question: str,
+    original_entities: Dict[str, Any],
+    ctx,
+    app_state,
+    is_tamil: bool,
+    correction_type: str,
+    user_correction_message: str = None
+) -> Dict[str, Any]:
+    """
+    Execute a query using a pre-built (modified) plan, skipping the planner.
+
+    This is used for filter removal corrections where we need to preserve
+    the original query structure (query_type, aggregation, etc.) but remove
+    specific filters.
+    """
+    import time
+    from execution_layer.executor import execute_plan, ADVANCED_QUERY_TYPES
+    from execution_layer.sql_compiler import compile_sql
+    from explanation_layer.explainer_client import explain_results
+    from utils.query_context import QueryTurn
+    import copy
+
+    step_start = time.time()
+    table = modified_plan.get('table')
+
+    try:
+        print("\n[EXECUTE] Running with MODIFIED plan (preserving query structure)...")
+        print(f"  Table: {table}")
+        print(f"  Query type: {modified_plan.get('query_type')}")
+        print(f"  Original question: {(original_question or '')[:80]}...")
+
+        # Step 1: Execute SQL with modified plan
+        print("  [Step 1/2] Executing query with modified plan...")
+        query_type = modified_plan.get('query_type')
+
+        if query_type in ADVANCED_QUERY_TYPES:
+            print(f"    → Advanced query type: {query_type}")
+            result = execute_plan(modified_plan)
+            final_sql = f"[Advanced {query_type} query - see analysis]"
+            # Handle analysis from advanced queries
+            if hasattr(result, 'attrs') and 'analysis' in result.attrs:
+                analysis = result.attrs['analysis']
+                modified_plan['analysis'] = analysis if isinstance(analysis, dict) else {}
+            elif isinstance(result, dict) and 'analysis' in result:
+                modified_plan['analysis'] = result.get('analysis', {})
+        else:
+            sql = compile_sql(modified_plan)
+            print(f"    → SQL: {sql[:150]}...")
+            result, final_sql = app_state.query_healer.execute_with_healing(sql, modified_plan)
+
+        print(f"    ✓ Query executed ({time.time() - step_start:.2f}s)")
+
+        # Check for empty results
+        no_results = False
+        row_count = len(result) if result is not None and hasattr(result, '__len__') else 0
+        if result is None or row_count == 0:
+            no_results = True
+            print(f"    ! Query returned 0 rows")
+        else:
+            print(f"    ✓ Query returned {row_count} rows")
+
+        # Step 2: Generate explanation
+        print("  [Step 2/2] Generating explanation (LLM call)...")
+        step_start = time.time()
+        emotional_message = user_correction_message if user_correction_message else original_question
+        explanation = explain_results(
+            result,
+            query_plan=modified_plan,
+            original_question=original_question,
+            raw_user_message=emotional_message
+        )
+        print(f"    ✓ Explanation generated ({time.time() - step_start:.2f}s)")
+
+        # NOTE: explain_results() already handles empty results - no double response needed
+
+        # Translate if Tamil
+        if is_tamil:
+            from utils.translation import translate_to_tamil
+            explanation = translate_to_tamil(explanation)
+
+        # Extract result values for context
+        result_values = _extract_result_values(result, modified_plan) if result is not None else {}
+        if result_values:
+            print(f"  ✓ Extracted result values for context: {result_values}")
+
+        # Update entities by removing date-related ones
+        corrected_entities = original_entities.copy()
+        for key in ['month', 'specific_date', 'date_range', 'time_period']:
+            corrected_entities.pop(key, None)
+
+        # Store turn in context
+        stored_plan = copy.deepcopy(modified_plan)
+        turn = QueryTurn(
+            question=original_question,
+            resolved_question=original_question,
+            entities=corrected_entities,
+            table_used=table,
+            filters_applied=modified_plan.get('filters', []),
+            result_summary=f"{row_count} rows returned",
+            sql_executed=final_sql,
+            was_followup=False,
+            confidence=1.0,
+            result_values=result_values,
+            query_plan=stored_plan,
+            routing_alternatives=[],
+            was_correction=True,
+            corrected_from_turn=len(ctx.turns) - 1 if ctx.turns else None,
+            correction_type=correction_type
+        )
+        ctx.add_turn(turn)
+
+        # Build response
+        data_list = None
+        if result is not None and hasattr(result, 'to_dict'):
+            data_list = _sanitize_for_json(result.to_dict('records'))
+
+        print("\n[SUCCESS] Query completed with modified plan (filter removal)!")
+        print("=" * 60 + "\n")
+
+        response = {
+            'success': True,
+            'explanation': explanation,
+            'data': data_list,
+            'plan': modified_plan,
+            'table_used': table,
+            'routing_confidence': 1.0,
+            'was_followup': False,
+            'was_correction': True,
+            'correction_type': correction_type,
+            'entities_extracted': {k: v for k, v in corrected_entities.items() if v and k != 'raw_question'},
+            'data_refreshed': False,
+            'no_results': no_results
+        }
+        return _sanitize_for_json(response)
+
+    except Exception as e:
+        import traceback
+        error_str = str(e)
+        error_trace = traceback.format_exc()
+        print(f"\n[ERROR] Failed to execute with modified plan: {error_str}")
+        print(f"  Traceback:\n{error_trace}")
+
+        return {
+            'success': False,
+            'error': f"Error executing query: {error_str[:100]}",
+            'error_type': 'execution_error'
+        }
 
 
 def _handle_metric_correction(
@@ -994,6 +1683,7 @@ def _handle_metric_correction(
             corrected_entities['metric'] = new_metric
 
     # Re-execute with corrected entities and old values for text replacement
+    # Pass user's correction message for emotional intelligence
     return _re_execute_with_entities(
         previous_turn=previous_turn,
         corrected_entities=corrected_entities,
@@ -1001,7 +1691,8 @@ def _handle_metric_correction(
         app_state=app_state,
         is_tamil=is_tamil,
         correction_type="metric",
-        old_values=old_values
+        old_values=old_values,
+        user_correction_message=question  # Pass for empathy
     )
 
 
@@ -1041,7 +1732,8 @@ def _handle_negation(
                 ctx=ctx,
                 app_state=app_state,
                 is_tamil=is_tamil,
-                correction_type="negation_table"
+                correction_type="negation_table",
+                correction_message=question  # Pass angry message for emotional response
             )
 
     # Strategy 2: Zero results -> try relaxing filters or different table
@@ -1064,7 +1756,8 @@ def _handle_negation(
                     ctx=ctx,
                     app_state=app_state,
                     is_tamil=is_tamil,
-                    correction_type="negation_empty"
+                    correction_type="negation_empty",
+                    correction_message=question  # Pass angry message for emotional response
                 )
 
     # Strategy 3: Has alternatives -> try next one
@@ -1084,7 +1777,8 @@ def _handle_negation(
                 ctx=ctx,
                 app_state=app_state,
                 is_tamil=is_tamil,
-                correction_type="negation_alternative"
+                correction_type="negation_alternative",
+                correction_message=question  # Pass angry message for emotional response
             )
 
     # Strategy 4: Ask for clarification (last resort)
@@ -1217,6 +1911,7 @@ def _handle_multiple_corrections(
         print(f"      Applied table correction: {table_to_use}")
 
     # Re-execute with all corrections
+    # Pass user's correction message for emotional intelligence
     return _re_execute_with_corrections(
         previous_turn=previous_turn,
         corrected_entities=corrected_entities,
@@ -1225,7 +1920,8 @@ def _handle_multiple_corrections(
         app_state=app_state,
         is_tamil=is_tamil,
         correction_type="multiple",
-        old_values=old_values
+        old_values=old_values,
+        user_correction_message=question  # Pass for empathy
     )
 
 
@@ -1271,10 +1967,15 @@ def _re_execute_with_table(
     ctx,
     app_state,
     is_tamil: bool,
-    correction_type: str
+    correction_type: str,
+    correction_message: str = None  # The angry/emotional correction message
 ) -> Dict[str, Any]:
     """
     Re-execute the original query with a different table.
+
+    Args:
+        correction_message: The user's correction message (e.g., "NO! I WANT CATEGORY NOT BRANCH")
+                          Used for emotional intelligence - LLM should apologize for mistakes.
     """
     print(f"      [Re-executing with table: {forced_table}]")
 
@@ -1283,6 +1984,7 @@ def _re_execute_with_table(
     entities = (previous_turn.entities or {}).copy()
 
     # Execute with forced table
+    # Pass correction_message for emotional response, NOT the old question
     result = _execute_with_forced_table(
         original_question=previous_turn.question,
         processing_query=original_question,
@@ -1290,7 +1992,8 @@ def _re_execute_with_table(
         forced_table=forced_table,
         is_tamil=is_tamil,
         ctx=ctx,
-        app_state=app_state
+        app_state=app_state,
+        correction_message=correction_message  # For emotional intelligence
     )
 
     # Mark this as a correction turn
@@ -1310,7 +2013,8 @@ def _re_execute_with_entities(
     app_state,
     is_tamil: bool,
     correction_type: str,
-    old_values: Dict[str, Any] = None
+    old_values: Dict[str, Any] = None,
+    user_correction_message: str = None  # The user's angry/correction message for empathy
 ) -> Dict[str, Any]:
     """
     Re-execute the original query with corrected entities.
@@ -1318,6 +2022,8 @@ def _re_execute_with_entities(
     Args:
         old_values: Optional dict containing old values for text replacement
                     e.g., {'metric': 'revenue'} when correcting to 'profit'
+        user_correction_message: The user's raw correction message (e.g., "No! check Bangalore!")
+                                 Passed to explainer for emotional intelligence
     """
     import re
     print(f"      [Re-executing with corrected entities]")
@@ -1387,7 +2093,8 @@ def _re_execute_with_entities(
         forced_table=table,
         is_tamil=is_tamil,
         ctx=ctx,
-        app_state=app_state
+        app_state=app_state,
+        correction_message=user_correction_message  # Pass for emotional intelligence
     )
 
     # Mark this as a correction turn
@@ -1408,7 +2115,8 @@ def _re_execute_with_corrections(
     app_state,
     is_tamil: bool,
     correction_type: str,
-    old_values: Dict[str, Any] = None
+    old_values: Dict[str, Any] = None,
+    user_correction_message: str = None  # User's angry message for empathy
 ) -> Dict[str, Any]:
     """
     Re-execute with both entity and table corrections.
@@ -1439,7 +2147,8 @@ def _re_execute_with_corrections(
         forced_table=forced_table,
         is_tamil=is_tamil,
         ctx=ctx,
-        app_state=app_state
+        app_state=app_state,
+        correction_message=user_correction_message  # Pass for emotional intelligence
     )
 
     if result.get('success') and ctx.turns:
@@ -1488,13 +2197,18 @@ def _execute_with_forced_table(
     forced_table: str,
     is_tamil: bool,
     ctx: 'QueryContext',
-    app_state: 'AppState'
+    app_state: 'AppState',
+    correction_message: str = None  # The emotional correction message for empathetic response
 ) -> Dict[str, Any]:
     """
     Execute a query with a specific table (after user clarification).
 
     This function is called when the user has responded to a clarification
     request and we need to resume the query with their selected table.
+
+    Args:
+        correction_message: The user's emotional correction (e.g., "NO! I WANT CATEGORY")
+                          If provided, used for emotional intelligence instead of original_question.
     """
     import time
     step_start = time.time()
@@ -1540,6 +2254,15 @@ def _execute_with_forced_table(
             print(f"    → Advanced query type: {query_type}")
             result = execute_plan(plan)
             final_sql = f"[Advanced {query_type} query - see analysis]"
+            # CRITICAL: Store analysis in plan for projection support
+            # Advanced queries return DataFrames with analysis in attrs
+            if hasattr(result, 'attrs') and 'analysis' in result.attrs:
+                analysis = result.attrs['analysis']
+                plan['analysis'] = analysis if isinstance(analysis, dict) else {}
+                if plan['analysis']:
+                    print(f"    → Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
+            elif isinstance(result, dict) and 'analysis' in result:
+                plan['analysis'] = result.get('analysis', {})
         else:
             sql = compile_sql(plan)
             print(f"    → SQL: {sql[:100]}...")
@@ -1559,17 +2282,18 @@ def _execute_with_forced_table(
         print("  [Step 5/5] Generating explanation (LLM call)...")
         step_start = time.time()
         from explanation_layer.explainer_client import explain_results
-        explanation = explain_results(result, query_plan=plan, original_question=processing_query)
+        # Use correction_message (angry message) for emotion detection if available
+        # Otherwise fall back to original_question
+        emotional_message = correction_message if correction_message else original_question
+        explanation = explain_results(
+            result,
+            query_plan=plan,
+            original_question=processing_query,
+            raw_user_message=emotional_message  # Correction message or original for emotion
+        )
         print(f"    ✓ Explanation generated ({time.time() - step_start:.2f}s)")
 
-        if no_results and explanation:
-            no_data_hint = app_state.personality.handle_error('empty_result',
-                "I found no data matching your query. Try adjusting your filters.")
-            explanation = f"{explanation}\n\n{no_data_hint}"
-
-        # NOTE: Personality prefix REMOVED - LLM already generates crisp responses
-        # The explain_results() function handles response formatting
-        # Adding personality.format_response() caused double greetings like "Looking good, Viswa!"
+        # NOTE: explain_results() already handles empty results - no double response needed
 
         # Translate if Tamil
         if is_tamil:
@@ -1578,10 +2302,18 @@ def _execute_with_forced_table(
 
         # Update context
         from utils.query_context import QueryTurn
+        import copy
         # Extract key result values for pronoun resolution
         result_values = _extract_result_values(result, plan) if result is not None else {}
         if result_values:
             print(f"  ✓ Extracted result values for context: {result_values}")
+
+        # Make a deep copy of plan to preserve analysis for projection follow-ups
+        stored_plan = copy.deepcopy(plan)
+
+        # Debug: Verify analysis is in stored_plan
+        if stored_plan.get('analysis'):
+            print(f"  ✓ Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
 
         turn = QueryTurn(
             question=original_question,
@@ -1594,7 +2326,7 @@ def _execute_with_forced_table(
             was_followup=False,
             confidence=1.0,  # High confidence since user chose
             result_values=result_values,  # For "that state", "that branch" resolution
-            query_plan=plan,  # Store plan for correction re-execution
+            query_plan=stored_plan,  # Use deep copy to preserve analysis
             routing_alternatives=[]  # No alternatives when forced
         )
         ctx.add_turn(turn)
@@ -1900,6 +2632,55 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 print("  ✗ No correction intent detected")
             _log_timing("correction_detection", _step_start)
 
+        # === RESOLVE TOP REFERENCES (NEW STEP 0.65) ===
+        # Replace "top category", "best seller", etc. with actual values from previous results
+        if ctx.turns:
+            previous_turn = ctx.get_last_turn()
+            resolved_question = _resolve_top_references(question, previous_turn)
+            if resolved_question != question:
+                print(f"\n[STEP 0.65/9] TOP REFERENCE RESOLUTION...")
+                print(f"  ✓ Resolved: '{question[:50]}...' → '{resolved_question[:50]}...'")
+                question = resolved_question  # Use resolved question for rest of pipeline
+
+        # === CHECK FOR PROJECTION INTENT (NEW STEP 0.7) ===
+        if ctx.turns:
+            _step_start = _time.time()
+            print("\n[STEP 0.7/9] PROJECTION INTENT DETECTION...")
+            previous_turn = ctx.get_last_turn()
+
+            from utils.projection_detector import detect_projection_intent
+            projection_intent = detect_projection_intent(question, previous_turn)
+
+            if projection_intent:
+                print(f"  ✓ Projection intent detected: {projection_intent.projection_type.value}")
+                print(f"    Target period: {projection_intent.target_period}")
+                print(f"    Confidence: {projection_intent.confidence:.0%}")
+                _log_timing("projection_detection", _step_start)
+
+                # Detect Tamil
+                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+
+                # Handle the projection
+                projection_result = _handle_projection(
+                    projection_intent=projection_intent,
+                    previous_turn=previous_turn,
+                    question=question,
+                    ctx=ctx,
+                    app_state=app_state,
+                    is_tamil=is_tamil
+                )
+                if projection_result:
+                    _total_time = (_time.time() - _query_start) * 1000
+                    print(f"\n  ⏱️  TIMING SUMMARY (PROJECTION):")
+                    for step, ms in _timings.items():
+                        print(f"      {step}: {ms:.0f}ms")
+                    print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                    print("=" * 60 + "\n")
+                    return projection_result
+            else:
+                print("  ✗ No projection intent detected")
+            _log_timing("projection_detection", _step_start)
+
         # === FAST PATH: Greetings & Conversational ===
         _step_start = _time.time()
         print("\n[STEP 1/8] GREETING DETECTION...")
@@ -1931,6 +2712,56 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             }
         print("  ✗ Not a greeting")
         _log_timing("greeting_detection", _step_start)
+
+        # === FAST PATH: Non-Query Conversational Text ===
+        # Check if user is just chatting (not asking about data)
+        _step_start = _time.time()
+        print("\n[STEP 1.5/8] NON-QUERY DETECTION...")
+        is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        if is_non_query_conversational(question):
+            print("  ✓ Non-query conversational text detected - generating LLM response")
+            response = generate_off_topic_response(question, is_tamil=is_tamil_text)
+            _log_timing("non_query_detection", _step_start)
+            print("  → Returning LLM-generated conversational response")
+            print("=" * 60 + "\n")
+            return {
+                'success': True,
+                'explanation': response,
+                'data': None,
+                'plan': None,
+                'schema_context': [],
+                'data_refreshed': False,
+                'is_conversational': True
+            }
+        print("  ✗ Not conversational (likely a data query)")
+        _log_timing("non_query_detection", _step_start)
+
+        # === FAST PATH: Date Context Detection (BEFORE Memory) ===
+        _step_start = _time.time()
+        print("\n[STEP 1.8/8] DATE CONTEXT DETECTION...")
+        is_date_ctx, date_info = is_date_context_statement(question)
+        if is_date_ctx:
+            print(f"  ✓ Date context detected: {date_info}")
+            # Store date context in conversation for subsequent queries
+            if date_info:
+                ctx.set_date_context(date_info)
+            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+            response = get_date_context_response(date_info, is_tamil=is_tamil)
+            _log_timing("date_context", _step_start)
+            print("  → Returning date context acknowledgment")
+            print("=" * 60 + "\n")
+            return {
+                'success': True,
+                'explanation': response,
+                'data': None,
+                'plan': None,
+                'schema_context': [],
+                'data_refreshed': False,
+                'is_date_context': True,
+                'date_info': date_info
+            }
+        print("  ✗ Not a date context statement")
+        _log_timing("date_context", _step_start)
 
         # === FAST PATH: Memory Intent ===
         _step_start = _time.time()
@@ -2113,7 +2944,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 spreadsheet_id = config.google_sheets.spreadsheet_id  # Typed config access
                 if spreadsheet_id:
                     app_state.current_spreadsheet_id = spreadsheet_id  # Cache it for future use
-            except:
+            except (AttributeError, KeyError, FileNotFoundError):
                 spreadsheet_id = ""
         data_was_refreshed = check_and_refresh_data()
         if data_was_refreshed:
@@ -2121,9 +2952,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             invalidate_spreadsheet_cache(spreadsheet_id)
 
         # === CHECK CACHE (CACHING FLOW FROM ARCHITECTURE) ===
-        # Generate cache key: Hash(question + spreadsheet_id)
-        # Check if result cached - saves significant time on repeat queries
-        cache_hit, cached_result = get_cached_query_result(processing_query, spreadsheet_id)
+        # Generate cache key: Hash(ORIGINAL question + spreadsheet_id)
+        # Use original question (before translation) to avoid cache collisions
+        # when different Tamil queries translate to similar English
+        cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
 
         if cache_hit and cached_result and isinstance(cached_result, dict):
             print(f"  ✓ CACHE HIT - returning cached result")
@@ -2272,6 +3104,22 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 result = execute_plan(plan)
                 final_sql = f"[Advanced {query_type} query - see analysis]"
                 print(f"  ✓ Advanced query completed")
+
+                # CRITICAL: For projection support, merge analysis from result back into plan
+                # Advanced queries return DataFrames with analysis in attrs
+                # We need 'analysis' in plan for projection follow-ups
+                if hasattr(result, 'attrs') and 'analysis' in result.attrs:
+                    analysis = result.attrs['analysis']
+                    plan['analysis'] = analysis if isinstance(analysis, dict) else {}
+                    if plan['analysis']:
+                        print(f"    → Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
+                    else:
+                        print(f"    ! Analysis was empty or invalid")
+                elif isinstance(result, dict) and 'analysis' in result:
+                    plan['analysis'] = result.get('analysis', {})
+                    print(f"    → Stored analysis in plan for projection support: {list(plan['analysis'].keys())}")
+                else:
+                    print(f"    ! No analysis found in result (type: {type(result).__name__})")
             else:
                 # Standard query execution with healing
                 sql = compile_sql(plan)
@@ -2316,14 +3164,15 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # === EXPLANATION WITH PERSONALITY ===
         _step_start = _time.time()
         print("\n[RESPONSE] Generating explanation...")
-        explanation = explain_results(result, query_plan=plan, original_question=processing_query)
+        explanation = explain_results(
+            result,
+            query_plan=plan,
+            original_question=processing_query,
+            raw_user_message=question  # Original message with emotional tone
+        )
 
-        # Modify explanation if no results found
-        if no_results and explanation:
-            # Add context about why there might be no results
-            no_data_hint = app_state.personality.handle_error('empty_result',
-                "I found no data matching your query. Try adjusting your filters or check if the data exists for that time period.")
-            explanation = f"{explanation}\n\n{no_data_hint}"
+        # NOTE: explain_results() already handles empty results with friendly messages
+        # No need to append additional no_data_hint - that caused DOUBLE responses
 
         # Determine sentiment based on result
         sentiment = 'neutral'
@@ -2355,6 +3204,15 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         if result_values:
             print(f"  ✓ Extracted result values for context: {result_values}")
 
+        # Make a deep copy of plan to preserve analysis for projection follow-ups
+        # (reference passing could cause issues if plan is modified elsewhere)
+        import copy
+        stored_plan = copy.deepcopy(plan)
+
+        # Debug: Verify analysis is in stored_plan
+        if stored_plan.get('analysis'):
+            print(f"  ✓ Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
+
         turn = QueryTurn(
             question=question,
             resolved_question=processing_query,
@@ -2367,7 +3225,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             confidence=confidence,
             result_values=result_values,  # For "that state", "that branch" resolution
             # Store routing info for correction handlers
-            query_plan=plan,
+            query_plan=stored_plan,  # Use deep copy to preserve analysis
             routing_alternatives=routing_result.alternatives if 'routing_result' in dir() and routing_result else []
         )
         ctx.add_turn(turn)
@@ -2409,15 +3267,15 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         # === CACHE RESULT (CACHING FLOW FROM ARCHITECTURE) ===
         # Store for 5 minutes (configurable via settings.yaml)
+        # Use ORIGINAL question (before translation) to match GET key
         try:
             cache_query_result(
-                processing_query,
+                question,  # Use original question, not processing_query
                 spreadsheet_id,
-                response,
-                table_name=plan.get('table', best_table),
-                filters=plan.get('filters', [])
+                response
+                # Don't include table_name/filters - they're not available at GET time
             )
-            print(f"[Cache] Stored result for: {processing_query[:50]}...")
+            print(f"[Cache] Stored result for: {question[:50]}...")
         except Exception as cache_err:
             print(f"[Cache] Warning: Could not cache result: {cache_err}")
 

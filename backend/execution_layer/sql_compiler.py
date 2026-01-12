@@ -1,5 +1,93 @@
+import re
+from typing import Any, List, Dict, Union
 from analytics_engine.metric_registry import MetricRegistry
 from utils.sql_utils import quote_identifier
+
+
+# =============================================================================
+# SQL Input Validation & Sanitization
+# =============================================================================
+
+# Patterns that indicate SQL injection attempts
+SQL_INJECTION_PATTERNS = [
+    r';\s*(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE)\s',  # Statement chaining
+    r'--\s*$',  # SQL comment at end
+    r'/\*.*\*/',  # Block comments
+    r'\bUNION\s+(ALL\s+)?SELECT\b',  # UNION injection
+    r'\bEXEC(UTE)?\s*\(',  # Execute calls
+    r'\bxp_\w+',  # SQL Server extended procedures
+    r'\bWAITFOR\s+DELAY\b',  # Time-based attacks
+    r'\bBENCHMARK\s*\(',  # MySQL time-based
+    r'\bSLEEP\s*\(',  # Sleep-based attacks
+    r'0x[0-9a-fA-F]+',  # Hex-encoded payloads
+]
+
+SQL_INJECTION_REGEX = re.compile('|'.join(SQL_INJECTION_PATTERNS), re.IGNORECASE)
+
+
+def _validate_value(value: Any, context: str = "value") -> None:
+    """
+    Validate a value for SQL injection patterns.
+    Raises ValueError if suspicious patterns are detected.
+    """
+    if value is None:
+        return
+
+    if isinstance(value, (int, float, bool)):
+        return  # Numeric types are safe
+
+    if isinstance(value, str):
+        # Check for SQL injection patterns
+        if SQL_INJECTION_REGEX.search(value):
+            raise ValueError(f"Invalid {context}: contains potentially unsafe SQL patterns")
+
+        # Check for excessive length (potential buffer overflow)
+        if len(value) > 10000:
+            raise ValueError(f"Invalid {context}: value too long (max 10000 characters)")
+
+
+def _sanitize_string(value: str) -> str:
+    """
+    Sanitize a string value for SQL.
+    Escapes single quotes and removes null bytes.
+    """
+    if not isinstance(value, str):
+        return str(value)
+
+    # Remove null bytes (potential attack vector)
+    value = value.replace('\x00', '')
+
+    # Escape single quotes (SQL standard escaping)
+    value = value.replace("'", "''")
+
+    return value
+
+
+def _validate_filter(f: Dict) -> None:
+    """Validate a filter dictionary."""
+    if not isinstance(f, dict):
+        raise ValueError(f"Invalid filter: expected dict, got {type(f).__name__}")
+
+    required_keys = ["column", "operator", "value"]
+    for key in required_keys:
+        if key not in f:
+            raise ValueError(f"Invalid filter: missing required key '{key}'")
+
+    # Validate column name (alphanumeric, underscores, spaces allowed)
+    column = f["column"]
+    if not isinstance(column, str) or not column.strip():
+        raise ValueError("Invalid filter: column must be a non-empty string")
+    if not re.match(r'^[\w\s\-\.]+$', column, re.UNICODE):
+        raise ValueError(f"Invalid filter: column name '{column}' contains invalid characters")
+
+    # Validate operator
+    allowed_operators = ["=", "!=", "<", ">", "<=", ">=", "LIKE", "IN", "NOT IN", "IS", "IS NOT"]
+    operator = f["operator"].upper()
+    if operator not in allowed_operators:
+        raise ValueError(f"Invalid filter: operator '{operator}' not allowed")
+
+    # Validate value
+    _validate_value(f["value"], context="filter value")
 
 
 def compile_sql(plan: dict) -> str:
@@ -37,11 +125,14 @@ def _compile_lookup(plan):
     if not columns:
         columns = ["*"]
 
-    # Quote column names if needed
-    if columns != ["*"]:
-        quoted_columns = ", ".join([quote_identifier(col) for col in columns])
-    else:
+    # Handle case where columns might be string "*" instead of list ["*"]
+    if columns == "*" or columns == ["*"]:
         quoted_columns = "*"
+    else:
+        # Ensure columns is a list
+        if isinstance(columns, str):
+            columns = [columns]
+        quoted_columns = ", ".join([quote_identifier(col) for col in columns])
 
     where = _build_where_clause(plan["filters"])
     limit = plan.get("limit", 1)
@@ -53,12 +144,15 @@ def _compile_filter(plan):
     """Compile filter query"""
     table = quote_identifier(plan["table"])
     columns = plan.get("select_columns", ["*"])
-    
-    # Quote column names if needed
-    if columns != ["*"]:
-        columns = ", ".join([quote_identifier(col) for col in columns])
-    else:
+
+    # Handle case where columns might be string "*" instead of list ["*"]
+    if columns == "*" or columns == ["*"] or not columns:
         columns = "*"
+    else:
+        # Ensure columns is a list
+        if isinstance(columns, str):
+            columns = [columns]
+        columns = ", ".join([quote_identifier(col) for col in columns])
     
     where = _build_where_clause(plan["filters"])
     limit = plan.get("limit", 100)
@@ -72,16 +166,28 @@ def _build_where_clause(filters):
     Build WHERE clause from filters.
     Handles both numeric and text values with proper escaping.
     Uses flexible matching for names to handle spelling variations.
+    Includes SQL injection validation for security.
     """
     if not filters:
         return ""
-    
+
     conditions = []
     for f in filters:
+        # Validate filter structure and values
+        _validate_filter(f)
+
         column = quote_identifier(f["column"])
         operator = f["operator"]
         value = f["value"]
-        
+
+        # Handle None values
+        if value is None:
+            if operator in ("=", "IS"):
+                conditions.append(f"{column} IS NULL")
+            elif operator in ("!=", "IS NOT"):
+                conditions.append(f"{column} IS NOT NULL")
+            continue
+
         # Handle different value types
         if isinstance(value, str):
             if operator == "LIKE":
@@ -89,12 +195,12 @@ def _build_where_clause(filters):
                 # First, normalize the value by removing apostrophes and special chars
                 # This fixes translation issues like "ladies' wear" vs "Ladies Wear"
                 normalized_value = value.replace("'", "").replace("'", "").replace("`", "")
-                safe_value = normalized_value.replace("'", "''")
-                
+                safe_value = _sanitize_string(normalized_value)
+
                 # For name matching, try to be more flexible
                 # Extract the core part of the search term (remove % wildcards)
                 search_term = safe_value.strip('%')
-                
+
                 # If it's a name search (common patterns), use flexible matching
                 # This helps with variations like "Meenakshi" vs "Meenakchi"
                 if len(search_term) >= 4:  # Only for meaningful search terms
@@ -102,14 +208,14 @@ def _build_where_clause(filters):
                     # 1. Original pattern
                     # 2. Pattern with common variations (ksh -> kch, sh -> ch, etc.)
                     patterns = [safe_value]
-                    
+
                     # Add variation patterns for common Tamil name spellings
                     if 'ksh' in search_term.lower():
                         patterns.append(safe_value.replace('ksh', 'kch').replace('Ksh', 'Kch'))
                         patterns.append(safe_value.replace('ksh', 'kchi').replace('Ksh', 'Kchi'))
                     if 'sh' in search_term.lower():
                         patterns.append(safe_value.replace('sh', 'ch').replace('Sh', 'Ch'))
-                    
+
                     # Create OR condition for all patterns
                     pattern_conditions = [
                         f"LOWER(CAST({column} AS VARCHAR)) LIKE LOWER('{pattern}')"
@@ -121,14 +227,31 @@ def _build_where_clause(filters):
                     conditions.append(f"LOWER(CAST({column} AS VARCHAR)) LIKE LOWER('{safe_value}')")
             else:
                 # Use actual operator (=, >=, <=, !=, etc.) for string comparisons
-                # Cast column to VARCHAR to handle TIMESTAMP_NS columns
-                safe_value = value.replace("'", "''")
-                conditions.append(f"CAST({column} AS VARCHAR) {operator} '{safe_value}'")
-        else:
-            # Numeric value
+                safe_value = _sanitize_string(value)
+
+                # Check if this looks like a date value (ISO format: YYYY-MM-DD)
+                # For date comparisons, don't cast column to VARCHAR - compare directly
+                is_date_value = bool(re.match(r'^\d{4}-\d{2}-\d{2}$', value))
+
+                if is_date_value and operator in ('>=', '<=', '>', '<', '='):
+                    # Date comparison - compare directly without casting
+                    # DuckDB handles string dates well with datetime columns
+                    conditions.append(f"{column} {operator} '{safe_value}'")
+                else:
+                    # Non-date string - cast column to VARCHAR for safety
+                    conditions.append(f"CAST({column} AS VARCHAR) {operator} '{safe_value}'")
+        elif isinstance(value, (int, float)):
+            # Numeric value - safe to use directly
             conditions.append(f"{column} {operator} {value}")
-    
-    return "WHERE " + " AND ".join(conditions)
+        elif isinstance(value, bool):
+            # Boolean value
+            conditions.append(f"{column} {operator} {str(value).upper()}")
+        else:
+            # Unsupported type - convert to string safely
+            safe_value = _sanitize_string(str(value))
+            conditions.append(f"CAST({column} AS VARCHAR) {operator} '{safe_value}'")
+
+    return "WHERE " + " AND ".join(conditions) if conditions else ""
 
 
 def _compile_metric(plan):
@@ -169,14 +292,14 @@ def _compile_extrema_lookup(plan):
     table = quote_identifier(plan["table"])
     select_cols = plan.get("select_columns", ["*"])
 
-    # Default to all columns if empty
-    if not select_cols:
-        select_cols = ["*"]
-
-    if select_cols != ["*"]:
-        columns = ", ".join([quote_identifier(col) for col in select_cols])
-    else:
+    # Handle case where select_cols might be string "*" instead of list ["*"]
+    if select_cols == "*" or select_cols == ["*"] or not select_cols:
         columns = "*"
+    else:
+        # Ensure select_cols is a list
+        if isinstance(select_cols, str):
+            select_cols = [select_cols]
+        columns = ", ".join([quote_identifier(col) for col in select_cols])
 
     order_by = plan.get("order_by", [])
     limit = plan.get("limit", 1)
@@ -309,10 +432,14 @@ def _compile_rank(plan):
 
     # No group_by - simple rank query
     select_columns = plan.get("select_columns", ["*"])
-    if select_columns != ["*"]:
-        columns = ", ".join([quote_identifier(col) for col in select_columns])
-    else:
+    # Handle case where select_columns might be string "*" instead of list ["*"]
+    if select_columns == "*" or select_columns == ["*"] or not select_columns:
         columns = "*"
+    else:
+        # Ensure select_columns is a list
+        if isinstance(select_columns, str):
+            select_columns = [select_columns]
+        columns = ", ".join([quote_identifier(col) for col in select_columns])
 
     order_clause = ""
     if order_by:
@@ -326,17 +453,16 @@ def _compile_list(plan):
     """Compile list/show all query"""
     table = quote_identifier(plan["table"])
 
-    # Quote column names if needed
     select_columns = plan.get("select_columns", ["*"])
 
-    # Default to all columns if empty
-    if not select_columns:
-        select_columns = ["*"]
-
-    if select_columns != ["*"]:
-        columns = ", ".join([quote_identifier(col) for col in select_columns])
-    else:
+    # Handle case where select_columns might be string "*" instead of list ["*"]
+    if select_columns == "*" or select_columns == ["*"] or not select_columns:
         columns = "*"
+    else:
+        # Ensure select_columns is a list
+        if isinstance(select_columns, str):
+            select_columns = [select_columns]
+        columns = ", ".join([quote_identifier(col) for col in select_columns])
 
     limit = plan.get("limit", 100)
 

@@ -35,28 +35,30 @@ export interface ChatTab {
   };
 }
 
+// Filter condition type
+export interface FilterCondition {
+  column: string;
+  operator: '=' | '>' | '<' | '>=' | '<=' | '!=' | 'LIKE';
+  value: string | number | boolean | null;
+}
+
+// Order by specification - backend uses [column, direction] tuples
+export type OrderBySpec = [string, 'ASC' | 'DESC'];
+
 // Backend-aligned Query Plan Schema (from plan_schema.json)
 export interface QueryPlan {
   query_type: 'metric' | 'lookup' | 'filter' | 'extrema_lookup' | 'rank' | 'list' | 'aggregation_on_subset';
   table: string;
   select_columns?: string[] | null;
   metrics?: string[] | null;
-  filters?: {
-    column: string;
-    operator: '=' | '>' | '<' | '>=' | '<=' | '!=' | 'LIKE';
-    value: any;
-  }[];
+  filters?: FilterCondition[];
   group_by?: string[];
-  order_by?: {
-    column: string;
-    direction: 'ASC' | 'DESC';
-  }[]; // The backend is actually array of arrays [[col, dir], ...], but frontend usually simplifies. 
-  // UPDATE: Backend schema says: Items: [string, string("ASC"|"DESC")]
+  order_by?: OrderBySpec[];
   limit?: number;
   aggregation_function?: string;
   aggregation_column?: string | null;
-  subset_filters?: any[];
-  subset_order_by?: any[];
+  subset_filters?: FilterCondition[];
+  subset_order_by?: OrderBySpec[];
   subset_limit?: number | null;
 }
 
@@ -82,4 +84,60 @@ export interface AuthState {
 
 export interface AppConfig {
   googleSheetUrl: string | null;
+}
+
+// API Response Types
+export interface LoadDataResponse {
+  success: boolean;
+  stats?: {
+    totalTables: number;
+    totalRecords: number;
+    sheetCount: number;
+    sheets: string[];
+    detectedTables: DetectedTable[];
+    profiledTables?: number;
+    loadedSpreadsheets?: string[];  // List of all loaded spreadsheet IDs (for multi-spreadsheet support)
+  };
+  error?: string;
+  data_summary?: string;
+  total_tables?: number;
+  total_sheets?: number;
+}
+
+export interface ProcessQueryResponse {
+  success: boolean;
+  explanation?: string;
+  data?: Record<string, unknown>[];
+  plan?: QueryPlan;
+  schema_context?: { text: string }[];
+  data_refreshed?: boolean;
+  error?: string;
+  is_greeting?: boolean;
+  is_memory_storage?: boolean;
+  table_used?: string;
+  routing_confidence?: number;
+  was_followup?: boolean;
+  entities_extracted?: Record<string, unknown>;
+  healing_attempts?: { attempt: number; error: string; fix: string }[];
+}
+
+export interface DatasetStatusResponse {
+  loaded: boolean;
+  demo_mode: boolean;
+  total_tables?: number;
+  tables?: string[];
+  error?: string;
+}
+
+export interface HealthCheckResponse {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  version: string;
+  checks: {
+    [key: string]: {
+      status: 'ok' | 'warning' | 'error';
+      message?: string;
+      [key: string]: unknown;
+    };
+  };
 }

@@ -78,8 +78,9 @@ class EntityExtractor:
 
     # Fallback categories (used if not learned from profiles)
     # Includes common Freshggies product categories
+    # NOTE: "sales" is NOT a category - it's a metric! Do not add it here.
     _DEFAULT_CATEGORIES: Set[str] = {
-        'sales', 'orders', 'products', 'customers',
+        'orders', 'products', 'customers',
         # Freshggies categories
         'fresh cut vegetables', 'fresh cut fruits', 'leafy greens',
         'exotic vegetables', 'salad mixes', 'ready to cook',
@@ -238,6 +239,41 @@ class EntityExtractor:
         'trend from', 'trend over', 'trend across'
     ]
 
+    # Trend analysis keywords - indicates user wants trend/pattern analysis
+    TREND_ANALYSIS_TERMS = [
+        'trend', 'trends', 'trending', 'pattern', 'patterns',
+        'how does', 'how did', 'how has', 'how is',
+        'change over', 'changes over', 'changed over',
+        'observed', 'can be observed', 'observation',
+        'movement', 'direction', 'going up', 'going down',
+        'increasing', 'decreasing', 'growing', 'declining',
+        'fluctuation', 'variation', 'volatility',
+        'போக்கு', 'மாற்றம்', 'எப்படி உள்ளது'  # Tamil: trend, change, how is it
+    ]
+
+    # Summary/overview keywords - indicates user wants high-level summary
+    SUMMARY_TERMS = [
+        'summary', 'summarize', 'summarise', 'overview', 'high-level',
+        'high level', 'overall picture', 'big picture', 'snapshot',
+        'business summary', 'executive summary', 'key insights',
+        'main points', 'highlights', 'takeaways', 'key findings',
+        'at a glance', 'quick summary', 'brief overview',
+        'சுருக்கம்', 'முக்கிய அம்சங்கள்'  # Tamil: summary, key points
+    ]
+
+    # Impact/correlation keywords - indicates user wants to understand relationships
+    IMPACT_ANALYSIS_TERMS = [
+        'affects', 'affect', 'affecting', 'affected',
+        'impacts', 'impact', 'impacting', 'impacted',
+        'influences', 'influence', 'influencing',
+        'factor', 'factors', 'driver', 'drivers',
+        'correlate', 'correlation', 'relationship',
+        'depends on', 'dependent on', 'related to',
+        'contributes to', 'contribution', 'effect on',
+        'what causes', 'why is', 'reason for',
+        'பாதிக்கிறது', 'காரணம்'  # Tamil: affects, reason
+    ]
+
     def extract(self, question: str) -> Dict[str, Any]:
         """
         Extract all entities from a question.
@@ -269,6 +305,10 @@ class EntityExtractor:
             'explicit_table': self._extract_explicit_table(question),
             'date_specific': self._extract_specific_date(q_lower),
             'custom_entities': self._extract_custom_entities(q_lower),
+            # Analytical intent detection
+            'trend_intent': self._is_trend_query(q_lower),
+            'summary_intent': self._is_summary_query(q_lower),
+            'impact_intent': self._is_impact_query(q_lower),
             'raw_question': question
         }
 
@@ -314,10 +354,22 @@ class EntityExtractor:
                 return metric
         return None
 
+    # Metric keywords that should NEVER be extracted as categories
+    # Even if they accidentally appear in learned categories
+    METRIC_EXCLUSIONS = {
+        'sales', 'revenue', 'profit', 'cost', 'expense', 'margin',
+        'orders', 'transactions', 'quantity', 'units', 'items',
+        'discount', 'tax', 'gst', 'subtotal', 'shipping', 'aov',
+        'total', 'average', 'count', 'sum', 'net', 'gross'
+    }
+
     def _extract_category(self, text_lower: str, original: str) -> Optional[str]:
         """
         Extract product category from text.
         Checks quoted terms first, then known categories.
+
+        IMPORTANT: Excludes metric keywords (sales, revenue, etc.) from being
+        extracted as categories to avoid confusion like "Sarees" vs "sales".
         """
         # Check for double-quoted terms
         double_quoted = re.findall(r'"([^"]+)"', original)
@@ -329,13 +381,27 @@ class EntityExtractor:
         if single_quoted:
             return single_quoted[0]
 
-        # Check known categories
+        # Collect all matching categories with their position and length
+        matches = []
         for cat in self.CATEGORIES:
-            pattern = r'\b' + re.escape(cat) + r'\b'
-            if re.search(pattern, text_lower):
-                return cat.title()
+            # Skip if this is a metric keyword (not a real product category)
+            if cat.lower() in self.METRIC_EXCLUSIONS:
+                continue
 
-        return None
+            pattern = r'\b' + re.escape(cat) + r'\b'
+            match = re.search(pattern, text_lower)
+            if match:
+                matches.append((cat, len(cat), match.start()))
+
+        if not matches:
+            return None
+
+        # Sort by: 1) Length descending (longer = more specific)
+        #          2) Position ascending (earlier in text = more likely intended)
+        # This ensures "Sarees" beats "sales" and earlier mentions win ties
+        matches.sort(key=lambda x: (-x[1], x[2]))
+
+        return matches[0][0].title()
 
     def _extract_location(self, text: str) -> Optional[str]:
         """Extract location/city from text"""
@@ -559,6 +625,39 @@ class EntityExtractor:
                     break  # Only one match per entity type
         return found
 
+    def _is_trend_query(self, text: str) -> bool:
+        """
+        Check if question is asking for trend/pattern analysis.
+
+        Examples:
+        - "What trends can be observed in sales over time?"
+        - "How did sales trend last month?"
+        - "காலப்போக்கில் sales trend எப்படி உள்ளது?"
+        """
+        return any(term in text for term in self.TREND_ANALYSIS_TERMS)
+
+    def _is_summary_query(self, text: str) -> bool:
+        """
+        Check if question is asking for a high-level summary/overview.
+
+        Examples:
+        - "Give a high-level business summary"
+        - "What's the overall picture?"
+        - "இந்த dataset-க்கு ஒரு summary கொடு"
+        """
+        return any(term in text for term in self.SUMMARY_TERMS)
+
+    def _is_impact_query(self, text: str) -> bool:
+        """
+        Check if question is asking about impact/correlation analysis.
+
+        Examples:
+        - "Which factor affects profit the most?"
+        - "What impacts sales?"
+        - "Profit-ஐ அதிகமாக பாதிக்கும் காரணி எது?"
+        """
+        return any(term in text for term in self.IMPACT_ANALYSIS_TERMS)
+
     def is_followup_question(self, question: str, has_previous_context: bool = False) -> bool:
         """
         Detect if this is likely a follow-up question.
@@ -633,5 +732,12 @@ class EntityExtractor:
             parts.append(f"Time period: {entities['time_period']}")
         if entities.get('explicit_table'):
             parts.append(f"Explicit table: {entities['explicit_table']}")
+        # Analytical intents
+        if entities.get('trend_intent'):
+            parts.append("Intent: Trend Analysis")
+        if entities.get('summary_intent'):
+            parts.append("Intent: Summary/Overview")
+        if entities.get('impact_intent'):
+            parts.append("Intent: Impact/Correlation Analysis")
 
         return " | ".join(parts) if parts else "No entities extracted"

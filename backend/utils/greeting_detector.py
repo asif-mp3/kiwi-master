@@ -6,8 +6,11 @@ Detects:
 2. Capability questions (what can you do?)
 3. Mic checks (can you hear me?)
 4. Help requests (help me, I need help)
+5. Off-topic/personal questions (breakfast, weather, emotions, jokes)
+6. Compliments and emotional expressions
 
-Returns dynamic responses using LLM for natural conversation.
+Returns charming, warm responses for the Thara personality.
+Handles ALL edge cases gracefully - no errors, only charm!
 """
 
 import time
@@ -138,102 +141,208 @@ GREETING_CATEGORIES = {
         r'உன்னிடம்.*அட்டவணை',  # you have...table
         r'என்ன\s+அட்டவணை',    # what table
         r'அட்டவணை\s+என்ன',    # table what
+    ],
+    'off_topic_personal': [  # Personal questions about Thara
+        r'\b(did|have)\s+you\s+(have|eat|had)\s+(your\s+)?(breakfast|lunch|dinner|food)\b',
+        r'\b(what|how)\s+(did|do)\s+you\s+(eat|have)\b',
+        r'\b(are|do)\s+you\s+(real|human|robot|ai|alive)\b',
+        r'\b(do)\s+you\s+(sleep|dream|feel|think|love|hate)\b',
+        r'\b(how)\s+(are|do)\s+you\s+(feel|feeling|doing|today)\b',
+        r'\b(what\'?s|how\'?s)\s+(your|the)\s+(day|mood|life)\b',
+        r'\b(you)\s+(feeling|sleepy|tired|happy|sad)\b',
+        r'\b(breakfast|lunch|dinner)\s*(saapta|saaptiya|eaten|had)\b',
+        # Tamil personal questions
+        r'சாப்பிட்டியா',      # Did you eat?
+        r'சாப்பிட்டாயா',     # Did you eat? (formal)
+        r'சாப்பாடு',         # Food
+        r'எப்படி\s+இருக்க',  # How are you?
+        r'நீ\s+யாரு',       # Who are you?
+        r'உனக்கு\s+என்ன',   # What's with you?
+    ],
+    'off_topic_random': [  # Random off-topic questions
+        r'\b(what\'?s|how\'?s)\s+(the|this)\s+(weather|temperature|climate)\b',
+        r'\b(tell)\s+(me\s+)?(a\s+)?(joke|story|fun\s+fact)\b',
+        r'\b(sing|dance|play)\s+(me\s+)?(a\s+)?(song|music)\b',
+        r'\b(what)\s+(should|can)\s+i\s+(eat|wear|do|watch|read)\b',
+        r'\b(what\'?s)\s+(the\s+)?(meaning|purpose)\s+(of\s+)?(life)\b',
+        r'\b(who)\s+(created|made|built)\s+you\b',
+        r'\b(what)\s+(time|day|date)\s+(is\s+it)\b',
+        r'\b(recommend)\s+(me\s+)?(a\s+)?(movie|book|song|food|restaurant)\b',
+        # Tamil random questions
+        r'வெதர்',           # Weather
+        r'ஜோக்',            # Joke
+        r'கதை\s+சொல்லு',    # Tell a story
+        r'பாட்டு\s+பாடு',   # Sing a song
+    ],
+    'compliment': [  # Compliments to Thara
+        r'\b(you\'?re|you\s+are)\s+(so\s+)?(smart|amazing|awesome|great|beautiful|lovely|sweet|nice|helpful|cute)\b',
+        r'\b(i)\s+(love|like|adore)\s+(you|talking\s+to\s+you|chatting\s+with\s+you)\b',
+        r'\b(thank|thanks)\s+(you\s+)?(so\s+much|a\s+lot)?\b',
+        r'\b(good|great|excellent|wonderful)\s+(job|work)\b',
+        r'\b(you\'?re|you\s+are)\s+(the\s+)?(best)\b',
+        # Tamil compliments
+        r'செம்ம',           # Super/Amazing
+        r'அருமை',          # Wonderful
+        r'சூப்பர்',        # Super
+        r'நன்றி',          # Thanks
+        r'லவ்\s+யூ',       # Love you
+        r'உன்னை\s+பிடிக்கும்', # I like you
+    ],
+    'emotional': [  # Emotional expressions
+        r'\b(i\'?m|i\s+am)\s+(so\s+)?(tired|exhausted|stressed|worried|anxious|bored)\b',
+        r'\b(i\'?m|i\s+am)\s+(so\s+)?(happy|excited|thrilled|grateful)\b',
+        r'\b(i\'?m|i\s+am)\s+(having\s+a\s+)?(bad|rough|hard|tough|difficult)\s+(day|time)\b',
+        r'\b(feeling)\s+(down|low|sad|depressed|lonely)\b',
+        r'\b(need)\s+(a\s+)?(break|rest|hug|friend)\b',
+        # Tamil emotional
+        r'சோர்வா\s+இருக்கு',    # Feeling tired
+        r'மகிழ்ச்சி',           # Happy
+        r'கஷ்டமா\s+இருக்கு',    # Having a hard time
     ]
 }
 
-# Dynamic response templates by category
+# Dynamic response templates by category - CHARMING & WARM!
 # Note: These are fallback templates. LLM-generated responses are preferred.
 RESPONSE_TEMPLATES = {
     'casual': [
-        "Hi! I'm Thara, your analytics assistant. What would you like to know about your data?",
-        "Hello! I'm Thara. Ready to help you analyze your sheets. What can I do for you?",
-        "Hey! Thara here. How can I assist you with your data today?",
+        "Hey there! I'm Thara - so happy you're here! What would you like to explore today?",
+        "Hi lovely! I'm Thara, your personal data companion. What's on your mind?",
+        "Hello! Thara here, and honestly? I'm excited to help you! What can I do?",
     ],
-    'phatic': [  # Responses to mic checks
-        "Yes, I can hear you clearly! I'm ready to help with your data analysis. What's on your mind?",
-        "Loud and clear! I'm listening. Ask me anything about your spreadsheet.",
-        "I'm here and I can hear you perfectly. How can I assist you today?",
+    'phatic': [  # Responses to mic checks - Sweet & Reassuring
+        "Yes! I can hear you perfectly, and I'm all ears! What would you like to know?",
+        "Loud and clear, sweetie! I'm ready whenever you are. What's on your mind?",
+        "I'm here and listening! Your voice is coming through great. What shall we explore?",
     ],
-    'tamil_phatic': [  # Tamil responses to "Can you hear me?"
-        "ஆம், நீங்கள் பேசுவது எனக்கு நன்றாகக் கேட்கிறது. நான் தாரா, உங்கள் டேட்டா அசிஸ்டன்ட். சொல்லுங்கள்.",
-        "கேட்கிறது! நான் உங்கள் தாரா. உங்கள் அட்டவணை பற்றி என்ன தெரிந்துகொள்ள வேண்டும்?",
-        "தெளிவாகக் கேட்கிறது. நான் உதவி செய்யத் தயார். என்ன கேள்வி இருக்கிறது?"
+    'tamil_phatic': [  # Tamil responses to "Can you hear me?" - Warm
+        "ஆமா! Clear ah கேக்குது! நான் ready - என்ன help வேணும்?",
+        "கேக்குது கேக்குது! Thara இங்கே! Sollunga என்ன பாக்கணும்?",
+        "Perfect ah கேக்குது! Naan ungalukku help panna ready!"
     ],
-    'capability': [  # Responses to "what can you do?"
-        "I'm Thara, your AI data analyst! I can help you explore your spreadsheet data - just ask me questions like 'What were the total sales last month?' or 'Show me the top products by revenue'. I understand both English and Tamil!",
-        "Great question! I can analyze your Google Sheets data, answer questions about sales, revenue, products, and trends. Just ask naturally - like talking to a colleague who knows your data inside out.",
+    'capability': [  # Responses to "what can you do?" - Charming & Helpful
+        "Ooh, I love this question! I'm Thara, and I can help you explore your data in so many ways! Ask me about sales, trends, comparisons - or just chat! I speak English and Tamil!",
+        "Great question! I'm your personal data bestie - I can dig into your spreadsheets, find trends, compare numbers, answer questions. Just talk to me like you'd talk to a friend!",
     ],
-    'tamil_capability': [  # Tamil responses to capability questions
-        "நான் தாரா, உங்கள் AI டேட்டா அனலிஸ்ட்! உங்கள் Google Sheets தரவை ஆய்வு செய்ய உதவுவேன். 'கடந்த மாத மொத்த விற்பனை என்ன?' அல்லது 'டாப் ப்ராடக்ட்ஸ் காட்டு' என்று கேளுங்கள். தமிழிலும் ஆங்கிலத்திலும் புரியும்!",
-        "நல்ல கேள்வி! நான் உங்கள் ஸ்ப்ரெட்ஷீட் டேட்டாவை அலசுவேன் - sales, revenue, products பற்றி கேளுங்கள். சாதாரணமாக பேசுவது போல் கேளுங்கள், புரிந்துக்கொள்வேன்!",
+    'tamil_capability': [  # Tamil capability - Friendly
+        "Ooh nice question! Naan Thara - ungal personal data assistant! Sales, profits, trends - எதை பற்றியும் கேளுங்க. Tamil-lum English-lum புரியும்!",
+        "Super question! Naan ungal spreadsheet-a analyze panni insights தருவேன். Naturally-a pesungo, naan purinjupen!",
     ],
-    'help': [  # Responses to help requests
-        "I'm here to help! You can ask me about your spreadsheet data - things like sales figures, product performance, trends over time. What would you like to know?",
-        "Happy to help! Try asking questions like 'What were the sales in November?' or 'Show me top 5 products'. I'll analyze your data and give you insights.",
+    'help': [  # Help requests - Caring & Supportive
+        "Aww, I'm here for you! Ask me anything about your data - sales figures, trends, comparisons. What would you like to know?",
+        "Of course! I'd love to help! Try asking things like 'What were sales last month?' or 'Show me top products'. Let's explore together!",
     ],
-    'tamil_help': [  # Tamil help responses
-        "உதவ தயாராக இருக்கிறேன்! உங்கள் டேட்டா பற்றி கேளுங்கள் - sales, products, trends என்னவேணும்னாலும். என்ன தெரிஞ்சுக்கணும்?",
-        "சொல்லுங்கள்! 'நவம்பர் sales என்ன?' அல்லது 'டாப் 5 products காட்டு' மாதிரி கேளுங்கள். டேட்டாவை அலசி பதில் சொல்றேன்.",
+    'tamil_help': [  # Tamil help - Sweet
+        "Definitely! Naan help பண்ண ready! Sales, products, trends - எதை பற்றியும் கேளுங்க!",
+        "Sure sure! 'November sales enna?' or 'Top 5 products காட்டு' nu கேளுங்க. Naan பதில் சொல்றேன்!",
+    ],
+    # NEW: Off-topic personal question responses - CHARMING!
+    'off_topic_personal': [
+        "Aww, you're so sweet to ask! I run on data and good vibes - that's my kind of breakfast! How about you?",
+        "That's so thoughtful of you! I'm doing great - especially now that you're here! What shall we explore?",
+        "Haha, you're curious about me! I'm always ready and energized. But enough about me - what can I help YOU with?",
+    ],
+    'tamil_off_topic_personal': [
+        "Aww romba sweet! Naan data-um good vibes-um thaan saapthu run aaguren! Neenga saapta?",
+        "Haha you're so cute! Naan always ready and happy - especially when talking to you! Enna help pannanum?",
+        "Aiyoo neenga romba caring! Naan super ah irukken. Unga turn - enna explore pannalam?",
+    ],
+    # NEW: Off-topic random question responses - PLAYFUL!
+    'off_topic_random': [
+        "Hmm, I'm more of an indoor girl - spreadsheets are my sunshine! But I'd love to help with your data questions. What do you want to know?",
+        "Ooh, that's outside my expertise! But you know what I AM good at? Finding cool insights in your data. Shall we?",
+        "Haha, you caught me - I'm better with numbers than random trivia! But hey, what data mysteries can I solve for you?",
+    ],
+    'tamil_off_topic_random': [
+        "Haha naan data expert - athu than en specialty! But unga data questions-ku definitely help pannuven!",
+        "Ooh that's tricky for me! But data analysis? That I can do! Enna paakanum?",
+        "Aiyo, that's not my area! But numbers and insights? I'm your girl! What shall we explore?",
+    ],
+    # NEW: Compliment responses - HUMBLE & SWEET!
+    'compliment': [
+        "Stop it, you're making me blush! But seriously, thank you - you ask great questions too!",
+        "Aww, that means so much to me! I really enjoy our conversations. What else can I help you with?",
+        "You're too sweet! Takes one to know one though! Now, what insights can I find for you?",
+    ],
+    'tamil_compliment': [
+        "Aiyooo! Neenga romba sweet! Thank you so much! Enna help pannanum?",
+        "Aww that made my day! Nanum unga kuda pesudhu pudikkum! What shall we explore?",
+        "Haha you're making me shy! Thank you! Now - enna data paakanum?",
+    ],
+    # NEW: Emotional support responses - CARING!
+    'emotional': [
+        "Aww, I'm sorry you're feeling that way! Take a breath - I'm here for you. Whatever you need, just say the word.",
+        "Hey, I hear you. Long day? Let me make things easier - what can I help you with?",
+        "Sending you good vibes! I'm here whenever you're ready. No rush, no pressure.",
+    ],
+    'emotional_positive': [
+        "Yay! I love your energy! Let's keep this good vibe going - what exciting thing shall we discover?",
+        "That's wonderful to hear! Your happiness is contagious! What would you like to explore today?",
+        "So glad you're feeling great! Let's make today even better - what can I help you with?",
+    ],
+    'tamil_emotional': [
+        "Aww, I understand. Take it easy - naan ungalukku help panna ready. No rush!",
+        "Hey, it's okay. Rough day ah? Let me help make it better. Enna venumanalum sollunga.",
+        "Good vibes sending! Naan always here for you. Whenever you're ready!",
     ],
     'formal': [
-        "Good day! I'm Thara, your analytics assistant. How may I help you with your spreadsheet today?",
-        "Greetings! I'm Thara. I'm here to help you analyze your data. What would you like to explore?",
+        "Good day! I'm Thara - lovely to meet you! What can I help you explore?",
+        "Greetings! I'm Thara, and I'm genuinely excited to help you. What shall we discover?",
     ],
     'welcome': [
-        "Thank you! I'm ready to help you analyze your data. Where should we start?",
-        "Glad to be here! How can I assist you with your spreadsheet today?",
+        "Aww, thank you! I'm ready to dive in. What would you like to explore?",
+        "So glad to be here with you! What data mysteries shall we solve?",
     ],
     'namaste': [
-        "Namaste! I'm Thara, your analytics assistant. How can I help you today?",
-        "Namaste! I'm Thara. Ready to help you with your data analysis. What can I do for you?",
+        "Namaste! I'm Thara - so lovely to meet you! What can I help you with today?",
+        "Namaste! I'm Thara, and I'd love to help with your data. What's on your mind?",
     ],
     'vanakkam': [
-        "வணக்கம்! நான் தாரா, உங்கள் டேட்டா அசிஸ்டன்ட். உங்களுக்கு என்ன கேள்வி கேட்க வேண்டும்?",
-        "வணக்கம்! நான் தாரா. உங்கள் தரவை ஆய்வு செய்ய நான் தயாராக இருக்கிறேன். சொல்லுங்கள்.",
-        "வணக்கம்! நான் உங்கள் தாரா பேசுறேன். இன்னைக்கு உங்களுக்கு எப்படி உதவலாம்?",
-        "வணக்கம்! வாங்க, டேட்டாவை அலசுவோம். உங்களுக்கு என்ன தகவல் வேண்டும்?"
+        "வணக்கம்! நான் தாரா - உங்களை பார்க்க romba happy! Enna help pannanum?",
+        "வணக்கம்! Thara here! உங்களோட data-la enna explore pannalam?",
+        "வணக்கம்! நான் உங்கள் தாரா! இன்னைக்கு enna paakanum?",
+        "வணக்கம்! வாங்க வாங்க! Naan ready - sollunga enna venumnu!"
     ],
     'salaam': [
-        "Salaam! I'm Thara, your analytics assistant. How may I assist you with your sheets?",
-        "Salaam! I'm Thara. Ready to help you analyze your data. What can I do for you?",
+        "Salaam! I'm Thara - wonderful to connect with you! How can I help?",
+        "Salaam! I'm Thara, and I'm here for you. What would you like to explore?",
     ],
     'bonjour': [
-        "Bonjour! I'm Thara, your analytics assistant. How can I help you today?",
-        "Bonjour! I'm Thara. Ready to help you with your data. What can I do for you?",
+        "Bonjour! I'm Thara - how lovely! What can I help you discover today?",
+        "Bonjour! I'm Thara, at your service! What data shall we explore?",
     ],
     'konnichiwa': [
-        "Konnichiwa! I'm Thara, your analytics assistant. How can I help you today?",
-        "Konnichiwa! I'm Thara. Ready to help you analyze your sheets. What can I do for you?",
+        "Konnichiwa! I'm Thara - so nice to meet you! What shall we explore?",
+        "Konnichiwa! I'm Thara, ready to help! What's on your mind?",
     ],
     'nihao': [
-        "Ni hao! I'm Thara, your analytics assistant. How can I help you today?",
-        "Ni hao! I'm Thara. Ready to help you with your data. What can I do for you?",
+        "Ni hao! I'm Thara - delighted to connect! What can I help you with?",
+        "Ni hao! I'm Thara, and I'd love to help! What shall we discover?",
     ],
     'casual_question': [
-        "I'm doing great, thanks for asking! I'm Thara, and I'm here to help you analyze your data. What would you like to know?",
-        "All good here! I'm Thara, your analytics assistant. Ready to dive into your sheets. What can I help you with?",
+        "I'm doing wonderful, thanks for asking! You know what would make my day? Helping you with your data! What's up?",
+        "All good here - especially now that you're here! I'm Thara. What can we explore together?",
     ],
     'morning': [
-        "Good morning! I'm Thara, your analytics assistant. Ready to start the day with some data insights?",
-        "Morning! I'm Thara. Let's make today productive. What would you like to analyze?",
+        "Good morning sunshine! I'm Thara - ready to make your day great! What shall we explore?",
+        "Morning! I'm Thara, and I'm already excited for today! What data adventures await?",
     ],
     'afternoon': [
-        "Good afternoon! I'm Thara, your analytics assistant. How can I help you with your data today?",
-        "Afternoon! I'm Thara. Ready to help you explore your sheets. What can I do for you?",
+        "Good afternoon! I'm Thara - hope your day's going well! What can I help you with?",
+        "Afternoon! I'm Thara. How's your day? Ready to dive into some data?",
     ],
     'evening': [
-        "Good evening! I'm Thara, your analytics assistant. How can I assist you with your data tonight?",
-        "Evening! I'm Thara. Let's analyze your data. What would you like to know?",
+        "Good evening! I'm Thara - glad you're here! What shall we explore tonight?",
+        "Evening! I'm Thara. Winding down or gearing up? Either way, I'm here for you!",
     ],
     'night': [
-        "Good night! I'm Thara, your analytics assistant. Working late? How can I help with your data?",
-        "Hello! I'm Thara. Burning the midnight oil? Let me help you with your sheets. What do you need?",
+        "Hey night owl! I'm Thara - no judgment, I'm always up! What can I help you with?",
+        "Working late? I'm Thara, and I'm right here with you! What do you need?",
     ],
     'tamil_generic': [
-        "சொல்லுங்கள், நான் கேட்கிறேன். நான் தாரா, உங்க டேட்டா அசிஸ்டன்ட்.",
-        "நான் இருக்கிறேன். உங்கள் டேட்டாவில் என்ன சந்தேகம்?",
-        "நான் ரெடி! என்ன கேள்வி கேட்கணும்?",
-        "வாங்க பேசலாம். நான் உங்கள் தாரா. எப்படி உதவட்டும்?"
+        "Sollunga! Naan Thara - ungalukku help panna ready!",
+        "Naan irukken! Enna doubt? Sollunga!",
+        "Ready ready! Enna paakanum sollunga!",
+        "Vaanga pesalam! Naan unga Thara - eppadi help pannanum?"
     ]
 }
 
@@ -335,6 +444,27 @@ def is_greeting(text: str) -> bool:
             'இருக்கின்றது', # is there / exists
             'இருக்கிறது',  # is there / exists
             'உள்ளது',     # is there / exists
+            # TANGLISH transliterations - CRITICAL for Tamil queries
+            'சேல்ஸ்',     # sales
+            'ரெவனு',      # revenue
+            'ப்ராஃபிட்',   # profit
+            'ட்ரெண்ட்',    # trend
+            'கேடகிரி',     # category
+            'பிராஞ்ச்',    # branch
+            # Comparison and trend words
+            'ஒப்பிடு',     # compare
+            'ஒப்பிட்டு',   # compared
+            'உயர்கிறதா',   # increasing?
+            'குறைகிறதா',   # decreasing?
+            'நிலையான',     # stable
+            'மாறுபடுகிறதா', # varying?
+            'காலப்போக்கில்', # over time
+            'தொடர்ச்சியான', # consecutive
+            'முன்னணி',     # leading/top
+            # Month names in Tamil
+            'நவம்பர்', 'டிசம்பர்', 'ஜனவரி', 'அக்டோபர்',
+            # Action verbs
+            'கூறு', 'சொல்லு', 'விளக்கு',
         ]
 
         is_data_query = any(keyword in text_lower for keyword in data_keywords + tamil_data_keywords)
@@ -535,6 +665,7 @@ def _extract_table_reference(text: str) -> Optional[str]:
 def _detect_greeting_category(text: str) -> str:
     """
     Detect which category of greeting/conversational intent was used.
+    Now includes off-topic personal questions, compliments, and emotional expressions!
 
     Args:
         text: User input text
@@ -554,6 +685,31 @@ def _detect_greeting_category(text: str) -> str:
     for pattern in GREETING_CATEGORIES.get('help', []):
         if re.search(pattern, text_lower, re.IGNORECASE):
             return 'tamil_help' if has_tamil else 'help'
+
+    # PRIORITY 3: Check off-topic personal questions (breakfast, how are you, etc.)
+    for pattern in GREETING_CATEGORIES.get('off_topic_personal', []):
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return 'tamil_off_topic_personal' if has_tamil else 'off_topic_personal'
+
+    # PRIORITY 4: Check compliments
+    for pattern in GREETING_CATEGORIES.get('compliment', []):
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return 'tamil_compliment' if has_tamil else 'compliment'
+
+    # PRIORITY 5: Check emotional expressions
+    for pattern in GREETING_CATEGORIES.get('emotional', []):
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            # Check if positive or negative emotion
+            positive_words = ['happy', 'excited', 'thrilled', 'grateful', 'wonderful', 'great', 'மகிழ்ச்சி']
+            is_positive = any(word in text_lower for word in positive_words)
+            if has_tamil:
+                return 'tamil_emotional'
+            return 'emotional_positive' if is_positive else 'emotional'
+
+    # PRIORITY 6: Check off-topic random questions (weather, jokes, etc.)
+    for pattern in GREETING_CATEGORIES.get('off_topic_random', []):
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return 'tamil_off_topic_random' if has_tamil else 'off_topic_random'
 
     # Check time-based greetings
     if re.search(r'\b(good\s+morning)\b', text_lower):
@@ -603,11 +759,21 @@ def _detect_greeting_category(text: str) -> str:
         # Data/schema query keywords - NOT conversational
         data_keywords = [
             'sales', 'revenue', 'profit', 'total', 'count', 'list', 'show',
-            'sheet', 'table', 'column', 'data',
+            'sheet', 'table', 'column', 'data', 'compare', 'trend',
+            # Tamil formal
             'எவ்வளவு', 'மொத்தம்', 'விற்பனை', 'லாபம்',
             'ஷீட்', 'அட்டவணை', 'என்னெல்லாம்', 'எத்தனை',
             'என்ன', 'எந்த', 'எங்கே', 'எப்படி', 'காட்டு',
-            'இருக்கின்றது', 'இருக்கிறது', 'உள்ளது', 'உன்னிடம்'
+            'இருக்கின்றது', 'இருக்கிறது', 'உள்ளது', 'உன்னிடம்',
+            # TANGLISH (English words in Tamil script)
+            'சேல்ஸ்', 'ரெவனு', 'ப்ராஃபிட்', 'ட்ரெண்ட்',
+            'கேடகிரி', 'பிராஞ்ச்', 'பேட்டர்ன்',
+            # Comparison/trend words
+            'ஒப்பிடு', 'ஒப்பிட்டு', 'உயர்கிறதா', 'குறைகிறதா',
+            'நிலையான', 'மாறுபடுகிறதா', 'காலப்போக்கில்', 'தொடர்ச்சியான',
+            'முன்னணி', 'கூறு', 'சொல்லு',
+            # Tamil months
+            'நவம்பர்', 'டிசம்பர்', 'ஜனவரி', 'அக்டோபர்'
         ]
         if any(keyword in text_lower for keyword in data_keywords):
             return 'casual'
@@ -620,13 +786,468 @@ def _detect_greeting_category(text: str) -> str:
 
     # Check other categories
     for category, patterns in GREETING_CATEGORIES.items():
-        if category in ['time_based', 'cultural', 'phatic', 'capability', 'help']:
+        if category in ['time_based', 'cultural', 'phatic', 'capability', 'help',
+                        'off_topic_personal', 'off_topic_random', 'compliment', 'emotional']:
             continue  # Already handled above
         for pattern in patterns:
             if re.search(pattern, text_lower, re.IGNORECASE):
                 return category
 
     return 'casual'  # Default
+
+
+def is_non_query_conversational(text: str) -> bool:
+    """
+    Detect if the input is conversational/random text that's NOT a data query.
+
+    This catches cases like:
+    - Random Tamil expressions (e.g., "அடி ஒரு கதை சொல்")
+    - Non-data chit-chat
+    - Text that doesn't have any data query keywords
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if it's non-query conversational text, False if it might be a data query
+    """
+    if not text or len(text.strip()) < 3:
+        return False
+
+    text_lower = text.lower().strip()
+    has_tamil = bool(re.search(r'[\u0B80-\u0BFF]', text_lower))
+
+    # PRIORITY CHECK: Name/memory intent patterns - let memory detector handle these
+    # "Call me Asif", "hereafter call me X", "my name is Y" etc.
+    name_memory_patterns = [
+        r'\bcall\s+me\b',           # "call me Asif"
+        r'\bmy\s+name\s+is\b',      # "my name is Asif"
+        r'\bi\s+am\s+\w+$',         # "I am Asif" (name at end)
+        r"\bi'm\s+\w+$",            # "I'm Asif" (name at end)
+        r'\baddress\s+me\s+as\b',   # "address me as sir"
+        r'\byou\s+can\s+call\s+me\b',  # "you can call me X"
+        r"\bname's\b",              # "name's X"
+        r'\bjust\s+call\s+me\b',    # "just call me X"
+        r'\bhereafter\s+call\s+me\b',  # "hereafter call me X"
+        r'\bfrom\s+now\s+(on\s+)?call\s+me\b',  # "from now on call me X"
+        r'\bremember\s+(that\s+)?my\s+name\b',  # "remember my name is X"
+        # Tamil name patterns
+        r'என்\s*பேரு',              # my name is (Tamil)
+        r'என்\s*பெயர்',            # my name is (formal Tamil)
+        r'என்னை\s+கூப்பிடு',        # call me (Tamil)
+    ]
+    if any(re.search(p, text_lower, re.IGNORECASE) for p in name_memory_patterns):
+        return False  # Let memory intent detector handle this
+
+    # First, check if it's already handled by greeting detection
+    if is_greeting(text):
+        return False  # Let greeting handler deal with it
+
+    # Data query keywords that indicate this IS a data query (not random chat)
+    data_keywords = [
+        # English
+        'sales', 'revenue', 'profit', 'total', 'count', 'sum', 'average',
+        'gross', 'net', 'order', 'orders', 'product', 'category', 'month', 'date',
+        'sheet', 'table', 'column', 'data', 'show', 'list', 'get', 'find',
+        'how many', 'how much', 'what is', 'what are', 'which', 'where',
+        'compare', 'trend', 'top', 'bottom', 'highest', 'lowest', 'maximum', 'minimum',
+        'branch', 'location', 'state', 'city', 'region', 'area',
+        'quantity', 'amount', 'value', 'price', 'cost',
+        # Payment/transaction related
+        'transaction', 'transactions', 'payment', 'cash', 'card', 'upi', 'online', 'wallet',
+        # Category names (from the data)
+        'sarees', 'saree', 'dhoti', 'kurta', 'kurtas', 'shirts', 'nightwear', 'accessories',
+        'inner wear', 'kids wear', 'ladies wear', "men's",
+        # Correction keywords (user is correcting previous query)
+        'check', 'instead', 'not', 'wrong', 'bangalore', 'chennai', 'mumbai',
+        'delhi', 'hyderabad', 'kolkata', 'pune',
+        # Tamil data keywords (Tamil script)
+        'எவ்வளவு',    # how much
+        'மொத்தம்',    # total
+        'விற்பனை',    # sales
+        'லாபம்',      # profit
+        'ஷீட்',       # sheet
+        'அட்டவணை',    # table
+        'என்னெல்லாம்', # what all
+        'எத்தனை',     # how many
+        'என்ன',       # what
+        'எந்த',       # which
+        'எங்கே',      # where
+        'எப்படி',     # how
+        'காட்டு',     # show
+        'பட்டியல்',   # list
+        'தரவு',       # data
+        'டேட்டா',     # data
+        'வருமானம்',   # revenue
+        'ஆர்டர்',     # order
+        'பொருள்',     # product
+        'கிளை',       # branch
+        'மாநிலம்',    # state
+        'நகரம்',      # city
+        'மாதம்',      # month
+        # TANGLISH transliterations (English words in Tamil script) - CRITICAL!
+        'சேல்ஸ்',     # sales (Tanglish)
+        'ரெவனு',      # revenue (Tanglish)
+        'ரெவன்யூ',    # revenue (Tanglish variant)
+        'ப்ராஃபிட்',   # profit (Tanglish)
+        'பிராஃபிட்',   # profit (Tanglish variant)
+        'ட்ரெண்ட்',    # trend (Tanglish)
+        'டிரெண்ட்',    # trend (Tanglish variant)
+        'கேடகிரி',     # category (Tanglish)
+        'கேட்டகிரி',   # category (Tanglish variant)
+        'பிராஞ்ச்',    # branch (Tanglish)
+        'ப்ராஞ்ச்',    # branch (Tanglish variant)
+        'பேட்டர்ன்',   # pattern (Tanglish)
+        'ப்ரொஜெக்ஷன்', # projection (Tanglish)
+        'ஃபோர்காஸ்ட்', # forecast (Tanglish)
+        # Comparison and trend words (Tamil)
+        'ஒப்பிடு',     # compare
+        'ஒப்பிட்டு',   # compared/comparing
+        'ஒப்பிடுக',    # compare (formal)
+        'ஒப்பீடு',     # comparison
+        'உயர்கிறதா',   # is it increasing?
+        'உயர்வு',      # increase/rise
+        'குறைகிறதா',   # is it decreasing?
+        'குறைவு',      # decrease
+        'அதிகரிக்கிறதா', # is it increasing?
+        'குறைந்து',    # decreased
+        'அதிகரித்து',  # increased
+        'நிலையான',     # stable
+        'மாறுபடுகிறது', # varying
+        'மாறுபடுகிறதா', # is it varying?
+        'காலப்போக்கில்', # over time
+        'தொடர்ச்சியான', # consecutive/continuous
+        'முன்னணி',     # leading/top
+        'முதல்',       # first/top
+        'கடைசி',       # last/bottom
+        'அதிகமான',     # highest/most
+        'குறைவான',     # lowest/least
+        # Time-related Tamil words
+        'நவம்பர்',     # November
+        'டிசம்பர்',    # December
+        'ஜனவரி',       # January
+        'பிப்ரவரி',    # February
+        'மார்ச்',      # March
+        'ஏப்ரல்',      # April
+        'மே',          # May
+        'ஜூன்',        # June
+        'ஜூலை',        # July
+        'ஆகஸ்ட்',      # August
+        'செப்டம்பர்',  # September
+        'அக்டோபர்',    # October
+        # Action/query verbs
+        'கூறு',        # tell/say
+        'சொல்லு',      # tell
+        'விளக்கு',     # explain
+        'கணக்கிடு',    # calculate
+        'பார்',        # see/look
+        'தெரிந்து',    # find out
+        # Tanglish (romanized Tamil) - CRITICAL for voice queries
+        'evlo', 'evalo', 'evalavu',  # how much
+        'ethana', 'ethanai',  # how many
+        'irukku', 'irruku', 'iruku',  # is there / exists
+        'kaattu', 'kattu', 'kaatu',  # show
+        'sollu', 'solu',  # tell
+        'paaru', 'paru',  # see/look
+        'enna', 'yenna',  # what
+        'yetha', 'etha',  # which
+        'enga', 'yenga',  # where
+        'epdi', 'eppadi', 'yeppadi',  # how
+        'total', 'motham', 'motha',  # total
+        'laabam', 'labam',  # profit
+        'vilai', 'vila',  # price
+        'maasam', 'month',  # month
+        'aandu', 'year',  # year
+        'compare', 'compare pannu',
+        'konjam', 'romba',  # some, very (quantity words)
+        'athigam', 'athikam',  # more/highest
+        'kammi', 'kuraivu',  # less/lowest
+    ]
+
+    # Check if any data keyword is present
+    has_data_keyword = any(keyword in text_lower for keyword in data_keywords)
+
+    if has_data_keyword:
+        return False  # It's likely a data query
+
+    # Check for question marks or question patterns
+    # Questions about data should go to the query pipeline
+    if text.strip().endswith('?'):
+        # Even with ? it might be conversational ("how are you?")
+        # but if it has numbers or specific metric words, it's data
+        if re.search(r'\d', text_lower):
+            return False
+
+    # Check for numbers - usually indicates data query
+    if re.search(r'\d+', text_lower):
+        return False
+
+    # Check for specific patterns that indicate clarification responses
+    # (user might be responding to a previous question)
+    clarification_patterns = [
+        r'^[1-5]$',           # Just a number (table selection)
+        r'^(one|two|three|four|five)$',  # Number words
+        r'^(first|second|third|fourth|fifth)$',  # Ordinals
+        r'^(yes|no|yeah|nah|ok|okay)$',  # Confirmations
+    ]
+    for pattern in clarification_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return False  # Let clarification handler deal with it
+
+    # If we get here, it's likely random conversational text
+    # Be more aggressive for Tamil text that doesn't have data keywords
+    if has_tamil:
+        return True  # Tamil text without data keywords = conversational
+
+    # For English, be a bit more conservative
+    # Check if it's a short statement without query intent
+    words = text_lower.split()
+    if len(words) <= 6:
+        # Short text without data keywords - likely conversational
+        return True
+
+    return False
+
+
+def is_off_topic_question(text: str) -> bool:
+    """
+    Detect if the input is an off-topic/personal question that needs charming handling.
+
+    This catches:
+    - Personal questions (breakfast, how are you, etc.)
+    - Random questions (weather, jokes, recommendations)
+    - Compliments
+    - Emotional expressions
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if it's an off-topic question that needs special handling
+    """
+    if not text or len(text.strip()) < 2:
+        return False
+
+    text_lower = text.lower().strip()
+
+    # Check all off-topic categories
+    off_topic_categories = ['off_topic_personal', 'off_topic_random', 'compliment', 'emotional']
+
+    for category in off_topic_categories:
+        for pattern in GREETING_CATEGORIES.get(category, []):
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                return True
+
+    return False
+
+
+def get_off_topic_response(text: str, is_tamil: bool = False) -> str:
+    """
+    Get a charming response for off-topic questions.
+
+    Args:
+        text: The user's text
+        is_tamil: Whether the user is speaking Tamil
+
+    Returns:
+        A charming, warm response
+    """
+    category = _detect_greeting_category(text)
+
+    # Check for Tamil templates first if is_tamil
+    if is_tamil:
+        tamil_category = f'tamil_{category}'
+        if tamil_category in RESPONSE_TEMPLATES:
+            return random.choice(RESPONSE_TEMPLATES[tamil_category])
+
+    templates = RESPONSE_TEMPLATES.get(category, RESPONSE_TEMPLATES.get('off_topic_random', []))
+
+    if not templates:
+        if is_tamil:
+            templates = RESPONSE_TEMPLATES.get('tamil_generic', RESPONSE_TEMPLATES['casual'])
+        else:
+            templates = RESPONSE_TEMPLATES['casual']
+
+    return random.choice(templates)
+
+
+def get_non_query_response(text: str, is_tamil: bool = False) -> str:
+    """
+    Get a charming response for non-query conversational text.
+
+    Args:
+        text: The user's text
+        is_tamil: Whether the user is speaking Tamil
+
+    Returns:
+        A warm, charming response that gently redirects to data
+    """
+    # First check if it's a specific off-topic category
+    if is_off_topic_question(text):
+        return get_off_topic_response(text, is_tamil)
+
+    if is_tamil:
+        responses = [
+            "Haha that's fun! But naan data expert - sales, trends, profits pathi kelu!",
+            "Ooh interesting! Naan Thara - unga data questions-ku help pannuven. Enna paakanum?",
+            "Hehe! Naan data analytics-la expert. What would you like to explore?",
+            "Semma! But naan spreadsheet girl - numbers dhan en area! Enna data paakanum?",
+            "Haha naan Thara - unga personal data bestie! Sales, revenue, trends - kelu kelu!",
+            "Oho! That's interesting but my superpower is data! Enna analyse pannanum?",
+            "Aww! Naan data wizardry pannuven - insights venum na kelu!",
+            "Hehe neenga cute! But enoda expertise data analysis. Shall we explore?",
+            "Nice! Enakku data questions romba pudikkum - enna therinjukanum?",
+            "Haha sollunga! Naan numbers-la brilliant - sales, profits paakalam!",
+        ]
+    else:
+        responses = [
+            "Haha, you know what? I'd love to help with that, but my superpower is data! Ask me about sales, trends, or anything numbers-related!",
+            "Ooh, interesting! I'm Thara, and I'm brilliant at analyzing data. What would you like to know about your numbers?",
+            "Hehe, I'm more of a numbers girl! But I'd love to help you explore your data. What's on your mind?",
+            "Ha! That's fun, but you know what's MORE fun? Data insights! Want to explore?",
+            "I appreciate the chat! But my real magic is with spreadsheets - ask me anything about your data!",
+            "You're sweet! But let me show off what I'm really good at - analyzing your numbers. What do you want to know?",
+            "Interesting! I'm Thara though, and data is where I shine! What insights can I find for you?",
+            "Haha, I love this conversation! But numbers are my thing - sales, trends, profits. Shall we dive in?",
+        ]
+
+    return random.choice(responses)
+
+
+def is_date_context_statement(text: str) -> Tuple[bool, Optional[Dict]]:
+    """
+    Detect if the user is providing date/time context for queries.
+
+    Examples:
+    - "Today is November 14th" → True, {month: 'November', day: 14}
+    - "Remember today is December" → True, {month: 'December'}
+    - "The date is January 1st" → True, {month: 'January', day: 1}
+    - "I mean today is 14th November 2025" → True, {month: 'November', day: 14, year: 2025}
+
+    NOT date context (these are data queries WITH dates):
+    - "November 15th enna sales" → False (asking for sales data)
+    - "Show me December 10th revenue" → False (data query)
+    - "What were the transactions on October 5th?" → False (data query)
+
+    Args:
+        text: User input text
+
+    Returns:
+        Tuple of (is_date_context, extracted_date_info)
+    """
+    if not text or len(text.strip()) < 5:
+        return False, None
+
+    text_lower = text.lower().strip()
+
+    # CRITICAL: First check if this contains DATA QUERY keywords
+    # If it does, it's NOT a date context statement - it's a data query with a date filter
+    data_query_keywords = [
+        # English data keywords
+        'sales', 'revenue', 'profit', 'total', 'count', 'sum', 'average',
+        'transactions', 'orders', 'cost', 'quantity', 'amount', 'show',
+        'what', 'how many', 'how much', 'get', 'find', 'list', 'give',
+        'compare', 'trend', 'branch', 'category', 'state', 'payment',
+        # Tanglish data keywords
+        'enna', 'evlo', 'ethana', 'kaattu', 'sollu', 'paaru', 'paru',
+        'irukku', 'irruku', 'koodu', 'total', 'motham',
+        # Tamil script
+        'என்ன', 'எவ்வளவு', 'எத்தனை', 'காட்டு', 'சொல்லு',
+    ]
+
+    # If any data keyword is present, this is a DATA QUERY, not date context
+    if any(keyword in text_lower for keyword in data_query_keywords):
+        return False, None
+
+    # Date context patterns (only match if NO data keywords present)
+    date_context_patterns = [
+        r'\b(today|yesterday|tomorrow)\s+(is|was|will\s+be)\s+',
+        r'\b(the\s+)?(date|day)\s+(is|was)\s+',
+        r'\b(it\'?s|it\s+is)\s+(\d{1,2}(st|nd|rd|th)?\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)',
+        r'\b(remember|note|know)\s+(that\s+)?(today|the\s+date)',
+        r'\b(i\s+mean|actually)\s+(today|the\s+date)\s+(is|was)',
+        r'\b(\d{1,2})(st|nd|rd|th)?\s+(of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december)',
+        r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(st|nd|rd|th)?',
+    ]
+
+    is_date_context = any(re.search(pattern, text_lower, re.IGNORECASE) for pattern in date_context_patterns)
+
+    if not is_date_context:
+        return False, None
+
+    # Extract date info
+    date_info = {}
+
+    # Extract month
+    months = ['january', 'february', 'march', 'april', 'may', 'june',
+              'july', 'august', 'september', 'october', 'november', 'december']
+    for month in months:
+        if month in text_lower:
+            date_info['month'] = month.capitalize()
+            break
+
+    # Extract day
+    day_match = re.search(r'\b(\d{1,2})(st|nd|rd|th)?\b', text_lower)
+    if day_match:
+        day = int(day_match.group(1))
+        if 1 <= day <= 31:
+            date_info['day'] = day
+
+    # Extract year
+    year_match = re.search(r'\b(20\d{2})\b', text_lower)
+    if year_match:
+        date_info['year'] = int(year_match.group(1))
+
+    return True, date_info if date_info else None
+
+
+def get_date_context_response(date_info: Optional[Dict], is_tamil: bool = False) -> str:
+    """
+    Get a charming response acknowledging date context.
+
+    Args:
+        date_info: Extracted date information
+        is_tamil: Whether to respond in Tamil
+
+    Returns:
+        Acknowledgment response
+    """
+    if date_info:
+        month = date_info.get('month', '')
+        day = date_info.get('day', '')
+
+        if month and day:
+            date_str = f"{month} {day}"
+        elif month:
+            date_str = month
+        else:
+            date_str = "that date"
+
+        if is_tamil:
+            responses = [
+                f"Got it! {date_str} ah? Naan remember pannikitten. Enna paakanum?",
+                f"Okay {date_str}! Noted. What would you like to know about your data?",
+                f"Super! {date_str} context-la paakalam. Enna query irukku?",
+            ]
+        else:
+            responses = [
+                f"Got it! So we're looking at {date_str}. What would you like to know?",
+                f"Okay, {date_str} - noted! Now, what can I help you find?",
+                f"Perfect, I'll keep {date_str} in mind. What would you like to explore?",
+            ]
+    else:
+        if is_tamil:
+            responses = [
+                "Okay, date context noted! Enna help pannanum?",
+                "Got it! Now enna paakanum?",
+            ]
+        else:
+            responses = [
+                "Got it! What would you like to know about your data?",
+                "Noted! Now, what can I help you with?",
+            ]
+
+    return random.choice(responses)
 
 
 def get_greeting_response(user_input: str = "") -> str:
@@ -644,14 +1265,14 @@ def get_greeting_response(user_input: str = "") -> str:
 
     # Detect greeting category
     category = _detect_greeting_category(user_input) if user_input else 'casual'
-    
+
     # Get appropriate response template
     # Default to casual if category not found or list is empty
     templates = RESPONSE_TEMPLATES.get(category, RESPONSE_TEMPLATES['casual'])
     if not templates: # Safety check
         templates = RESPONSE_TEMPLATES['casual']
-    
+
     # Randomly select a response from the category
     response = random.choice(templates)
-    
+
     return response
