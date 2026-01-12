@@ -1,0 +1,67 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Credentials (NEVER include in Docker image)
+credentials/
+*.json
+!requirements*.txt
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Data files
+*.db
+*.sqlite
+*.duckdb
+data/
+snapshots/
+chroma_db/
+
+# Streamlit (not needed in production)
+.streamlit/
+
+# Large model files
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.h5
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
