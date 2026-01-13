@@ -60,6 +60,21 @@ def _build_chart_config(
     columns = list(data[0].keys())
     print(f"[Viz] Query type: {query_type}, Columns: {columns}, Rows: {len(data)}")
 
+    # Special handling for comparison queries where label IS the key
+    # Data format: [{"August": 9700000}, {"December": 10000000}]
+    if query_type == 'comparison' and len(data) >= 2:
+        chart_data = _handle_comparison_data(data, plan)
+        if chart_data:
+            colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
+            return {
+                'type': 'bar',
+                'title': _generate_title(plan, query_type),
+                'data': chart_data,
+                'xKey': 'name',
+                'yKey': 'value',
+                'colors': colors
+            }
+
     # Find the best dimension and metric columns
     dimension_col, metric_col = _detect_columns(columns, data, plan)
 
@@ -113,6 +128,48 @@ def _build_chart_config(
         'yKey': 'value',
         'colors': colors
     }
+
+
+def _handle_comparison_data(data: List[Dict], plan: Dict[str, Any]) -> Optional[List[Dict]]:
+    """Handle special comparison data format where label is the key."""
+
+    chart_data = []
+
+    # Try to get labels from analysis
+    analysis = plan.get('analysis', {})
+    labels = []
+    if analysis:
+        period_a = analysis.get('period_a_label')
+        period_b = analysis.get('period_b_label')
+        if period_a and period_b:
+            labels = [period_a, period_b]
+            values = [analysis.get('period_a_value', 0), analysis.get('period_b_value', 0)]
+            for label, value in zip(labels, values):
+                if value is not None:
+                    chart_data.append({
+                        'name': str(label),
+                        'value': round(value, 2) if isinstance(value, float) else value
+                    })
+            if len(chart_data) >= 2:
+                print(f"[Viz] Comparison from analysis: {chart_data}")
+                return chart_data
+
+    # Try extracting from data rows where format is {"Label": value}
+    for row in data:
+        if len(row) == 1:
+            # Single key-value pair: {"August": 9700000}
+            for label, value in row.items():
+                if value is not None and isinstance(value, (int, float)):
+                    chart_data.append({
+                        'name': str(label),
+                        'value': round(value, 2) if isinstance(value, float) else value
+                    })
+
+    if len(chart_data) >= 2:
+        print(f"[Viz] Comparison from single-key rows: {chart_data}")
+        return chart_data
+
+    return None
 
 
 def _detect_columns(columns: List[str], data: List[Dict], plan: Dict[str, Any]):
@@ -230,13 +287,29 @@ def _extract_labels_from_context(plan: Dict[str, Any], entities: Dict[str, Any],
             elif val:
                 labels.append(str(val))
 
-    # Check entities for comparison items
+    # Check entities for comparison items - expanded list of keys
     if entities:
-        for key in ['comparison_items', 'items', 'categories', 'products']:
+        entity_keys = [
+            'comparison_items', 'items', 'categories', 'products',
+            'month', 'months', 'time_periods', 'periods', 'dates',
+            'locations', 'branches', 'cities', 'regions', 'areas',
+            'payment_modes', 'payment_types', 'types'
+        ]
+        for key in entity_keys:
             if key in entities and entities[key]:
                 items = entities[key]
                 if isinstance(items, list):
                     labels.extend([str(i) for i in items])
+                elif items:
+                    labels.append(str(items))
+
+    # Check for analysis metadata that might contain period labels
+    analysis = plan.get('analysis', {})
+    if analysis:
+        period_a = analysis.get('period_a_label')
+        period_b = analysis.get('period_b_label')
+        if period_a and period_b:
+            labels = [str(period_a), str(period_b)]
 
     # Remove duplicates while preserving order
     seen = set()
@@ -246,10 +319,13 @@ def _extract_labels_from_context(plan: Dict[str, Any], entities: Dict[str, Any],
             seen.add(label)
             unique_labels.append(label)
 
+    print(f"[Viz] Extracted labels: {unique_labels} (need {num_rows})")
+
     # Must have exactly the right number of labels
     if len(unique_labels) == num_rows:
         return unique_labels
 
+    # If we have 2 rows and no labels, return None - don't show chart
     return None
 
 
