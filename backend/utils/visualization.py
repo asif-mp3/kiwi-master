@@ -5,14 +5,12 @@ Maps query types to appropriate visualizations:
 - comparison → bar chart
 - trend → line chart
 - percentage → pie/donut chart
-- aggregation_on_subset → bar chart
 - rank → horizontal bar chart
 - metric (single value) → no chart (just number)
 - list/filter/lookup → table (no chart)
 """
 
 from typing import Dict, Any, List, Optional
-import pandas as pd
 
 
 def determine_visualization(
@@ -22,327 +20,314 @@ def determine_visualization(
 ) -> Optional[Dict[str, Any]]:
     """
     Determine the appropriate visualization for query results.
-
-    Args:
-        query_plan: The executed query plan with query_type
-        result_data: List of result dictionaries
-        entities: Extracted entities from the question
-
-    Returns:
-        Visualization config dict or None if table is more appropriate
-        {
-            "type": "bar" | "line" | "pie" | "horizontal_bar",
-            "title": str,
-            "data": [...],  # Formatted for Recharts
-            "xKey": str,    # X-axis data key
-            "yKey": str,    # Y-axis data key (or list for multi-series)
-            "colors": [...]  # Chart colors
-        }
+    Returns None if visualization is not appropriate or data is invalid.
     """
     if not result_data or len(result_data) == 0:
         return None
 
     query_type = query_plan.get('query_type', '')
 
-    # Query types that are better as tables
+    # Query types that are better as tables only
     table_only_types = ['lookup', 'filter', 'list']
     if query_type in table_only_types:
         return None
 
-    # Single row results - no chart needed
-    if len(result_data) == 1 and query_type == 'metric':
+    # Single row results - no chart needed (just show the number)
+    if len(result_data) == 1:
         return None
 
     # Need at least 2 data points for meaningful visualization
     if len(result_data) < 2:
         return None
 
-    # Determine chart type based on query_type
-    chart_config = _get_chart_config(query_type, query_plan, result_data, entities)
+    # Try to build chart config
+    chart_config = _build_chart_config(query_type, query_plan, result_data, entities)
 
     return chart_config
 
 
-def _get_chart_config(
+def _build_chart_config(
     query_type: str,
     plan: Dict[str, Any],
     data: List[Dict],
     entities: Dict[str, Any] = None
 ) -> Optional[Dict[str, Any]]:
-    """Get chart configuration based on query type."""
+    """Build chart configuration with smart label detection."""
 
-    # Get column names from data
     if not data:
         return None
+
     columns = list(data[0].keys())
+    print(f"[Viz] Query type: {query_type}, Columns: {columns}, Rows: {len(data)}")
 
-    # Identify dimension (x-axis) and metric (y-axis) columns
-    # Pass actual data to enable value-based detection
-    dimension_col = _find_dimension_column(columns, plan, data)
-    metric_col = _find_metric_column(columns, plan, data, exclude_col=dimension_col)
+    # Find the best dimension and metric columns
+    dimension_col, metric_col = _detect_columns(columns, data, plan)
 
-    if not dimension_col or not metric_col:
+    # Try to extract labels from plan/entities if dimension column is missing/invalid
+    labels = None
+    if not dimension_col:
+        labels = _extract_labels_from_context(plan, entities, len(data))
+        print(f"[Viz] No dimension column found, extracted labels: {labels}")
+
+    # Must have metric column
+    if not metric_col:
+        print(f"[Viz] SKIP - No valid metric column found")
         return None
 
-    # Make sure we don't have the same column for both
-    if dimension_col == metric_col and len(columns) > 1:
-        # Try to find a different metric column
-        for col in columns:
-            if col != dimension_col:
-                metric_col = col
-                break
+    # Must have either dimension column OR extracted labels
+    if not dimension_col and not labels:
+        print(f"[Viz] SKIP - No dimension column and no labels extractable")
+        return None
 
-    # Debug: print detected columns
-    print(f"[Visualization] Columns: {columns}")
-    print(f"[Visualization] Detected dimension: {dimension_col}, metric: {metric_col}")
-    if data:
-        print(f"[Visualization] Sample data: {data[0]}")
+    # Format the chart data
+    chart_data = _format_data(data, dimension_col, metric_col, labels)
 
-    # Default colors (purple theme to match Thara.ai)
+    # Validate the formatted data
+    if not chart_data or len(chart_data) < 2:
+        print(f"[Viz] SKIP - Formatted data invalid or too small")
+        return None
+
+    # Check all data points have valid names and values
+    for point in chart_data:
+        if not point.get('name') or point['name'] in ['', 'None', 'null']:
+            print(f"[Viz] SKIP - Data point has invalid name: {point}")
+            return None
+        if point.get('value') is None:
+            print(f"[Viz] SKIP - Data point has null value: {point}")
+            return None
+
+    print(f"[Viz] SUCCESS - Chart data: {chart_data}")
+
+    # Purple theme colors
     colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
 
-    # Comparison queries → Bar chart
-    if query_type == 'comparison':
-        return {
-            'type': 'bar',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
+    # Determine chart type
+    chart_type = _get_chart_type(query_type, plan)
+    title = _generate_title(plan, query_type)
 
-    # Trend queries → Line chart
-    elif query_type == 'trend':
-        return {
-            'type': 'line',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
-
-    # Percentage queries → Pie chart
-    elif query_type == 'percentage':
-        return {
-            'type': 'pie',
-            'title': _generate_title(plan, entities),
-            'data': _format_pie_data(data, dimension_col, metric_col),
-            'colors': colors
-        }
-
-    # Rank queries → Horizontal bar chart
-    elif query_type == 'rank':
-        return {
-            'type': 'horizontal_bar',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
-
-    # Aggregation on subset → Bar chart
-    elif query_type == 'aggregation_on_subset':
-        return {
-            'type': 'bar',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
-
-    # Extrema lookup with multiple results → Bar chart
-    elif query_type == 'extrema_lookup' and len(data) > 1:
-        return {
-            'type': 'bar',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
-
-    # Metric with grouping → Bar chart
-    elif query_type == 'metric' and plan.get('group_by'):
-        return {
-            'type': 'bar',
-            'title': _generate_title(plan, entities),
-            'data': _format_chart_data(data, dimension_col, metric_col),
-            'xKey': 'name',
-            'yKey': 'value',
-            'colors': colors
-        }
-
-    return None
+    return {
+        'type': chart_type,
+        'title': title,
+        'data': chart_data,
+        'xKey': 'name',
+        'yKey': 'value',
+        'colors': colors
+    }
 
 
-def _find_dimension_column(columns: List[str], plan: Dict[str, Any], data: List[Dict] = None) -> Optional[str]:
-    """Find the dimension column (category/x-axis) - the column with text labels."""
-    # Check group_by first
+def _detect_columns(columns: List[str], data: List[Dict], plan: Dict[str, Any]):
+    """Detect the dimension (label) and metric (value) columns."""
+
+    dimension_col = None
+    metric_col = None
+
+    # Check each column's data type
+    string_cols = []
+    numeric_cols = []
+
+    for col in columns:
+        col_type = _analyze_column(col, data)
+        if col_type == 'string':
+            string_cols.append(col)
+        elif col_type == 'numeric':
+            numeric_cols.append(col)
+
+    print(f"[Viz] String cols: {string_cols}, Numeric cols: {numeric_cols}")
+
+    # Dimension = first valid string column (preferring group_by from plan)
     group_by = plan.get('group_by', [])
     if group_by:
         group_col = group_by[0] if isinstance(group_by, list) else group_by
-        # Verify it exists in columns
-        if group_col in columns:
-            return group_col
+        if group_col in string_cols:
+            dimension_col = group_col
 
-    # Common dimension patterns
-    dimension_patterns = [
-        'month', 'date', 'day', 'year', 'period', 'time',
-        'category', 'type', 'group', 'segment',
-        'location', 'city', 'state', 'region', 'area', 'branch',
-        'product', 'item', 'name', 'department'
-    ]
+    if not dimension_col and string_cols:
+        dimension_col = string_cols[0]
 
-    for col in columns:
+    # Metric = first numeric column (preferring ones with SUM/AVG/etc in name)
+    agg_patterns = ['sum', 'avg', 'count', 'total', 'max', 'min', 'sales', 'revenue', 'profit', 'amount']
+    for col in numeric_cols:
         col_lower = col.lower()
-        for pattern in dimension_patterns:
+        for pattern in agg_patterns:
             if pattern in col_lower:
-                return col
+                metric_col = col
+                break
+        if metric_col:
+            break
 
-    # If we have data, find the first column that has STRING values (not numbers)
-    if data and len(data) > 0:
-        first_row = data[0]
-        for col in columns:
-            value = first_row.get(col)
-            # Check if value is a string (not numeric)
-            if value is not None and isinstance(value, str):
-                try:
-                    float(str(value).replace(',', ''))
-                    # It's a numeric string, skip
-                except ValueError:
-                    # It's a real string - this is likely the dimension
-                    return col
+    if not metric_col and numeric_cols:
+        metric_col = numeric_cols[0]
 
-    # Return first column as fallback
-    return columns[0] if columns else None
+    return dimension_col, metric_col
 
 
-def _find_metric_column(columns: List[str], plan: Dict[str, Any], data: List[Dict] = None, exclude_col: str = None) -> Optional[str]:
-    """Find the metric column (value/y-axis) - the column with numeric values."""
-    # Check metrics from plan
-    metrics = plan.get('metrics', [])
-    if metrics:
-        metric = metrics[0] if isinstance(metrics, list) else metrics
-        # Find matching column
-        for col in columns:
-            if col != exclude_col and metric.lower() in col.lower():
-                return col
+def _analyze_column(col_name: str, data: List[Dict]) -> str:
+    """Analyze a column's data type across all rows. Returns 'string', 'numeric', or 'invalid'."""
 
-    # Common metric patterns
-    metric_patterns = [
-        'total', 'sum', 'count', 'amount', 'value',
-        'sales', 'revenue', 'profit', 'quantity',
-        'average', 'avg', 'max', 'min'
-    ]
+    if not data:
+        return 'invalid'
 
-    for col in columns:
-        if col == exclude_col:
+    all_numeric = True
+    all_string = True
+    has_valid_values = False
+
+    for row in data:
+        value = row.get(col_name)
+
+        # Skip None/null values
+        if value is None or str(value) == 'None':
+            all_string = False  # None is not a valid string label
             continue
-        col_lower = col.lower()
-        for pattern in metric_patterns:
-            if pattern in col_lower:
-                return col
 
-    # If we have data, find the first column with NUMERIC values
-    if data and len(data) > 0:
-        first_row = data[0]
-        for col in columns:
-            if col == exclude_col:
-                continue
-            value = first_row.get(col)
-            # Check if value is numeric
-            if value is not None:
-                if isinstance(value, (int, float)):
-                    return col
-                elif isinstance(value, str):
-                    try:
-                        float(str(value).replace(',', ''))
-                        return col  # It's a numeric string
-                    except ValueError:
-                        pass
+        has_valid_values = True
 
-    # Return last column that isn't excluded (often the metric)
-    for col in reversed(columns):
-        if col != exclude_col:
-            return col
+        # Check if numeric
+        if isinstance(value, (int, float)):
+            all_string = False
+        elif isinstance(value, str):
+            try:
+                float(value.replace(',', ''))
+                all_string = False  # It's a numeric string
+            except ValueError:
+                all_numeric = False  # It's a real string
+        else:
+            all_numeric = False
+            all_string = False
+
+    if not has_valid_values:
+        return 'invalid'
+
+    if all_string:
+        return 'string'
+    elif all_numeric:
+        return 'numeric'
+    else:
+        return 'invalid'
+
+
+def _extract_labels_from_context(plan: Dict[str, Any], entities: Dict[str, Any], num_rows: int) -> Optional[List[str]]:
+    """Try to extract category labels from plan filters or entities."""
+
+    labels = []
+
+    # Check subset_filters (often contains comparison items)
+    subset_filters = plan.get('subset_filters', [])
+    for f in subset_filters:
+        if isinstance(f, dict):
+            val = f.get('value') or f.get('values')
+            if isinstance(val, list):
+                labels.extend([str(v) for v in val])
+            elif val:
+                labels.append(str(val))
+
+    # Check regular filters
+    filters = plan.get('filters', [])
+    for f in filters:
+        if isinstance(f, dict):
+            val = f.get('value') or f.get('values')
+            if isinstance(val, list):
+                labels.extend([str(v) for v in val])
+            elif val:
+                labels.append(str(val))
+
+    # Check entities for comparison items
+    if entities:
+        for key in ['comparison_items', 'items', 'categories', 'products']:
+            if key in entities and entities[key]:
+                items = entities[key]
+                if isinstance(items, list):
+                    labels.extend([str(i) for i in items])
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_labels = []
+    for label in labels:
+        if label and label not in seen and label != 'None':
+            seen.add(label)
+            unique_labels.append(label)
+
+    # Must have exactly the right number of labels
+    if len(unique_labels) == num_rows:
+        return unique_labels
+
     return None
 
 
-def _format_chart_data(
+def _format_data(
     data: List[Dict],
-    dimension_col: str,
-    metric_col: str
+    dimension_col: Optional[str],
+    metric_col: str,
+    labels: Optional[List[str]] = None
 ) -> List[Dict]:
-    """Format data for Recharts bar/line charts."""
+    """Format data for Recharts."""
+
     formatted = []
-    for row in data:
-        name = row.get(dimension_col, '')
+
+    for i, row in enumerate(data):
+        # Get the label
+        if dimension_col:
+            name = row.get(dimension_col, '')
+        elif labels and i < len(labels):
+            name = labels[i]
+        else:
+            name = f"Item {i + 1}"
+
+        # Get the value
         value = row.get(metric_col, 0)
 
-        # Handle numeric conversion
+        # Convert to number if needed
         if isinstance(value, str):
             try:
                 value = float(value.replace(',', ''))
             except:
                 value = 0
 
+        # Round floats
+        if isinstance(value, float):
+            value = round(value, 2)
+
         formatted.append({
-            'name': str(name),
-            'value': round(value, 2) if isinstance(value, float) else value
+            'name': str(name) if name else f"Item {i + 1}",
+            'value': value
         })
 
     return formatted
 
 
-def _format_pie_data(
-    data: List[Dict],
-    dimension_col: str,
-    metric_col: str
-) -> List[Dict]:
-    """Format data for Recharts pie chart."""
-    formatted = []
-    for row in data:
-        name = row.get(dimension_col, '')
-        value = row.get(metric_col, 0)
+def _get_chart_type(query_type: str, plan: Dict[str, Any]) -> str:
+    """Determine the best chart type for the query."""
 
-        # Handle numeric conversion
-        if isinstance(value, str):
-            try:
-                value = float(value.replace(',', ''))
-            except:
-                value = 0
+    type_map = {
+        'comparison': 'bar',
+        'trend': 'line',
+        'percentage': 'pie',
+        'rank': 'horizontal_bar',
+        'aggregation_on_subset': 'bar',
+        'extrema_lookup': 'bar',
+    }
 
-        formatted.append({
-            'name': str(name),
-            'value': round(value, 2) if isinstance(value, float) else value
-        })
-
-    return formatted
+    return type_map.get(query_type, 'bar')
 
 
-def _generate_title(plan: Dict[str, Any], entities: Dict[str, Any] = None) -> str:
-    """Generate a descriptive title for the chart."""
-    query_type = plan.get('query_type', '')
+def _generate_title(plan: Dict[str, Any], query_type: str) -> str:
+    """Generate a clean title for the chart."""
+
     metrics = plan.get('metrics', [])
-    group_by = plan.get('group_by', [])
-
     metric_name = metrics[0] if metrics else 'Value'
-    dimension = group_by[0] if group_by else ''
 
-    # Build title based on query type
-    if query_type == 'comparison':
-        return f"{metric_name} Comparison"
-    elif query_type == 'trend':
-        return f"{metric_name} Trend"
-    elif query_type == 'percentage':
-        return f"{metric_name} Distribution"
-    elif query_type == 'rank':
-        return f"Top {dimension} by {metric_name}"
-    else:
-        if dimension:
-            return f"{metric_name} by {dimension}"
-        return f"{metric_name}"
+    # Clean up metric name (remove SUM(), AVG(), etc.)
+    metric_name = metric_name.replace('SUM(', '').replace('AVG(', '').replace('COUNT(', '')
+    metric_name = metric_name.replace(')', '').replace('_', ' ').title()
+
+    type_labels = {
+        'comparison': 'Comparison',
+        'trend': 'Trend',
+        'percentage': 'Distribution',
+        'rank': 'Ranking',
+    }
+
+    suffix = type_labels.get(query_type, '')
+
+    if suffix:
+        return f"{metric_name} {suffix}"
+    return metric_name
