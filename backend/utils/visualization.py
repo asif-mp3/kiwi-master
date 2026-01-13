@@ -77,11 +77,26 @@ def _get_chart_config(
     columns = list(data[0].keys())
 
     # Identify dimension (x-axis) and metric (y-axis) columns
-    dimension_col = _find_dimension_column(columns, plan)
-    metric_col = _find_metric_column(columns, plan)
+    # Pass actual data to enable value-based detection
+    dimension_col = _find_dimension_column(columns, plan, data)
+    metric_col = _find_metric_column(columns, plan, data, exclude_col=dimension_col)
 
     if not dimension_col or not metric_col:
         return None
+
+    # Make sure we don't have the same column for both
+    if dimension_col == metric_col and len(columns) > 1:
+        # Try to find a different metric column
+        for col in columns:
+            if col != dimension_col:
+                metric_col = col
+                break
+
+    # Debug: print detected columns
+    print(f"[Visualization] Columns: {columns}")
+    print(f"[Visualization] Detected dimension: {dimension_col}, metric: {metric_col}")
+    if data:
+        print(f"[Visualization] Sample data: {data[0]}")
 
     # Default colors (purple theme to match Thara.ai)
     colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
@@ -164,12 +179,15 @@ def _get_chart_config(
     return None
 
 
-def _find_dimension_column(columns: List[str], plan: Dict[str, Any]) -> Optional[str]:
-    """Find the dimension column (category/x-axis)."""
+def _find_dimension_column(columns: List[str], plan: Dict[str, Any], data: List[Dict] = None) -> Optional[str]:
+    """Find the dimension column (category/x-axis) - the column with text labels."""
     # Check group_by first
     group_by = plan.get('group_by', [])
     if group_by:
-        return group_by[0] if isinstance(group_by, list) else group_by
+        group_col = group_by[0] if isinstance(group_by, list) else group_by
+        # Verify it exists in columns
+        if group_col in columns:
+            return group_col
 
     # Common dimension patterns
     dimension_patterns = [
@@ -185,19 +203,33 @@ def _find_dimension_column(columns: List[str], plan: Dict[str, Any]) -> Optional
             if pattern in col_lower:
                 return col
 
-    # Return first non-numeric column
+    # If we have data, find the first column that has STRING values (not numbers)
+    if data and len(data) > 0:
+        first_row = data[0]
+        for col in columns:
+            value = first_row.get(col)
+            # Check if value is a string (not numeric)
+            if value is not None and isinstance(value, str):
+                try:
+                    float(str(value).replace(',', ''))
+                    # It's a numeric string, skip
+                except ValueError:
+                    # It's a real string - this is likely the dimension
+                    return col
+
+    # Return first column as fallback
     return columns[0] if columns else None
 
 
-def _find_metric_column(columns: List[str], plan: Dict[str, Any]) -> Optional[str]:
-    """Find the metric column (value/y-axis)."""
+def _find_metric_column(columns: List[str], plan: Dict[str, Any], data: List[Dict] = None, exclude_col: str = None) -> Optional[str]:
+    """Find the metric column (value/y-axis) - the column with numeric values."""
     # Check metrics from plan
     metrics = plan.get('metrics', [])
     if metrics:
         metric = metrics[0] if isinstance(metrics, list) else metrics
         # Find matching column
         for col in columns:
-            if metric.lower() in col.lower():
+            if col != exclude_col and metric.lower() in col.lower():
                 return col
 
     # Common metric patterns
@@ -208,13 +240,36 @@ def _find_metric_column(columns: List[str], plan: Dict[str, Any]) -> Optional[st
     ]
 
     for col in columns:
+        if col == exclude_col:
+            continue
         col_lower = col.lower()
         for pattern in metric_patterns:
             if pattern in col_lower:
                 return col
 
-    # Return last column (often the metric)
-    return columns[-1] if len(columns) > 1 else None
+    # If we have data, find the first column with NUMERIC values
+    if data and len(data) > 0:
+        first_row = data[0]
+        for col in columns:
+            if col == exclude_col:
+                continue
+            value = first_row.get(col)
+            # Check if value is numeric
+            if value is not None:
+                if isinstance(value, (int, float)):
+                    return col
+                elif isinstance(value, str):
+                    try:
+                        float(str(value).replace(',', ''))
+                        return col  # It's a numeric string
+                    except ValueError:
+                        pass
+
+    # Return last column that isn't excluded (often the metric)
+    for col in reversed(columns):
+        if col != exclude_col:
+            return col
+    return None
 
 
 def _format_chart_data(
