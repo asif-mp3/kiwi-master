@@ -103,6 +103,16 @@ class SchemaContext(BaseModel):
     text: str
 
 
+class VisualizationConfig(BaseModel):
+    """Chart visualization configuration for frontend rendering"""
+    type: Literal['bar', 'line', 'pie', 'horizontal_bar']
+    title: str
+    data: List[dict]  # Formatted for Recharts
+    xKey: Optional[str] = None  # X-axis data key (for bar/line)
+    yKey: Optional[str] = None  # Y-axis data key (for bar/line)
+    colors: List[str] = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6']
+
+
 class ProcessQueryResponse(BaseModel):
     """Response from processing a query"""
     success: bool
@@ -120,6 +130,8 @@ class ProcessQueryResponse(BaseModel):
     was_followup: Optional[bool] = False  # Whether this was a follow-up question
     entities_extracted: Optional[dict] = None  # Extracted entities (month, metric, etc.)
     healing_attempts: Optional[List[dict]] = None  # Self-healing attempt history
+    # Data visualization
+    visualization: Optional[VisualizationConfig] = None  # Chart config for visual analytics
 
 
 class TranscribeResponse(BaseModel):

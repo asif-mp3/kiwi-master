@@ -43,6 +43,7 @@ from utils.greeting_detector import is_greeting, get_greeting_response, detect_s
 from explanation_layer.explainer_client import generate_off_topic_response
 from utils.query_context import QueryContext, QueryTurn, ConversationManager, PendingClarification, PendingCorrection
 from utils.personality import TharaPersonality
+from utils.visualization import determine_visualization
 from utils.onboarding import OnboardingManager, get_user_name
 from utils.query_cache import get_query_cache, cache_query_result, get_cached_query_result, invalidate_spreadsheet_cache
 from utils.config_loader import get_config
@@ -3192,6 +3193,14 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         if result is not None and hasattr(result, 'to_dict'):
             data_list = _sanitize_for_json(result.to_dict('records'))
 
+        # Determine visualization type based on query type and data
+        visualization = None
+        if data_list and len(data_list) > 1:
+            try:
+                visualization = determine_visualization(plan, data_list, entities)
+            except Exception as viz_err:
+                print(f"[Visualization] Warning: Could not determine visualization: {viz_err}")
+
         response = {
             'success': True,
             'explanation': explanation,
@@ -3203,7 +3212,8 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             'entities_extracted': {k: v for k, v in entities.items()
                                   if v and k not in ['raw_question']},
             'data_refreshed': data_was_refreshed,  # True if data was refreshed before this query
-            'no_results': no_results  # Flag for empty result set
+            'no_results': no_results,  # Flag for empty result set
+            'visualization': visualization  # Chart config for visual analytics
         }
 
         # Sanitize entire response to handle numpy types in plan, entities, etc.

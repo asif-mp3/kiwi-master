@@ -12,7 +12,7 @@ export default function Home() {
 
   if (isInitializing) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-zinc-50 dark:bg-zinc-950">
+      <div className="flex h-[100dvh] w-full items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
       </div>
     );
@@ -20,7 +20,7 @@ export default function Home() {
 
   return (
     <ErrorBoundary>
-      <main className="relative h-screen w-full overflow-hidden bg-zinc-50 dark:bg-zinc-950">
+      <main className="relative h-[100dvh] w-full overflow-hidden bg-zinc-50 dark:bg-zinc-950">
         <AnimatePresence mode="wait">
           {!auth.isAuthenticated ? (
             <motion.div

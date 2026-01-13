@@ -80,7 +80,7 @@ export function AuthScreen({ onLogin }: AuthScreenProps) {
   ];
 
   return (
-    <div className="min-h-screen w-full bg-background flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="h-[100dvh] w-full bg-background flex items-center justify-center p-4 relative overflow-hidden">
       {/* Animated Background */}
       <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
         <motion.div

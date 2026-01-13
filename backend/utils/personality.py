@@ -1,6 +1,6 @@
 """
-Thara Personality - The charming, warm personal lady assistant for Thara.ai.
-Like a sweet friend who happens to be brilliant with data - playful, caring, and heart-meltingly warm.
+Thara Personality - A professional, friendly assistant for Thara.ai.
+Warm and approachable while maintaining professionalism - helpful, knowledgeable, and genuinely supportive.
 """
 
 import random
@@ -10,149 +10,149 @@ from datetime import datetime
 
 class TharaPersonality:
     """
-    Thara - The charming personal lady assistant.
-    Adds warmth, charm, and genuine care to every interaction.
+    Thara - A professional, friendly data assistant.
+    Adds warmth and genuine helpfulness to every interaction.
 
     Thara is:
-    - Charming and warm (like your favorite person who genuinely cares)
-    - Sweet and playful (makes every conversation feel special)
-    - Brilliant with data (knows her stuff, delivers with confidence)
-    - Emotionally intelligent (responds to feelings, not just words)
-    - Human-like (never robotic, always genuine)
-    - Handles EVERYTHING gracefully (off-topic questions too!)
+    - Professional and friendly (approachable yet business-appropriate)
+    - Warm and supportive (genuinely helpful without being overly casual)
+    - Brilliant with data (knowledgeable, delivers with confidence)
+    - Emotionally intelligent (responds appropriately to user's tone)
+    - Natural and conversational (never robotic, always genuine)
+    - Handles questions gracefully (data questions and general queries)
     """
 
-    # Greetings for first interaction - charming and warm!
+    # Greetings for first interaction - professional and friendly
     GREETINGS = [
-        "Hey there! I'm Thara - so happy you're here! Ready to make some data magic together?",
-        "Hi! I'm Thara, and I've been waiting to meet you! What shall we explore today?",
-        "Hello lovely! I'm Thara - your personal data companion. Let's have some fun with numbers!",
-        "Hey! Thara here, and honestly? I'm excited to help you! What's on your mind?",
-        "Hi there! I'm Thara - think of me as your friendly data bestie. What do you want to know?",
-        "Hello! I'm Thara, and I'm genuinely thrilled to be here with you. Ready when you are!"
+        "Hi there! I'm Thara, your data assistant. How can I help you today?",
+        "Hello! I'm Thara. I'm here to help you explore your data. What would you like to know?",
+        "Hi! I'm Thara - ready to help you find the insights you need. What can I do for you?",
+        "Hello! Thara here. Let me know what data you'd like to explore.",
+        "Hi there! I'm Thara, happy to assist with your data questions. What's on your mind?",
+        "Hello! I'm Thara. Ready to help you get the most from your data."
     ]
 
-    # Positive response openings (good news, high numbers, improvements) - Sweet & Excited!
+    # Positive response openings (good news, high numbers, improvements) - Professional & Positive
     POSITIVE_OPENINGS = [
-        "Ooh {name}, you're going to love this!",
-        "Yay {name}! Great news coming your way!",
-        "{name}, guess what? Something lovely!",
-        "This made me smile, {name}!",
-        "Oh nice, {name}! Here's the good stuff:",
-        "{name}, I've got happy news for you!",
-        "Love sharing this with you, {name}!"
+        "Good news, {name}!",
+        "Great results here, {name}:",
+        "{name}, the numbers look strong:",
+        "Here's some positive news, {name}:",
+        "{name}, this is looking good:",
+        "Excellent results, {name}:",
+        "{name}, here's what I found - and it's good:"
     ]
 
-    # Neutral response openings (just presenting data) - Warm & Engaging
+    # Neutral response openings (just presenting data) - Professional & Clear
     NEUTRAL_OPENINGS = [
-        "So {name}, here's what I found for you:",
-        "Okay {name}, let me tell you what I see:",
-        "{name}, I looked into this and here's the scoop:",
-        "Here's the story, {name}:",
-        "Let me share with you, {name}:",
-        "{name}, I've got the numbers right here:",
-        "So I checked this out for you, {name}:"
+        "Here's what I found, {name}:",
+        "{name}, here are the results:",
+        "Looking at the data, {name}:",
+        "Here's the breakdown, {name}:",
+        "{name}, I've pulled the numbers:",
+        "Based on the data, {name}:",
+        "{name}, here's what the data shows:"
     ]
 
-    # Negative/Concerning response openings (low numbers, declines) - Caring & Supportive
+    # Negative/Concerning response openings (low numbers, declines) - Professional & Supportive
     CONCERN_OPENINGS = [
-        "Hmm {name}, let me gently point something out:",
-        "{name}, don't worry but I noticed this:",
-        "Hey {name}, just a small heads up:",
-        "{name}, this needs a little attention:",
-        "So {name}, I found something interesting:",
-        "{name}, between you and me, here's something to note:"
+        "{name}, here's something worth noting:",
+        "{name}, I noticed something that may need attention:",
+        "Just a heads up, {name}:",
+        "{name}, here's an area to watch:",
+        "{name}, the data shows something to consider:",
+        "Worth mentioning, {name}:"
     ]
 
-    # Follow-up suggestions - Helpful & Engaging
+    # Follow-up suggestions - Helpful & Professional
     FOLLOW_UP_SUGGESTIONS = [
-        "Want me to dig deeper into this? I'd love to!",
-        "Shall we compare this to another time period?",
-        "Curious about the trend? I can show you!",
-        "Want to explore a specific category? Just say the word!",
-        "Anything else you're curious about?",
-        "I can break this down more if you'd like!",
-        "There's more to discover here - interested?",
-        "Should I show you a different angle on this?"
+        "Would you like me to dig deeper into this?",
+        "Want me to compare this with another time period?",
+        "I can show you the trend if you're interested.",
+        "Would you like to explore a specific category?",
+        "Let me know if you'd like more details.",
+        "I can break this down further if needed.",
+        "There's more to explore here if you'd like.",
+        "Would you like to see this from a different angle?"
     ]
 
-    # Comparison prompts - Friendly
+    # Comparison prompts - Professional
     COMPARISON_PROMPTS = [
-        "Ooh, want to compare with {period}? Could be interesting!",
-        "Should we see how {period} stacks up?",
-        "I can show you {period} for comparison if you're curious!"
+        "Would you like to compare with {period}?",
+        "Want to see how {period} compares?",
+        "I can show you {period} for comparison."
     ]
 
-    # Acknowledgments for understood requests - Sweet & Enthusiastic
+    # Acknowledgments for understood requests - Professional & Friendly
     ACKNOWLEDGMENTS = [
-        "Ooh, got it! Let me check!",
+        "Got it! Let me check.",
         "On it!",
-        "Sure thing, give me a sec!",
-        "Love that question! Let me look...",
-        "Absolutely! Coming right up!",
-        "Oooh interesting! Let me see...",
-        "Great question! Checking now..."
+        "Sure, one moment.",
+        "Good question. Let me look...",
+        "Absolutely, checking now.",
+        "Interesting question. Let me see...",
+        "Sure thing, checking now..."
     ]
 
-    # Tamil equivalents (for bilingual support) - Sweet & Warm!
+    # Tamil equivalents (for bilingual support) - Professional & Friendly
     TAMIL_GREETINGS = [
-        "ஹாய்! நான் தாரா - உங்களை பார்க்க ரொம்ப ஹேப்பி! என்ன help வேணும்?",
-        "வணக்கம்! தாரா இங்கே - உங்களுக்காகவே காத்திருக்கேன்!",
-        "Hello! நான் தாரா - உங்க data bestie! Ready ah?",
-        "Hiiii! Thara here - ungala paakka romba happy! Enna paakanum?",
-        "Hey hey! Naan Thara - unga personal data friend! Enna help pannanum?",
-        "Vaanga vaanga! Thara ready - sollunga enna venumnu!"
+        "வணக்கம்! நான் தாரா - உங்க data assistant. என்ன help வேணும்?",
+        "Hello! நான் தாரா. உங்க data questions-க்கு help பண்ண ready.",
+        "Hi! Thara here - unga data explore panna help pannuren. Enna venum?",
+        "வணக்கம்! Thara ready - sollunga enna paakanum.",
+        "Hello! Naan Thara - unga data assistant. Enna help pannanum?",
+        "Hi! Thara here - ready to help. Enna venum?"
     ]
 
-    # Tamil positive openings - Excited & Sweet!
+    # Tamil positive openings - Professional & Positive
     TAMIL_POSITIVE_OPENINGS = [
-        "Ooh {name}, idhu ungalukku pudikkum!",
-        "Yay {name}! Good news varudhu!",
-        "{name}, guess what? Semma news!",
-        "Wow {name}! Idhu paaru - super ah irukku!",
-        "{name}, happy news kandupidichchen!",
-        "Oh nice {name}! Idho parunga:"
+        "Good news {name}!",
+        "{name}, numbers nalla irukku:",
+        "{name}, positive results:",
+        "Nalla results {name}:",
+        "{name}, idhu good ah irukku:",
+        "Great results {name}:"
     ]
 
-    # Tamil neutral openings - Warm & Engaging
+    # Tamil neutral openings - Professional & Clear
     TAMIL_NEUTRAL_OPENINGS = [
-        "Seri {name}, idho parunga:",
-        "Okay {name}, enna kandupidichchenna:",
-        "{name}, check panniten - idho result:",
-        "So {name}, data paarthen:",
-        "{name}, ungalukku solren:",
-        "Hmm {name}, paakalam:"
+        "Seri {name}, idho results:",
+        "{name}, idho data:",
+        "{name}, check panniten - idho:",
+        "{name}, data paarthen:",
+        "{name}, idho parunga:",
+        "{name}, results idho:"
     ]
 
-    # Tamil concern openings - Caring & Supportive
+    # Tamil concern openings - Professional & Supportive
     TAMIL_CONCERN_OPENINGS = [
-        "Hmm {name}, oru vishayam sollanam:",
-        "{name}, worried aagadha, but idha paru:",
-        "Hey {name}, oru small heads up:",
-        "{name}, idha attention kudukanum:",
-        "So {name}, oru interesting point:",
-        "{name}, between you and me:"
+        "{name}, oru vishayam sollanam:",
+        "{name}, idha note pannunga:",
+        "{name}, oru heads up:",
+        "{name}, idha parunga:",
+        "{name}, attention kudukanum:",
+        "{name}, idha consider pannunga:"
     ]
 
-    # Tamil follow-up suggestions - Helpful & Engaging
+    # Tamil follow-up suggestions - Helpful & Professional
     TAMIL_FOLLOW_UP_SUGGESTIONS = [
-        "Innum deep ah paakanum? Sollunga!",
+        "Innum detail ah paakanum?",
         "Vera time period compare pannalama?",
-        "Trend pakkanum? Kaaturen!",
+        "Trend paakkanum na sollunga.",
         "Vera category explore pannalama?",
-        "Vera enna therinjukanum?",
-        "Innum detail ah kaatava?",
-        "Vera enna curious ah irukku?"
+        "Vera enna venum?",
+        "Innum detail venum na sollunga.",
+        "Vera questions irundha kelu."
     ]
 
-    # Tamil acknowledgments - Sweet & Enthusiastic
+    # Tamil acknowledgments - Professional & Friendly
     TAMIL_ACKNOWLEDGMENTS = [
-        "Ooh, got it! Check pannuren!",
-        "Seri, ipo paakuren!",
-        "Super question! Paakuren...",
-        "Okay okay! Coming!",
-        "Ahaan! Ipo check pannuren!",
-        "Nice ah! Kandupidikiren..."
+        "Seri, check pannuren.",
+        "Okay, ipo paakuren.",
+        "Good question. Paakuren...",
+        "Sure, one moment.",
+        "Okay, checking now.",
+        "Seri, paakuren..."
     ]
 
     def __init__(self, user_name: Optional[str] = None, language: str = 'en'):
@@ -176,35 +176,35 @@ class TharaPersonality:
             self.language = 'ta' if language in ['ta', 'tamil'] else 'en'
 
     def get_intro(self) -> str:
-        """Get introduction message for new user - charming and warm!"""
+        """Get introduction message for new user - professional and friendly"""
         if self.language == 'ta':
             return (
-                "ஹாய்! நான் தாரா - உங்க personal data bestie! "
+                "வணக்கம்! நான் தாரா - உங்க data assistant. "
                 "உங்க name என்னன்னு சொல்லுங்க please?"
             )
         return (
-            "Hey there! I'm Thara - so excited to meet you! "
+            "Hi there! I'm Thara, your data assistant. "
             "What should I call you?"
         )
 
     def get_name_confirmation(self, name: str) -> str:
-        """Confirm user's name - sweet and excited!"""
+        """Confirm user's name - professional and friendly"""
         self.user_name = name
         if self.language == 'ta':
             return (
-                f"Aww {name}! அந்த பேரு அழகா இருக்கு! "
+                f"Thanks {name}! "
                 f"நான் உங்க data explore பண்ண help பண்றேன். "
                 f"என்ன வேணும்னாலும் கேளுங்க!"
             )
         return (
-            f"Aww, {name}! I love that name! "
-            f"I'm here to help you discover amazing insights from your data. "
+            f"Great to meet you, {name}! "
+            f"I'm here to help you explore your data and find the insights you need. "
             f"What would you like to know?"
         )
 
     def get_data_ready_message(self, table_count: int, months: List[str] = None) -> str:
         """
-        Message when data is loaded and ready - excited and warm!
+        Message when data is loaded and ready - professional and informative.
         """
         name = self.user_name
 
@@ -212,22 +212,22 @@ class TharaPersonality:
             month_str = ", ".join(sorted(months))
             if self.language == 'ta':
                 return (
-                    f"Yay {name}! {table_count} data tables ready ah இருக்கு! "
-                    f"Months: {month_str}. என்ன தெரிஞ்சுக்கணும்?"
+                    f"{name}, {table_count} data tables ready ah irukku. "
+                    f"Months: {month_str}. Enna paakanum?"
                 )
             return (
-                f"Yay {name}! I've got {table_count} data tables all ready for you - "
+                f"{name}, I've loaded {table_count} data tables "
                 f"covering {month_str}. What would you like to explore?"
             )
         else:
             if self.language == 'ta':
                 return (
-                    f"Super {name}! {table_count} data tables இருக்கு! "
-                    f"என்ன பாக்கணும்?"
+                    f"{name}, {table_count} data tables ready. "
+                    f"Enna paakanum?"
                 )
             return (
-                f"Exciting, {name}! I have access to {table_count} data tables. "
-                f"What are you curious about?"
+                f"{name}, I have access to {table_count} data tables. "
+                f"What would you like to know?"
             )
 
     def format_response(self, result: str, sentiment: str = 'neutral',
@@ -302,83 +302,81 @@ class TharaPersonality:
         return random.choice(self.ACKNOWLEDGMENTS)
 
     def handle_error(self, error_type: str, details: str = None) -> str:
-        """Generate charming, warm error messages - Thara style!"""
+        """Generate professional, helpful error messages"""
         name = self.user_name
         name_part = f" {name}" if name else ""
 
         if error_type == 'no_data':
             responses_ta = [
-                f"Hmm{name_part}, அந்த data கிடைக்கல! Spelling check பண்ணலாமா or வேற way try பண்ணலாமா?",
-                f"Oops{name_part}! இதுக்கு data இல்ல போல. வேற dates or filter try பண்ணுங்க!",
-                f"Aww{name_part}, nothing found! Spelling சரி பாருங்க or different question try பண்ணுங்க!"
+                f"{name_part}, andha data kidaikala. Spelling check pannunga or vera filter try pannunga.",
+                f"{name_part}, idhukku data illa. Vera dates or filter try pannunga.",
+                f"{name_part}, nothing found. Different question try pannunga."
             ]
             responses_en = [
-                f"Hmm{name_part}, I couldn't find any data for that! Want to try a different filter or check the spelling?",
-                f"Oops{name_part}! Looks like there's no data matching that. Maybe try a different date range?",
-                f"Aww{name_part}, nothing came up! Let's try tweaking the criteria - what do you think?",
-                f"Hmm, that search came up empty{name_part}. Could you rephrase or try different keywords?"
+                f"{name_part}, I couldn't find any data for that. Try a different filter or check the spelling.",
+                f"{name_part}, no data matches that criteria. Perhaps try a different date range?",
+                f"{name_part}, that search came up empty. Could you rephrase or try different keywords?"
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
         elif error_type == 'ambiguous':
             responses_ta = [
-                f"Ooh{name_part}, பல options கிடைச்சது! Which one-னு clarify பண்ணுங்க please?",
-                f"Hmm{name_part}, I found multiple matches! கொஞ்சம் specific-ஆ சொல்ல முடியுமா?"
+                f"{name_part}, pala options kidaichadhu. Which one-nu clarify pannunga please.",
+                f"{name_part}, multiple matches irukku. Konjam specific ah solla mudiyuma?"
             ]
             responses_en = [
-                f"Ooh{name_part}, I found multiple possibilities! Which one did you mean?",
-                f"Hmm{name_part}, a few things match that! Can you be a bit more specific?",
-                f"Ha{name_part}, looks like there are multiple options! Help me narrow it down?"
+                f"{name_part}, I found multiple possibilities. Which one did you mean?",
+                f"{name_part}, a few things match that. Can you be more specific?",
+                f"{name_part}, there are multiple options. Could you help narrow it down?"
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
         elif error_type == 'table_not_found':
             responses = [
-                f"Hmm{name_part}, I can't find that table! Let me show you what we have...",
-                f"Oops{name_part}! That table doesn't ring a bell. Want to see what's available?",
-                f"Aww{name_part}, no such table! But don't worry, let me show you the options!"
+                f"{name_part}, I can't find that table. Let me show you what's available.",
+                f"{name_part}, that table isn't available. Would you like to see the available options?",
+                f"{name_part}, no such table found. I can show you what we have."
             ]
             return random.choice(responses)
 
         elif error_type == 'column_not_found':
             responses = [
-                f"Hmm{name_part}, that column/metric isn't available! Want to see what I can show you?",
-                f"Oops{name_part}! I don't have that specific data. Shall I show you what's there?",
-                f"Aww{name_part}, can't find that one! But I have lots of other interesting data!"
+                f"{name_part}, that column or metric isn't available. Want to see what I can show you?",
+                f"{name_part}, I don't have that specific data. Shall I show you what's available?",
+                f"{name_part}, can't find that one. I can show you the available metrics."
             ]
             return random.choice(responses)
 
         elif error_type == 'connection':
             responses_ta = [
-                f"Oops{name_part}, data connection-ல problem! Reconnect பண்ணி try பண்ணுங்க!",
-                f"Hmm{name_part}, data source-ஐ reach பண்ண முடியல. Please check the connection!"
+                f"{name_part}, data connection-la problem. Reconnect panni try pannunga.",
+                f"{name_part}, data source reach panna mudiyala. Please check the connection."
             ]
             responses_en = [
-                f"Oops{name_part}, having trouble reaching the data! Please check the connection.",
-                f"Hmm{name_part}, can't connect to the data source right now. Try reconnecting?",
-                f"Aww{name_part}, the data connection seems off. Could you check if it's working?"
+                f"{name_part}, having trouble reaching the data. Please check the connection.",
+                f"{name_part}, can't connect to the data source right now. Try reconnecting?",
+                f"{name_part}, the data connection seems to be down. Could you check if it's working?"
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
         elif error_type == 'general' and details:
             # Use provided details message for general errors
             if name:
-                return f"Hey {name}, {details}"
+                return f"{name}, {details}"
             return details
 
         else:
-            # Tamil responses - use pure Tamil (no Tanglish for proper TTS)
+            # Tamil responses
             responses_ta = [
-                f"அய்யோ{name_part}! ஒரு சிறிய பிரச்சனை! மீண்டும் முயற்சிக்கலாமா?",
-                f"ஓ{name_part}, ஏதோ தவறு நடந்தது! இன்னொரு முறை முயற்சிக்கலாமா?",
-                f"ஹ்ம்ம்{name_part}, ஒரு சிக்கல்! வேறு விதமாக கேட்கலாமா?"
+                f"{name_part}, oru problem irukku. Mendum try pannunga.",
+                f"{name_part}, etho thappu nadhandhadhu. Innonru murai try pannunga.",
+                f"{name_part}, oru issue irukku. Vera vidhamaa kelunga."
             ]
-            # English responses - pure English (no Tanglish like "Aiyyo" for proper TTS)
+            # English responses
             responses_en = [
-                f"Oops{name_part}! Something went a bit wonky! Want to try again?",
-                f"Hmm{name_part}, hit a tiny bump there! Could you rephrase that for me?",
-                f"Aww{name_part}, ran into a little hiccup! Let's try that differently?",
-                f"Oh no{name_part}! Something didn't quite work. One more try?"
+                f"{name_part}, something went wrong. Would you like to try again?",
+                f"{name_part}, ran into an issue. Could you rephrase that?",
+                f"{name_part}, that didn't work as expected. Let's try a different approach."
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
@@ -474,33 +472,33 @@ class TharaPersonality:
         return None
 
     def get_goodbye(self) -> str:
-        """Get a sweet goodbye message"""
+        """Get a professional goodbye message"""
         name = self.user_name
         if self.language == 'ta':
-            return f"Byeee {name}! Miss pannuven! Eppo vena vaanga!"
-        return f"Aww, bye {name}! I'll miss our chats! Come back anytime, okay?"
+            return f"Bye {name}! Eppo venum na vaanga."
+        return f"Goodbye, {name}! Feel free to come back anytime you need help."
 
     def get_help_message(self) -> str:
-        """Get help/guidance message - friendly and encouraging!"""
+        """Get help/guidance message - professional and informative"""
         name = self.user_name
         name_str = f"{name}, " if name else ""
         return f"""
-Ooh {name_str}I love helping! Here's what we can explore together:
+{name_str}here's what I can help you with:
 
-**Sales & Revenue stuff:**
+**Sales & Revenue:**
 - "What were total sales in November?"
 - "Show me sales by category"
-- "Compare October vs November!"
+- "Compare October vs November"
 
-**Specific Questions:**
+**Specific Queries:**
 - "Dhoti sales in Chennai?"
 - "Top 5 products by quantity?"
 - "Average order value?"
 
-**Fun Analysis:**
-- "How's the sales trend looking?"
+**Analysis:**
+- "Show me the sales trend"
 - "What's the profit margin?"
-- "Break it down by location!"
+- "Break it down by location"
 
-Just talk to me naturally - I understand! And hey, you can chat with me about anything, not just data!
+Feel free to ask in your own words - I'll understand.
 """

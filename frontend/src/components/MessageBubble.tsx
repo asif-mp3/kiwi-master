@@ -11,6 +11,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { QueryPlanViewer } from './QueryPlanViewer';
+import { DataChart } from './DataChart';
 import {
   Table,
   TableBody,
@@ -252,6 +253,18 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
                 {showDataTable ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
               </motion.button>
             )}
+          </motion.div>
+        )}
+
+        {/* Data Visualization Chart */}
+        {isAssistant && message.metadata?.visualization && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.1 }}
+            className="mt-3 w-full"
+          >
+            <DataChart visualization={message.metadata.visualization} />
           </motion.div>
         )}
 

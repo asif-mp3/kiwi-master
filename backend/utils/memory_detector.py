@@ -33,19 +33,19 @@ TRIGGER memory detection when user:
 - Gives permanent instructions about preferences or identity
 
 Examples that MUST trigger:
-- "Call me Asif" → address_as: "Asif" (MOST COMMON PATTERN - just name!)
+- "Call me Boss" → address_as: "Boss" (MOST COMMON PATTERN - just name!)
 - "Call me madam" → address_as: "madam"
-- "Hereafter call me Asif" → address_as: "Asif"
+- "Hereafter call me Boss" → address_as: "Boss"
 - "From now on call me boss" → address_as: "boss"
 - "You can call me Raj" → address_as: "Raj"
 - "Just call me sir" → address_as: "sir"
 - "Your name is Thara"
 - "From now on, address me as sir"
-- "My name is Asif" → address_as: "Asif"
+- "My name is Boss" → address_as: "Boss"
 - "I am Priya" → address_as: "Priya"
 - "I'm John" → address_as: "John"
-- "என் பேரு அசிப்" (Tamil: "My name is Asif") → address_as: "Asif"
-- "Enna Asif nu koopdu" (Tamil: "Call me Asif") → address_as: "Asif"
+- "என் பேரு Boss" (Tamil: "My name is Boss") → address_as: "Boss"
+- "Enna Boss nu koopdu" (Tamil: "Call me Boss") → address_as: "Boss"
 - "Inime enna madam nu dhan koopduva, nyabagam vechiko" (Tamil)
 - "Yaad rakhna, mujhe sir bulana" (Hindi)
 - "Mera naam Rahul hai" (Hindi: "My name is Rahul") → address_as: "Rahul"
@@ -81,17 +81,17 @@ If NO memory intent:
 
 ## Normalization Rules
 
-- "Call me Asif" → category: "user_preferences", key: "address_as", value: "Asif"
+- "Call me Boss" → category: "user_preferences", key: "address_as", value: "Boss"
 - "Call me madam" → category: "user_preferences", key: "address_as", value: "madam"
 - "Hereafter call me sir" → category: "user_preferences", key: "address_as", value: "sir"
 - "You can call me boss" → category: "user_preferences", key: "address_as", value: "boss"
 - "Your name is Thara" → category: "bot_identity", key: "name", value: "Thara"
 - "Address me as sir" → category: "user_preferences", key: "address_as", value: "sir"
-- "My name is Asif" → category: "user_preferences", key: "address_as", value: "Asif"
+- "My name is Boss" → category: "user_preferences", key: "address_as", value: "Boss"
 - "I am Priya" → category: "user_preferences", key: "address_as", value: "Priya"
 - "I'm John" → category: "user_preferences", key: "address_as", value: "John"
-- "என் பேரு அசிப்" → category: "user_preferences", key: "address_as", value: "அசிப்"
-- "Enna Asif nu koopdu" → category: "user_preferences", key: "address_as", value: "Asif"
+- "என் பேரு Boss" → category: "user_preferences", key: "address_as", value: "Boss"
+- "Enna Boss nu koopdu" → category: "user_preferences", key: "address_as", value: "Boss"
 
 Extract ONLY the name/value, not the full sentence. Preserve the original name (including Tamil/non-Latin names).
 

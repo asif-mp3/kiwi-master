@@ -455,7 +455,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           plan: response.plan,
           data: response.data,
           schema_context: response.schema_context,
-          data_refreshed: response.data_refreshed
+          data_refreshed: response.data_refreshed,
+          visualization: response.visualization
         });
 
         // Auto-expand Query Plan if available
@@ -1160,7 +1161,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-background text-foreground">
       {/* Mobile Sidebar Backdrop */}
       <AnimatePresence>
         {showChatsPanel && (

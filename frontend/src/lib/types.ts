@@ -14,6 +14,7 @@ export interface Message {
     data_refreshed?: boolean;
     is_greeting?: boolean;
     is_memory_storage?: boolean;
+    visualization?: VisualizationConfig | null;
   };
 }
 
@@ -104,6 +105,16 @@ export interface LoadDataResponse {
   total_sheets?: number;
 }
 
+// Visualization configuration for charts
+export interface VisualizationConfig {
+  type: 'bar' | 'line' | 'pie' | 'horizontal_bar';
+  title: string;
+  data: { name: string; value: number }[];
+  xKey?: string;
+  yKey?: string;
+  colors: string[];
+}
+
 export interface ProcessQueryResponse {
   success: boolean;
   explanation?: string;
@@ -119,6 +130,7 @@ export interface ProcessQueryResponse {
   was_followup?: boolean;
   entities_extracted?: Record<string, unknown>;
   healing_attempts?: { attempt: number; error: string; fix: string }[];
+  visualization?: VisualizationConfig;
 }
 
 export interface DatasetStatusResponse {

@@ -441,7 +441,7 @@ def is_greeting(text: str) -> bool:
                 return True
 
     # PRIORITY 3: Check for name/memory intent patterns
-    # "Hey, call me Asif!" should NOT be a greeting - it's a name instruction
+    # "Hey, call me Boss!" should NOT be a greeting - it's a name instruction
     name_patterns = [
         r'\bcall\s+me\b', r'\bmy\s+name\s+is\b', r'\bi\s+am\b', r"\bi'm\b",
         r'\baddress\s+me\s+as\b', r'\byou\s+can\s+call\s+me\b', r"\bname's\b",
@@ -892,12 +892,12 @@ def is_non_query_conversational(text: str) -> bool:
     has_tamil = bool(re.search(r'[\u0B80-\u0BFF]', text_lower))
 
     # PRIORITY CHECK: Name/memory intent patterns - let memory detector handle these
-    # "Call me Asif", "hereafter call me X", "my name is Y" etc.
+    # "Call me Boss", "hereafter call me X", "my name is Y" etc.
     name_memory_patterns = [
-        r'\bcall\s+me\b',           # "call me Asif"
-        r'\bmy\s+name\s+is\b',      # "my name is Asif"
-        r'\bi\s+am\s+\w+$',         # "I am Asif" (name at end)
-        r"\bi'm\s+\w+$",            # "I'm Asif" (name at end)
+        r'\bcall\s+me\b',           # "call me Boss"
+        r'\bmy\s+name\s+is\b',      # "my name is Boss"
+        r'\bi\s+am\s+\w+$',         # "I am Boss" (name at end)
+        r"\bi'm\s+\w+$",            # "I'm Boss" (name at end)
         r'\baddress\s+me\s+as\b',   # "address me as sir"
         r'\byou\s+can\s+call\s+me\b',  # "you can call me X"
         r"\bname's\b",              # "name's X"

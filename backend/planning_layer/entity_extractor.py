@@ -404,23 +404,49 @@ class EntityExtractor:
         return matches[0][0].title()
 
     def _extract_location(self, text: str) -> Optional[str]:
-        """Extract location/city from text"""
-        # First check learned locations
+        """Extract location/city from text with fuzzy matching support.
+
+        Handles cases like:
+        - "Chennai" matching "Chennai Main" or "Chennai North"
+        - "Bangalore" matching "Bangalore Central"
+        """
+        text_lower = text.lower()
+
+        # First try exact match on learned locations
         for loc in self.LOCATIONS:
             pattern = r'\b' + re.escape(loc) + r'\b'
-            if re.search(pattern, text):
-                # Return properly capitalized
+            if re.search(pattern, text_lower):
                 return loc.title()
 
+        # FUZZY MATCH: Check if user's input is a PREFIX of any learned location
+        # e.g., "chennai" should match "chennai main"
+        # Extract potential location words from user input
+        common_cities = ['chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad', 'pune',
+                        'kolkata', 'ahmedabad', 'jaipur', 'lucknow', 'coimbatore', 'madurai']
+
+        for city in common_cities:
+            if city in text_lower:
+                # Find any learned location that STARTS with this city
+                for loc in self.LOCATIONS:
+                    if loc.startswith(city):
+                        return loc.title()  # Return the full location name
+                # If no learned location, return the city itself
+                return city.title()
+
         # Also check custom entities that might be area/location related
-        # This catches area names learned from "Area Name" type columns
         location_entity_types = ['area_name', 'area', 'location', 'city', 'zone', 'region']
         for entity_type in location_entity_types:
             if entity_type in self._learned_custom_entities:
                 for val in self._learned_custom_entities[entity_type]:
-                    pattern = r'\b' + re.escape(val) + r'\b'
-                    if re.search(pattern, text):
+                    val_lower = val.lower()
+                    # Exact match
+                    pattern = r'\b' + re.escape(val_lower) + r'\b'
+                    if re.search(pattern, text_lower):
                         return val.title()
+                    # Fuzzy: check if user input contains start of location
+                    for city in common_cities:
+                        if city in text_lower and val_lower.startswith(city):
+                            return val.title()
 
         return None
 
