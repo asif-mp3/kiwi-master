@@ -50,7 +50,7 @@ export function VoiceInterface({
             ) : isSpeaking ? (
               <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
             ) : (
-              <>Hey, <span className="gradient-text">{username}</span></>
+              <>Hello <span className="gradient-text">{username}</span></>
             )}
           </h1>
           <p className="text-zinc-500 text-sm font-medium max-w-md mx-auto">

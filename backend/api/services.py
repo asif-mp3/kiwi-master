@@ -3017,6 +3017,47 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print(f"  ✓ Router result: {best_table} (confidence: {confidence:.0%})")
         _log_timing("table_routing", _step_start)
 
+        # === CRITICAL: CHECK FOR LOW-CONFIDENCE NON-DATA QUERIES ===
+        # If confidence is very low AND query doesn't have clear data intent,
+        # use LLM for conversational response instead of asking for table selection
+        if confidence < 0.25 and routing_result.needs_clarification:
+            # Check if query has any data keywords
+            data_keywords = [
+                'sales', 'revenue', 'profit', 'total', 'sum', 'average', 'count',
+                'show', 'list', 'get', 'find', 'compare', 'trend', 'top', 'bottom',
+                'maximum', 'minimum', 'highest', 'lowest', 'branch', 'category',
+                'month', 'year', 'date', 'order', 'transaction', 'payment',
+                # Tamil keywords
+                'விற்பனை', 'மொத்தம்', 'எவ்வளவு', 'எத்தனை', 'காட்டு', 'சேல்ஸ்'
+            ]
+            query_lower = processing_query.lower()
+            has_data_intent = any(kw in query_lower for kw in data_keywords)
+
+            if not has_data_intent:
+                # No data intent + very low confidence = unclear/conversational message
+                # Route to LLM for a friendly response instead of table selection
+                print(f"  ! Very low confidence ({confidence:.0%}) with no data intent - using LLM response")
+                is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                response = generate_off_topic_response(question, is_tamil=is_tamil_text)
+
+                _total_time = (_time.time() - _query_start) * 1000
+                print("  → Returning conversational LLM response (low confidence path)")
+                print(f"\n  ⏱️  TIMING SUMMARY (LOW CONFIDENCE CONVERSATIONAL):")
+                for step, ms in _timings.items():
+                    print(f"      {step}: {ms:.0f}ms")
+                print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                print("=" * 60 + "\n")
+
+                return {
+                    'success': True,
+                    'explanation': response,
+                    'data': None,
+                    'plan': None,
+                    'schema_context': [],
+                    'data_refreshed': False,
+                    'is_conversational': True
+                }
+
         # === CHECK IF CLARIFICATION NEEDED (DISAMBIGUATION FLOW) ===
         if routing_result.needs_clarification:
             print(f"  ! AMBIGUITY DETECTED - need clarification")

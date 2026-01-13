@@ -362,6 +362,30 @@ def is_greeting(text: str) -> bool:
 
     text_lower = text.lower().strip()
 
+    # CRITICAL PRIORITY 0: Check for DATA QUERY KEYWORDS FIRST
+    # If the query has ANY data keywords, it is NOT a greeting - it's a data query
+    # This prevents "What were the total sales last month?" from being misclassified
+    data_query_keywords = [
+        # Core data words
+        'sales', 'revenue', 'profit', 'total', 'sum', 'average', 'count',
+        'show', 'list', 'find', 'get', 'compare', 'trend', 'top', 'bottom',
+        'maximum', 'minimum', 'highest', 'lowest', 'max', 'min',
+        # Time-related
+        'month', 'year', 'date', 'week', 'day', 'yesterday', 'today',
+        'last month', 'this month', 'last year', 'this year',
+        'january', 'february', 'march', 'april', 'may', 'june',
+        'july', 'august', 'september', 'october', 'november', 'december',
+        # Business
+        'order', 'orders', 'transaction', 'transactions', 'payment',
+        'branch', 'category', 'product', 'quantity', 'amount',
+        # Tamil
+        'விற்பனை', 'மொத்தம்', 'எவ்வளவு', 'எத்தனை', 'காட்டு', 'சேல்ஸ்',
+        # Query patterns
+        'what were', 'what was', 'what is', 'what are', 'how many', 'how much'
+    ]
+    if any(kw in text_lower for kw in data_query_keywords):
+        return False  # This is a data query, NOT a greeting
+
     # PRIORITY 1: Check capability questions FIRST (before query keyword check)
     # These should ALWAYS be treated as conversational, not data queries
     for pattern in GREETING_CATEGORIES.get('capability', []):
@@ -1004,6 +1028,29 @@ def is_non_query_conversational(text: str) -> bool:
     words = text_lower.split()
     if len(words) <= 6:
         # Short text without data keywords - likely conversational
+        return True
+
+    # Check for gibberish/unclear text (no recognizable words)
+    # This catches noisy voice input like "asdfgh", "hmm", etc.
+    common_words = set([
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+        'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her',
+        'us', 'them', 'my', 'your', 'his', 'its', 'our', 'their',
+        'this', 'that', 'these', 'those', 'what', 'which', 'who', 'whom',
+        'and', 'but', 'or', 'nor', 'for', 'yet', 'so', 'as', 'if', 'then',
+        'because', 'although', 'while', 'where', 'when', 'how', 'why',
+        'to', 'of', 'in', 'on', 'at', 'by', 'with', 'from', 'into', 'onto',
+        'yes', 'no', 'ok', 'okay', 'hi', 'hello', 'hey', 'thanks', 'thank',
+        'please', 'sorry', 'good', 'great', 'nice', 'fine', 'well',
+        'hmm', 'um', 'uh', 'ah', 'oh', 'wow', 'huh', 'eh',
+    ])
+
+    # If most words are not recognizable, it's likely gibberish
+    recognized = sum(1 for w in words if w in common_words or len(w) <= 2)
+    if len(words) > 0 and recognized / len(words) < 0.3 and len(words) <= 10:
+        # Less than 30% recognizable words = likely gibberish/unclear
         return True
 
     return False

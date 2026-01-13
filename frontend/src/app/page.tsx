@@ -41,7 +41,7 @@ export default function Home() {
               transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
               className="h-full w-full"
             >
-              <ChatScreen onLogout={logout} username="Admin" />
+              <ChatScreen onLogout={logout} username="Boss" />
             </motion.div>
           )}
         </AnimatePresence>
