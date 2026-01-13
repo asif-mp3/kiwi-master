@@ -2530,57 +2530,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'error_type': 'transcription_noise'
             }
 
-        # Track if we preserved context from a failed clarification match
-        preserved_from_clarification = False
-
-        # === CHECK FOR PENDING CLARIFICATION (DISAMBIGUATION FLOW) ===
+        # === TABLE CLARIFICATION FEATURE REMOVED ===
+        # Clear any stale pending clarification from before this change
         if ctx.has_pending_clarification():
-            print("\n[STEP 0.5/9] CHECKING PENDING CLARIFICATION...")
-            pending = ctx.get_pending_clarification()
-            matched_table = ctx.match_clarification_response(question)
-
-            if matched_table:
-                print(f"  ✓ User selected table: {matched_table}")
-                # User responded with a table selection - use it!
-                ctx.clear_pending_clarification()
-
-                # Restore state from pending clarification (with safety checks)
-                original_question = pending.original_question or question
-                processing_query = pending.translated_question or original_question
-                entities = pending.entities or {}
-                is_tamil = pending.is_tamil if pending.is_tamil is not None else False
-
-                # Force this table to be used (bypass routing)
-                forced_table = matched_table
-                print(f"  → Resuming query with forced table: {forced_table}")
-                print(f"  → Original question: {(original_question or '')[:50]}...")
-
-                # Skip to planning phase with forced table
-                # (This jumps ahead in the pipeline)
-                return _execute_with_forced_table(
-                    original_question=original_question,
-                    processing_query=processing_query,
-                    entities=entities,
-                    forced_table=forced_table,
-                    is_tamil=is_tamil,
-                    ctx=ctx,
-                    app_state=app_state
-                )
-            else:
-                print(f"  ✗ Could not match response to a table option")
-                print(f"    Candidates were: {pending.candidates}")
-                print(f"    User said: {question}")
-                # User's response didn't match - but preserve context for follow-up!
-                # Save the entities from original question so they merge with new query
-                if pending.entities:
-                    # Preserve category, metric, location from original question
-                    ctx.active_entities = pending.entities
-                    ctx.active_table = None  # Don't force a table, let routing decide
-                    preserved_from_clarification = True
-                    print(f"  ✓ Preserved context: category={pending.entities.get('category')}, metric={pending.entities.get('metric')}")
-                # Clear the pending state and continue normally
-                ctx.clear_pending_clarification()
-                print("  → Treating as follow-up with preserved context")
+            ctx.clear_pending_clarification()
+            print("  ✓ Cleared stale pending clarification (feature disabled)")
 
         # NOTE: Removed hardcoded "Freshggies" STT correction
         # The system should work with any business name via ProfileStore dynamic learning
@@ -3037,48 +2991,15 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     'is_conversational': True
                 }
 
-        # === CHECK IF CLARIFICATION NEEDED (DISAMBIGUATION FLOW) ===
+        # === TABLE CLARIFICATION DISABLED ===
+        # Instead of asking "Which table?", just pick the best candidate automatically.
+        # User can correct via "check from X table" if wrong.
         if routing_result.needs_clarification:
-            print(f"  ! AMBIGUITY DETECTED - need clarification")
-            print(f"    Alternatives: {[t for t, _ in routing_result.alternatives[:3]]}")
-
-            # Get candidate table names
+            print(f"  ! AMBIGUITY DETECTED - auto-selecting best candidate (clarification disabled)")
             candidates = routing_result.get_clarification_options()
-
-            if candidates and len(candidates) > 1:
-                # Save state for when user responds
-                ctx.set_pending_clarification(
-                    original_question=question,
-                    translated_question=processing_query,
-                    candidates=candidates,
-                    entities=entities,
-                    is_tamil=is_tamil
-                )
-
-                # Generate clarification message
-                clarification_msg = _generate_clarification_message(
-                    candidates=candidates,
-                    entities=entities,
-                    is_tamil=is_tamil,
-                    profile_store=app_state.profile_store
-                )
-
-                print("  → Returning clarification request")
-                print("=" * 60 + "\n")
-
-                return {
-                    'success': True,
-                    'explanation': clarification_msg,
-                    'data': None,
-                    'plan': None,
-                    'needs_clarification': True,
-                    'clarification_options': candidates,
-                    'table_used': None,
-                    'routing_confidence': confidence,
-                    'entities_extracted': {k: v for k, v in entities.items()
-                                          if v and k not in ['raw_question']},
-                    'data_refreshed': data_was_refreshed
-                }
+            if candidates:
+                best_table = candidates[0]  # Pick first (best scored) candidate
+                print(f"  → Auto-selected table: {best_table}")
 
         # === SCHEMA CONTEXT GENERATION ===
         if best_table and routing_result.is_confident:

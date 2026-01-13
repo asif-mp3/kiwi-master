@@ -579,18 +579,29 @@ class QueryContext:
                 if idx < len(candidates):
                     return candidates[idx]
 
-        # 3. Substring match on table names
+        # 3. Substring match on table names (ONLY for meaningful words)
+        # Skip common words that could cause false matches
+        skip_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                      'what', 'who', 'how', 'where', 'when', 'why', 'which',
+                      'your', 'you', 'my', 'me', 'i', 'we', 'they', 'it',
+                      'do', 'does', 'did', 'can', 'could', 'will', 'would',
+                      'to', 'of', 'in', 'on', 'at', 'for', 'with', 'by',
+                      'today', 'name', 'hello', 'hi', 'hey', 'thanks'}
+
         for candidate in candidates:
             # Check if user's response contains key part of table name
             candidate_lower = candidate.lower()
             # Remove common prefixes/suffixes for matching
             clean_candidate = candidate_lower.replace('_', ' ').replace('-', ' ')
+            candidate_words = set(clean_candidate.split())
 
             if response_lower in clean_candidate:
                 return candidate
 
-            # Also check if table name contains user's response
-            if any(word in clean_candidate for word in response_lower.split()):
+            # FIXED: Check for WHOLE WORD matches only (not substrings)
+            # And skip common words that could cause false positives
+            response_words = [w for w in response_lower.split() if w not in skip_words and len(w) > 2]
+            if response_words and any(word in candidate_words for word in response_words):
                 return candidate
 
         # 4. Enhanced keyword matching with month/date expansion
