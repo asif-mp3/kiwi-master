@@ -52,6 +52,10 @@ GREETING_CATEGORIES = {
         r'\b(tell)\s+(me)\s+(about)\s+(yourself|you)\b',
         r'\b(who)\s+(are)\s+you\b',
         r'\b(introduce)\s+(yourself)\b',
+        r'\b(what)\s+(is|\'s)\s+(your)\s+(name)\b',  # "what is your name" / "what's your name"
+        r'\b(your)\s+(name)\b',  # "your name?"
+        r'\b(what)\s+(kind|type)\s+(of)\s+(questions?)\b',  # "what kind of questions"
+        r'\b(what)\s+(questions?)\s+(can|should)\s+(i|we)\s+(ask)\b',  # "what questions can I ask"
         # Tamil capability questions
         r'என்னெல்லாம்\s+பண்ண\s+முடியும்',  # What all can you do?
         r'என்ன\s+பண்ண\s+முடியும்',  # What can you do?
@@ -60,6 +64,12 @@ GREETING_CATEGORIES = {
         r'எப்படி\s+உதவ\s+முடியும்',  # How can you help?
         r'நீங்கள்\s+யார்',  # Who are you?
         r'உன்னைப்\s+பற்றி\s+சொல்லு',  # Tell me about yourself
+        # Tanglish capability questions
+        r'enna\s+maari\s+questions?',  # "enna maari questions" (what kind of questions)
+        r'enna\s+questions?\s+kekalam',  # "enna questions kekalam" (what questions can I ask)
+        r'enna\s+kekalam',  # "enna kekalam" (what can I ask)
+        r'enna\s+kekanum',  # "enna kekanum" (what should I ask)
+        r'questions?\s+enna\s+kekalam',  # "questions enna kekalam"
     ],
     'formal': [
         r'\b(good\s+(morning|afternoon|evening|day))\b',
@@ -219,6 +229,15 @@ RESPONSE_TEMPLATES = {
         "கேக்குது கேக்குது! Thara இங்கே! Sollunga என்ன பாக்கணும்?",
         "Perfect ah கேக்குது! Naan ungalukku help panna ready!"
     ],
+    'identity': [  # Responses to "what is your name?" / "who are you?"
+        "I'm Thara, your personal data assistant! I'm here to help you explore your data. What would you like to know?",
+        "Hey! I'm Thara - think of me as your friendly data buddy! What can I help you find today?",
+        "The name's Thara! I'm your AI assistant for all things data. Sales, trends, insights - I've got you covered!",
+    ],
+    'tamil_identity': [  # Tamil identity responses
+        "Naan Thara! Unga personal data assistant! Enna help pannanum?",
+        "Hey! Naan Thara - unga data bestie! Sales, trends - எதுவும் கேளுங்க!",
+    ],
     'capability': [  # Responses to "what can you do?" - Charming & Helpful
         "Ooh, I love this question! I'm Thara, and I can help you explore your data in so many ways! Ask me about sales, trends, comparisons - or just chat! I speak English and Tamil!",
         "Great question! I'm your personal data bestie - I can dig into your spreadsheets, find trends, compare numbers, answer questions. Just talk to me like you'd talk to a friend!",
@@ -362,7 +381,28 @@ def is_greeting(text: str) -> bool:
 
     text_lower = text.lower().strip()
 
-    # CRITICAL PRIORITY 0: Check for DATA QUERY KEYWORDS FIRST
+    # CRITICAL PRIORITY 0: Check for PERSONAL/CAPABILITY questions FIRST
+    # These should ALWAYS be treated as greetings, not data queries
+    personal_patterns = [
+        r'\b(what)\s+(is|\'s)\s+(your)\s+(name)\b',  # "what is your name"
+        r'\b(who)\s+(are)\s+you\b',                   # "who are you"
+        r'\b(what)\s+(can|could)\s+you\s+(do|help)\b', # "what can you do"
+        r'\b(your)\s+(name)\b',                       # "your name?"
+        r'\b(tell)\s+(me)\s+(about)\s+(yourself)\b',  # "tell me about yourself"
+        r'\b(what)\s+(kind|type)\s+(of)\s+(questions?)\b',  # "what kind of questions"
+        r'\b(what)\s+(questions?)\s+(can|should)\s+(i|we)\s+(ask)\b',  # "what questions can I ask"
+        # Tanglish patterns - ALL variations
+        r'enna\s+maari',  # "enna maari" (what kind)
+        r'maari\s+questions?',  # "maari questions"
+        r'questions?\s+kek',  # "questions kekalam/kekanum/kekatum"
+        r'enna\s+kek',  # "enna kekalam/kekanum/kekatum"
+        r'kekalam|kekanum|kekatum',  # any "kek" variation alone
+    ]
+    for pattern in personal_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return True  # This is a personal question about Thara
+
+    # PRIORITY 0.5: Check for DATA QUERY KEYWORDS
     # If the query has ANY data keywords, it is NOT a greeting - it's a data query
     # This prevents "What were the total sales last month?" from being misclassified
     data_query_keywords = [
@@ -380,8 +420,8 @@ def is_greeting(text: str) -> bool:
         'branch', 'category', 'product', 'quantity', 'amount',
         # Tamil
         'விற்பனை', 'மொத்தம்', 'எவ்வளவு', 'எத்தனை', 'காட்டு', 'சேல்ஸ்',
-        # Query patterns
-        'what were', 'what was', 'what is', 'what are', 'how many', 'how much'
+        # Query patterns (but NOT "what is your name" - handled above)
+        'what were', 'what was', 'how many', 'how much'
     ]
     if any(kw in text_lower for kw in data_query_keywords):
         return False  # This is a data query, NOT a greeting
@@ -699,6 +739,16 @@ def _detect_greeting_category(text: str) -> str:
     """
     text_lower = text.lower().strip()
     has_tamil = bool(re.search(r'[\u0B80-\u0BFF]', text_lower))
+
+    # PRIORITY 0: Check identity questions ("what is your name", "who are you")
+    identity_patterns = [
+        r'\b(what)\s+(is|\'s)\s+(your)\s+(name)\b',
+        r'\b(who)\s+(are)\s+you\b',
+        r'\b(your)\s+(name)\b',
+    ]
+    for pattern in identity_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return 'tamil_identity' if has_tamil else 'identity'
 
     # PRIORITY 1: Check capability questions first
     for pattern in GREETING_CATEGORIES.get('capability', []):

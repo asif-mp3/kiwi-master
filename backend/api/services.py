@@ -2686,21 +2686,22 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             _log_timing("projection_detection", _step_start)
 
         # === FAST PATH: Greetings & Conversational ===
+        # ALL conversational responses now use LLM for natural, contextual replies
         _step_start = _time.time()
-        print("\n[STEP 1/8] GREETING DETECTION...")
-        if is_greeting(question):
-            print("  ✓ Greeting detected - using fast path")
-            _log_timing("greeting_detection", _step_start)
-            response = get_greeting_response(question)
-            user_name = ctx.get_user_name() or app_state.personality.user_name
-            # Only personalize if we have a real name (not empty or placeholder)
-            if user_name and user_name.lower() not in ["there", "user", "friend", ""]:
-                response = response.replace("Hi!", f"Hi {user_name}!")
-                response = response.replace("Hello!", f"Hello {user_name}!")
+        print("\n[STEP 1/8] GREETING/CONVERSATIONAL DETECTION...")
+        is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
 
+        if is_greeting(question) or is_non_query_conversational(question):
+            greeting_type = "greeting" if is_greeting(question) else "conversational"
+            print(f"  ✓ {greeting_type.title()} detected - generating LLM response")
+
+            # Use LLM for ALL conversational responses (natural, not hardcoded)
+            response = generate_off_topic_response(question, is_tamil=is_tamil_text)
+
+            _log_timing("conversational_detection", _step_start)
             _total_time = (_time.time() - _query_start) * 1000
-            print("  → Returning greeting response")
-            print(f"\n  ⏱️  TIMING SUMMARY (GREETING FAST PATH):")
+            print("  → Returning LLM-generated conversational response")
+            print(f"\n  ⏱️  TIMING SUMMARY (CONVERSATIONAL PATH):")
             for step, ms in _timings.items():
                 print(f"      {step}: {ms:.0f}ms")
             print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
@@ -2712,33 +2713,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'plan': None,
                 'schema_context': [],
                 'data_refreshed': False,
-                'is_greeting': True
-            }
-        print("  ✗ Not a greeting")
-        _log_timing("greeting_detection", _step_start)
-
-        # === FAST PATH: Non-Query Conversational Text ===
-        # Check if user is just chatting (not asking about data)
-        _step_start = _time.time()
-        print("\n[STEP 1.5/8] NON-QUERY DETECTION...")
-        is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
-        if is_non_query_conversational(question):
-            print("  ✓ Non-query conversational text detected - generating LLM response")
-            response = generate_off_topic_response(question, is_tamil=is_tamil_text)
-            _log_timing("non_query_detection", _step_start)
-            print("  → Returning LLM-generated conversational response")
-            print("=" * 60 + "\n")
-            return {
-                'success': True,
-                'explanation': response,
-                'data': None,
-                'plan': None,
-                'schema_context': [],
-                'data_refreshed': False,
+                'is_greeting': True,
                 'is_conversational': True
             }
         print("  ✗ Not conversational (likely a data query)")
-        _log_timing("non_query_detection", _step_start)
+        _log_timing("conversational_detection", _step_start)
 
         # === FAST PATH: Date Context Detection (BEFORE Memory) ===
         _step_start = _time.time()
