@@ -254,16 +254,16 @@ RESPONSE_TEMPLATES = {
         "Definitely! Naan help பண்ண ready! Sales, products, trends - எதை பற்றியும் கேளுங்க!",
         "Sure sure! 'November sales enna?' or 'Top 5 products காட்டு' nu கேளுங்க. Naan பதில் சொல்றேன்!",
     ],
-    # NEW: Off-topic personal question responses - CHARMING!
+    # NEW: Off-topic personal question responses - NATURAL!
     'off_topic_personal': [
-        "Aww, you're so sweet to ask! I run on data and good vibes - that's my kind of breakfast! How about you?",
-        "That's so thoughtful of you! I'm doing great - especially now that you're here! What shall we explore?",
-        "Haha, you're curious about me! I'm always ready and energized. But enough about me - what can I help YOU with?",
+        "Ha! I run on data and good vibes. What about you? What can I help with?",
+        "Doing great! Ready to help you out. What would you like to explore?",
+        "I'm always ready! What can I help you with today?",
     ],
     'tamil_off_topic_personal': [
-        "Aww romba sweet! Naan data-um good vibes-um thaan saapthu run aaguren! Neenga saapta?",
-        "Haha you're so cute! Naan always ready and happy - especially when talking to you! Enna help pannanum?",
-        "Aiyoo neenga romba caring! Naan super ah irukken. Unga turn - enna explore pannalam?",
+        "Super ah irukken! Neenga eppadi? Enna help pannanum?",
+        "Naan ready! Enna paakanum sollunga!",
+        "Naan fine! Unga data questions-ku ready. Enna explore pannalam?",
     ],
     # NEW: Off-topic random question responses - PLAYFUL!
     'off_topic_random': [
@@ -276,32 +276,32 @@ RESPONSE_TEMPLATES = {
         "Ooh that's tricky for me! But data analysis? That I can do! Enna paakanum?",
         "Aiyo, that's not my area! But numbers and insights? I'm your girl! What shall we explore?",
     ],
-    # NEW: Compliment responses - HUMBLE & SWEET!
+    # NEW: Compliment responses - HUMBLE & NATURAL!
     'compliment': [
-        "Stop it, you're making me blush! But seriously, thank you - you ask great questions too!",
-        "Aww, that means so much to me! I really enjoy our conversations. What else can I help you with?",
-        "You're too sweet! Takes one to know one though! Now, what insights can I find for you?",
+        "Thanks! You ask great questions too. What can I help with?",
+        "That's nice of you! What else can I help you with?",
+        "Thanks! Now, what insights can I find for you?",
     ],
     'tamil_compliment': [
-        "Aiyooo! Neenga romba sweet! Thank you so much! Enna help pannanum?",
-        "Aww that made my day! Nanum unga kuda pesudhu pudikkum! What shall we explore?",
-        "Haha you're making me shy! Thank you! Now - enna data paakanum?",
+        "Thank you! Enna help pannanum?",
+        "Thanks! Nanum enjoy pannuren. What shall we explore?",
+        "Haha thanks! Now - enna data paakanum?",
     ],
     # NEW: Emotional support responses - CARING!
     'emotional': [
-        "Aww, I'm sorry you're feeling that way! Take a breath - I'm here for you. Whatever you need, just say the word.",
-        "Hey, I hear you. Long day? Let me make things easier - what can I help you with?",
-        "Sending you good vibes! I'm here whenever you're ready. No rush, no pressure.",
+        "Take it easy - I'm here to help. What do you need?",
+        "Long day? Let me make things easier - what can I help with?",
+        "I'm here whenever you're ready. What can I do for you?",
     ],
     'emotional_positive': [
-        "Yay! I love your energy! Let's keep this good vibe going - what exciting thing shall we discover?",
-        "That's wonderful to hear! Your happiness is contagious! What would you like to explore today?",
-        "So glad you're feeling great! Let's make today even better - what can I help you with?",
+        "Great energy! What would you like to explore?",
+        "Glad you're feeling good! What can I help with today?",
+        "Nice! What would you like to look at?",
     ],
     'tamil_emotional': [
-        "Aww, I understand. Take it easy - naan ungalukku help panna ready. No rush!",
-        "Hey, it's okay. Rough day ah? Let me help make it better. Enna venumanalum sollunga.",
-        "Good vibes sending! Naan always here for you. Whenever you're ready!",
+        "Take it easy - naan help panna ready. Enna venumanalum sollunga.",
+        "Rough day ah? Let me help. Enna paakanum?",
+        "I'm here for you. Whenever you're ready!",
     ],
     'formal': [
         "Good day! I'm Thara - lovely to meet you! What can I help you explore?",

@@ -2862,11 +2862,10 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         entity_summary = app_state.entity_extractor.get_entities_summary(entities)
         print(f"  ✓ Entities extracted: {entity_summary}")
 
-        # Merge with previous context if follow-up OR if we preserved context from clarification
-        if is_followup or preserved_from_clarification:
+        # Merge with previous context if follow-up
+        if is_followup:
             entities = ctx.merge_entities(entities)
-            merge_reason = "follow-up" if is_followup else "preserved from clarification"
-            print(f"  ✓ Merged with context ({merge_reason}): {app_state.entity_extractor.get_entities_summary(entities)}")
+            print(f"  ✓ Merged with context (follow-up): {app_state.entity_extractor.get_entities_summary(entities)}")
         _log_timing("entity_extraction", _step_start)
 
         # === CHECK FOR DATA CHANGES (INVALIDATE STALE CACHE) ===
