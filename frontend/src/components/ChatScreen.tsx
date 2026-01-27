@@ -172,6 +172,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     config,
     chatTabs,
     activeChatId,
+    isInitializing,
     createNewChat,
     switchChat,
     deleteChat,
@@ -379,23 +380,26 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           };
           setDemoDatasetInfo(demoInfo);
 
-          // Create a chat if none exists, and mark it as having demo data
-          if (!activeChatId) {
+          // Create a chat if NO CHATS EXIST (not just if no active chat)
+          if (chatTabs.length === 0) {
             createNewChat();
           }
 
-          // Update the active chat with demo dataset info
-          const currentChatId = activeChatId || chatTabs[0]?.id;
-          if (currentChatId) {
-            // Cast to ChatTab stats format which requires detectedTables
-            setDatasetForChat('demo://preloaded', 'ready', {
-              totalTables: demoInfo.totalTables,
-              totalRecords: demoInfo.totalRecords,
-              sheetCount: demoInfo.sheetCount,
-              sheets: demoInfo.sheets,
-              detectedTables: demoInfo.detectedTables || []
-            }, currentChatId);
-          }
+          // Update ALL existing chats with demo dataset info (fixes stale localStorage)
+          const demoStats = {
+            totalTables: demoInfo.totalTables,
+            totalRecords: demoInfo.totalRecords,
+            sheetCount: demoInfo.sheetCount,
+            sheets: demoInfo.sheets,
+            detectedTables: demoInfo.detectedTables || []
+          };
+
+          // Update each chat that doesn't have 'ready' status
+          chatTabs.forEach(chat => {
+            if (chat.datasetStatus !== 'ready') {
+              setDatasetForChat('demo://preloaded', 'ready', demoStats, chat.id);
+            }
+          });
         }
       } catch (error) {
         // Not in demo mode, normal flow continues
@@ -404,14 +408,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       }
     };
 
-    // Only check once on mount
-    if (!hasVerifiedOnce.current) {
+    // Only check once on mount AND after initialization is complete
+    if (!hasVerifiedOnce.current && !isInitializing) {
       checkDemoMode();
     }
-  }, [activeChatId, chatTabs, createNewChat, setDatasetForChat]);
+  }, [activeChatId, chatTabs, createNewChat, setDatasetForChat, isInitializing]);
 
   const handleSendMessage = async (content: string, shouldPlayTTS: boolean = false, isVoiceInput: boolean = false) => {
-    if (!activeChatId) {
+    if (!activeChatId && chatTabs.length === 0) {
       createNewChat();
     }
 
@@ -1092,11 +1096,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       }
 
     } else {
-      // Manual stop - user clicked to end always-on mode
-      console.log('🛑 Manually stopping recording (ending always-on mode)...');
+      // Manual stop - user clicked to stop recording
+      console.log('🛑 Manually stopping recording...');
 
-      // Set abort flag to skip audio processing
-      userAbortedRef.current = true;
+      // NOTE: Do NOT set userAbortedRef here - we want to process the audio!
+      // userAbortedRef is only for cancellation, not for normal stop
 
       // Exit fullscreen voice mode
       setIsFullscreenVoice(false);

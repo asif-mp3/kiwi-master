@@ -21,7 +21,7 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GSHEET_OAUTH_REDIRECT_URL = os.getenv(
     "GSHEET_OAUTH_REDIRECT_URL",
-    "http://localhost:3000/auth/sheets-callback"
+    "https://thara-ai.vercel.app/auth/sheets-callback"
 )
 
 # Token storage directory

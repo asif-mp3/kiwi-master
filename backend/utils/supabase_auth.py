@@ -18,7 +18,7 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 ENABLE_AUTH = os.getenv("ENABLE_AUTH", "false").lower() == "true"
-OAUTH_REDIRECT_URL = os.getenv("OAUTH_REDIRECT_URL", "http://localhost:3000/auth/callback")
+OAUTH_REDIRECT_URL = os.getenv("OAUTH_REDIRECT_URL", "https://thara-ai.vercel.app/auth/callback")
 
 # Lazy-loaded client
 _supabase_client = None

@@ -244,6 +244,9 @@ class AppState:
         self.conversation_manager: ConversationManager = ConversationManager()
         self.personality: TharaPersonality = TharaPersonality()
         self.onboarding: OnboardingManager = OnboardingManager()
+
+        # Load user preferences from permanent memory (e.g., "address_as": "Boss")
+        self._load_user_preferences()
         self.entity_extractor: EntityExtractor = EntityExtractor()
 
         # Check if data already exists in DuckDB (persists across restarts)
@@ -283,6 +286,23 @@ class AppState:
         except Exception as e:
             # Silently fail - will load data normally
             pass
+
+    def _load_user_preferences(self):
+        """
+        Load user preferences from permanent memory on startup.
+        This ensures the user's saved name preference (e.g., "Boss") is used.
+        """
+        try:
+            memory = load_memory()
+            user_prefs = memory.get("user_preferences", {})
+
+            # Load user's preferred name
+            if user_prefs.get("address_as"):
+                name = user_prefs["address_as"]
+                self.personality.set_name(name)
+                print(f"  ✓ Loaded user preference: address_as = '{name}'")
+        except Exception as e:
+            print(f"  ⚠ Could not load user preferences: {e}")
 
     @property
     def vector_store(self) -> SchemaVectorStore:
