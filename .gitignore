@@ -1,48 +1,91 @@
-# Dependencies
+# ============================================
+# ENVIRONMENT & SECRETS - NEVER COMMIT!
+# ============================================
+.env
+.env.local
+.env.*
+*.env
+
+# ============================================
+# CREDENTIALS & TOKENS
+# ============================================
+credentials/
+backend/credentials/
+**/credentials/
+*_token.json
+service_account.json
+
+# ============================================
+# DEPENDENCIES
+# ============================================
 node_modules/
 frontend/node_modules/
 venv/
+.venv/
 env/
-.env
 
-# Build outputs
+# ============================================
+# BUILD OUTPUTS & CACHES
+# ============================================
 .next/
 dist/
 build/
 __pycache__/
+*/__pycache__/
 *.pyc
+*.pyo
 .ipynb_checkpoints/
+*.tsbuildinfo
 
-# System
+# ============================================
+# RUNTIME DATA (regenerates on startup)
+# ============================================
+backend/data_sources/snapshots/
+backend/data_sources/cache/
+backend/data/
+backend/schema_store/
+*.duckdb
+*.duckdb.wal
+
+# ============================================
+# SYSTEM FILES
+# ============================================
 .DS_Store
 Thumbs.db
+nul
 
-# Logs
+# ============================================
+# LOGS
+# ============================================
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-# Credentials
-kiwi-rag/credentials/
-backend/credentials/
-credentials/
 
-# JSON files (except config files)
-*.json
+# ============================================
+# LOCK FILES (only keep one per project)
+# ============================================
+frontend/bun.lock
+
+# ============================================
+# IDE & EDITOR
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ============================================
+# CLAUDE CODE
+# ============================================
+.claude/
+
+# ============================================
+# JSON FILES (selective)
+# ============================================
+# Ignore generated JSON but keep config files
+backend/data_sources/table_profiles.json
 !package.json
 !package-lock.json
 !tsconfig.json
 !backend/planning_layer/plan_schema.json
-!backend/config/*.yaml
-
-# Environment files
-.env
-.env.local
-.env.*
-
-# Snapshots (generated data)
-backend/data_sources/snapshots/
-backend/schema_store/
-
-# Claude Code plans
-.claude/
-nul

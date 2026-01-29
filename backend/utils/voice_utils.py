@@ -34,7 +34,7 @@ def get_voice_config() -> dict:
     if _voice_config_cache is not None:
         return _voice_config_cache
 
-    config_path = Path("config/settings.yaml")
+    config_path = Path(__file__).parent.parent / "config" / "settings.yaml"
     if config_path.exists():
         with open(config_path) as f:
             config = yaml.safe_load(f)
@@ -223,4 +223,97 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
     except Exception as e:
         error_msg = f"ElevenLabs TTS failed: {str(e)}"
         print(f"❌ TTS Error: {error_msg}")
+        raise Exception(error_msg)
+
+
+def text_to_speech_streaming(text: str, voice_id: Optional[str] = None):
+    """
+    Convert text to speech with STREAMING output.
+    Yields audio chunks as they're generated for immediate playback.
+    First chunk arrives in ~200-500ms instead of waiting 2-4s for full audio.
+
+    Args:
+        text: Text to convert to speech
+        voice_id: ElevenLabs voice ID. If None, uses config default.
+
+    Yields:
+        bytes: Audio chunks (MP3 format)
+    """
+    import time
+    import re
+    start_time = time.time()
+
+    try:
+        from elevenlabs.client import ElevenLabs
+        from utils.tts_cache import get_cached_tts_audio, cache_tts_audio
+
+        # Preprocess text for better pronunciation
+        processed_text = _preprocess_for_tts(text)
+
+        # Detect if text contains Tamil characters
+        tamil_pattern = re.compile(r'[\u0B80-\u0BFF]')
+        has_tamil = bool(tamil_pattern.search(processed_text))
+
+        # Get voice ID from config if not provided
+        voice_config = get_voice_config()
+        if voice_id is None:
+            if has_tamil:
+                voice_id = voice_config["tamil_voice_id"]
+            else:
+                voice_id = voice_config["default_voice_id"]
+
+        # CHECK CACHE FIRST - yield cached audio in chunks
+        hit, cached_audio = get_cached_tts_audio(processed_text, voice_id)
+        if hit and cached_audio:
+            elapsed = (time.time() - start_time) * 1000
+            print(f"⚡ TTS STREAM CACHE HIT: {len(cached_audio)} bytes [{elapsed:.0f}ms]")
+            # Yield cached audio in chunks for consistent streaming behavior
+            chunk_size = 8192
+            for i in range(0, len(cached_audio), chunk_size):
+                yield cached_audio[i:i + chunk_size]
+            return
+
+        print(f"🔊 TTS STREAM: Using voice ID {voice_id}")
+
+        # Initialize ElevenLabs client
+        client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+        # Select model based on language
+        if has_tamil:
+            model_id = "eleven_multilingual_v2"
+            print("🔊 TTS STREAM: Tamil - Multilingual v2")
+        else:
+            model_id = "eleven_turbo_v2_5"
+            print("🔊 TTS STREAM: English - Turbo v2.5 (fastest)")
+
+        # Generate audio with streaming
+        audio_stream = client.text_to_speech.convert(
+            voice_id=voice_id,
+            text=processed_text,
+            model_id=model_id,
+            output_format="mp3_44100_128",
+        )
+
+        # Yield chunks as they arrive + collect for caching
+        all_chunks = []
+        first_chunk_time = None
+
+        for chunk in audio_stream:
+            if chunk:
+                if first_chunk_time is None:
+                    first_chunk_time = (time.time() - start_time) * 1000
+                    print(f"🔊 TTS STREAM: First chunk [{first_chunk_time:.0f}ms]")
+                all_chunks.append(chunk)
+                yield chunk
+
+        # Cache complete audio for future requests
+        if all_chunks:
+            complete_audio = b"".join(all_chunks)
+            cache_tts_audio(processed_text, voice_id, complete_audio)
+            elapsed = (time.time() - start_time) * 1000
+            print(f"✅ TTS STREAM: Complete {len(complete_audio)} bytes [{elapsed:.0f}ms]")
+
+    except Exception as e:
+        error_msg = f"ElevenLabs TTS streaming failed: {str(e)}"
+        print(f"❌ TTS STREAM Error: {error_msg}")
         raise Exception(error_msg)

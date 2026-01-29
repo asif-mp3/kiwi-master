@@ -1,6 +1,6 @@
 cache:
-  query_cache_max_size: 100
-  query_cache_ttl_seconds: 300
+  query_cache_max_size: 200
+  query_cache_ttl_seconds: 600
   schema_cache_ttl_seconds: 3600
   tts_cache_max_size_mb: 500
   tts_cache_ttl_hours: 24
@@ -13,21 +13,23 @@ google_sheets:
   credentials_path: credentials/service_account.json
   date_conversion_threshold: 0.5
   demo_mode:
-    auto_load_spreadsheets:
-    - 1pXd7aGOOBZfhJp4KI__qI3Moj0KS0w2Iwg7kLPUonG4
-    - 1dSae1JI3AZfh7aa71JYeL0PKacq2loBxILY-0LJJlhw
     enabled: true
+    # Google Drive folder - all CSV/Excel files will be auto-loaded on startup
+    drive_folder_url: "https://drive.google.com/drive/folders/1iJDe85wVldOIDsS6nzmo8OsuESuI3rGA"
+    # Legacy spreadsheet IDs (not used when drive_folder_url is set)
+    auto_load_spreadsheets: []
   numeric_conversion_threshold: 0.8
-  spreadsheet_id: 1dSae1JI3AZfh7aa71JYeL0PKacq2loBxILY-0LJJlhw
+  spreadsheet_id: ""
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
   explainer_max_tokens: 150
   max_retries: 2
   model: gemini-2.0-flash
-  planner_max_tokens: 2000
+  model_complex: gemini-2.5-pro
+  planner_max_tokens: 1500
   provider: gemini
-  request_timeout_seconds: 30
+  request_timeout_seconds: 20
   temperature: 0.0
 project:
   environment: local
@@ -54,5 +56,5 @@ table_routing:
 voice:
   default_voice_id: pNInz6obpgDQGcFmaJgB
   elevenlabs_api_key_env: ELEVENLABS_API_KEY
-  request_timeout_seconds: 30
+  request_timeout_seconds: 20
   tamil_voice_id: XrExE9yKIg1WjnnlVkGX

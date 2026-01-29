@@ -24,6 +24,7 @@ class DemoModeConfig:
     """Demo mode configuration for auto-loading sheets."""
     enabled: bool = False
     auto_load_spreadsheets: List[str] = field(default_factory=list)
+    drive_folder_url: Optional[str] = None  # Google Drive folder URL for plug-and-play mode
 
 
 @dataclass
@@ -131,7 +132,10 @@ class Config:
 # Singleton instance
 _config: Optional[Config] = None
 _config_lock = threading.Lock()
-_config_path = Path("config/settings.yaml")
+
+# Use path relative to this file's location (backend/utils/) -> backend/config/
+_BACKEND_DIR = Path(__file__).parent.parent
+_config_path = _BACKEND_DIR / "config" / "settings.yaml"
 
 
 def _load_raw_config() -> dict:
@@ -150,6 +154,7 @@ def _parse_demo_mode(demo_raw: Optional[dict]) -> Optional[DemoModeConfig]:
     return DemoModeConfig(
         enabled=demo_raw.get("enabled", False),
         auto_load_spreadsheets=demo_raw.get("auto_load_spreadsheets", []),
+        drive_folder_url=demo_raw.get("drive_folder_url"),
     )
 
 

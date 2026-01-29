@@ -1,7 +1,42 @@
+# ============================================
+# SECRETS & CREDENTIALS - NEVER COMMIT!
+# ============================================
+.env
+.env.*
+credentials/
+*.json
+!plan_schema.json
 
+# ============================================
+# RUNTIME DATA & CACHES
+# ============================================
+# TTS Audio Cache
+data_sources/cache/
+data_sources/cache/tts/
 
-# Python
+# Google Drive Cache
+data/
+data/gdrive_cache/
+
+# DuckDB Snapshots
+data_sources/snapshots/
+*.duckdb
+*.duckdb.wal
+
+# ChromaDB Vector Store
+schema_store/
+chroma_db/
+*.chromadb/
+
+# Table Profiles
+table_profiles.json
+
+# ============================================
+# PYTHON
+# ============================================
 __pycache__/
+*/__pycache__/
+*/*/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -21,27 +56,28 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+venv/
+.venv/
+env/
 
-# IDEs
+# ============================================
+# IDEs & EDITORS
+# ============================================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Database files
-*.duckdb
-*.duckdb.wal
-
-
-# ChromaDB
-chroma_db/
-*.chromadb/
-
-# Logs
+# ============================================
+# LOGS
+# ============================================
 *.log
+logs/
 
-# Testing files
+# ============================================
+# TESTING & DEBUG FILES
+# ============================================
 test/
 test_*.py
 debug_*.py
@@ -50,5 +86,14 @@ verify_*.py
 analyze_*.py
 rebuild_embeddings.py
 
-# Schema Store (ChromaDB persistence)
-schema_store/
+# ============================================
+# OS FILES
+# ============================================
+.DS_Store
+Thumbs.db
+
+# ============================================
+# DEPLOYMENT CONFIGS (platform-specific)
+# ============================================
+Procfile
+railway.toml

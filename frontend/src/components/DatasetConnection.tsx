@@ -36,6 +36,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { DetectedTable } from '@/lib/types';
 import { api } from '@/services/api';
+import { getApiBaseUrl } from '@/lib/constants';
 
 export interface DatasetStats {
   totalTables: number;
@@ -53,6 +54,7 @@ interface DatasetConnectionProps {
   isLocked?: boolean;
   isConnectionVerified?: boolean; // From parent - actual backend verification status
   initialStats?: DatasetStats;
+  isDemoMode?: boolean; // Hide "Add Another Spreadsheet" in demo mode
 }
 
 type LoadingStep = {
@@ -127,7 +129,7 @@ function getTableIcon(table: DetectedTable) {
   return Table;
 }
 
-export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '', isLocked = false, isConnectionVerified = false, initialStats }: DatasetConnectionProps) {
+export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '', isLocked = false, isConnectionVerified = false, initialStats, isDemoMode = false }: DatasetConnectionProps) {
   const [url, setUrl] = useState(initialUrl);
   const [status, setStatus] = useState<'idle' | 'verifying' | 'verified' | 'loading' | 'success' | 'connected' | 'details' | 'add_spreadsheet'>('idle');
   const [currentStep, setCurrentStep] = useState(0);
@@ -235,7 +237,7 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     }
   }, [isOpen, initialUrl, isLocked, isConnectionVerified, initialStats]);
 
-  // Verify URL without loading data
+  // Verify URL format locally (no server call needed)
   const verifyUrl = async () => {
     const sheetId = extractSpreadsheetId(url);
     if (!sheetId) {
@@ -244,35 +246,14 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
     }
 
     setStatus('verifying');
-    try {
-      console.log('[DatasetConnection] Verifying URL...');
-      // Use a lightweight check - just verify the spreadsheet is accessible
-      // For now, we'll do a quick metadata fetch
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'https://asif-mp3-thara-backend.hf.space'}/api/verify-sheet?url=${encodeURIComponent(url)}`);
+    console.log('[DatasetConnection] Verifying URL format...');
 
-      if (response.ok) {
-        const data = await response.json();
-        setUrlVerified(true);
-        setVerificationInfo({
-          sheetCount: data.sheet_count || 1,
-          sheetNames: data.sheet_names || ['Sheet1']
-        });
-        setStatus('verified');
-        toast.success('URL Verified', { description: 'Spreadsheet is accessible. Click Load to import data.' });
-      } else {
-        // If verification endpoint doesn't exist, fallback to simple validation
-        setUrlVerified(true);
-        setVerificationInfo({ sheetCount: 1, sheetNames: ['Sheet'] });
-        setStatus('verified');
-        toast.success('URL Verified', { description: 'Click Load to import your data.' });
-      }
-    } catch (error) {
-      // Fallback: If endpoint doesn't exist, just validate URL format and proceed
-      setUrlVerified(true);
-      setVerificationInfo({ sheetCount: 1, sheetNames: ['Sheet'] });
-      setStatus('verified');
-      toast.success('URL Format Valid', { description: 'Click Load to import your data.' });
-    }
+    // URL format is valid - we'll verify actual access when loading
+    // This avoids calling a non-existent endpoint and is faster UX
+    setUrlVerified(true);
+    setVerificationInfo({ sheetCount: 1, sheetNames: ['Sheet'] });
+    setStatus('verified');
+    toast.success('URL Format Valid', { description: 'Click Load to import your data.' });
   };
 
   // Fetch fresh stats (called when clicking View Details or Refresh)
@@ -908,26 +889,30 @@ export function DatasetConnection({ isOpen, onClose, onSuccess, initialUrl = '',
                   </Button>
                 </motion.div>
 
-                {/* Add Another Spreadsheet Button */}
-                <motion.div variants={itemVariants}>
-                  <Button
-                    onClick={() => setStatus('add_spreadsheet')}
-                    disabled={!isVerified || isRefreshing}
-                    variant="outline"
-                    className="w-full h-12 rounded-xl font-bold transition-all duration-300 border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 text-emerald-400"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 mr-2" />
-                    Add Another Spreadsheet
-                  </Button>
-                </motion.div>
+                {/* Add Another Spreadsheet Button - Hidden in Demo Mode */}
+                {!isDemoMode && (
+                  <>
+                    <motion.div variants={itemVariants}>
+                      <Button
+                        onClick={() => setStatus('add_spreadsheet')}
+                        disabled={!isVerified || isRefreshing}
+                        variant="outline"
+                        className="w-full h-12 rounded-xl font-bold transition-all duration-300 border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 text-emerald-400"
+                      >
+                        <FileSpreadsheet className="w-4 h-4 mr-2" />
+                        Add Another Spreadsheet
+                      </Button>
+                    </motion.div>
 
-                {/* Hint */}
-                <motion.p
-                  variants={itemVariants}
-                  className="text-xs text-center text-zinc-500"
-                >
-                  {isRefreshing ? 'Syncing with Google Sheets...' : 'Add more spreadsheets to combine data from multiple sources'}
-                </motion.p>
+                    {/* Hint */}
+                    <motion.p
+                      variants={itemVariants}
+                      className="text-xs text-center text-zinc-500"
+                    >
+                      {isRefreshing ? 'Syncing with Google Sheets...' : 'Add more spreadsheets to combine data from multiple sources'}
+                    </motion.p>
+                  </>
+                )}
               </motion.div>
             )}
 

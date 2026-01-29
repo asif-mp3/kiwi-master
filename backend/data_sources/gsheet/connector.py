@@ -280,8 +280,8 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                         'False': False, 'false': False, 'FALSE': False, 'No': False, 'no': False, 'NO': False, '0': False, 0: False
                     })
                     continue
-                except:
-                    pass
+                except (ValueError, TypeError, KeyError):
+                    pass  # Boolean conversion failed, try other types
             
             # Try numeric conversion (int or float)
             try:
@@ -305,8 +305,8 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                     else:
                         df[col] = pd.to_numeric(df[col].astype(str).str.strip().str.replace(',', '').str.replace('$', '').str.replace('₹', '').str.replace('%', ''), errors='coerce')
                     continue
-            except:
-                pass
+            except (ValueError, TypeError, AttributeError):
+                pass  # Numeric conversion failed, try other types
             
             # Try date/datetime conversion
             try:
@@ -342,8 +342,8 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                                     )
                                     df[col] = pd.to_datetime(df[col], errors='coerce')
                                     continue
-                    except:
-                        pass
+                    except (ValueError, TypeError, OverflowError):
+                        pass  # Serial date conversion failed
 
                     # Detect date format first (DD/MM/YYYY vs MM/DD/YYYY)
                     detected_format = detect_date_format(non_null)
@@ -385,8 +385,8 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                                     date_values = test_values
                                     fmt = date_fmt
                                     break
-                            except:
-                                continue
+                            except (ValueError, TypeError):
+                                continue  # This format doesn't match
 
                         # Fall back to pandas inference if no format matched
                         if date_values is None or date_values.notna().sum() / len(non_null) < 0.5:
@@ -405,8 +405,8 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                     sample_dates = df[col].dropna().head(2).tolist()
                     print(f"      ✓ [DATE SUCCESS] Column '{col}': {valid_count}/{len(df)} valid dates. Samples: {sample_dates}")
                     continue
-            except:
-                pass
+            except (ValueError, TypeError, OverflowError):
+                pass  # Date conversion failed, keep original type
         except Exception as e:
             # If any error occurs for this column, skip it and continue with next column
             print(f"      ⚠️  Warning: Could not infer type for column '{col}': {e}")

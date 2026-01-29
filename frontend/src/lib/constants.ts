@@ -16,12 +16,32 @@ export const VAD_SILENCE_DURATION = 1000; // Stop after 1 second of silence (fas
 export const VAD_MIN_SPEECH_DURATION = 250; // Minimum speech before checking silence (ms)
 export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms) - faster polling
 
-// API defaults
-export const DEFAULT_API_BASE_URL = 'https://asif-mp3-thara-backend.hf.space';
+// API defaults (fallbacks only - prefer environment variables)
+const LOCALHOST_API_URL = 'http://localhost:8000';
 
 // Get environment variables with fallbacks
-export const getApiBaseUrl = () =>
-  process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
+export const getApiBaseUrl = () => {
+  // Always prefer environment variable (set in Vercel dashboard)
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) {
+    return process.env.NEXT_PUBLIC_API_BASE_URL;
+  }
+
+  // Auto-detect localhost for development
+  if (typeof window !== 'undefined') {
+    const isLocalhost = window.location.hostname === 'localhost' ||
+                        window.location.hostname === '127.0.0.1';
+    if (isLocalhost) {
+      return LOCALHOST_API_URL;
+    }
+    // Production without env var - warn developer
+    console.warn(
+      'NEXT_PUBLIC_API_BASE_URL not set! Set this in Vercel Environment Variables.',
+      'Falling back to localhost which will fail in production.'
+    );
+  }
+
+  return LOCALHOST_API_URL; // Will fail in production - forces proper config
+};
 
 export const getElevenLabsVoiceId = () => {
   const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID;

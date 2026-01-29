@@ -2,23 +2,12 @@
 Table Detection Integration Module
 ====================================
 
-This module bridges the table detector layer with the main ingestion pipeline.
-It provides a clean interface for detecting multiple tables within a single sheet.
+This module provides table detection for Google Sheets data.
+Each sheet is treated as a single table with automatic header detection.
 """
 
-import sys
-import os
-from pathlib import Path
 import pandas as pd
 from typing import List, Dict, Any
-
-# Add table detector directory to path
-TABLE_DETECTOR_PATH = Path(__file__).parent.parent.parent / "table detector"
-sys.path.insert(0, str(TABLE_DETECTOR_PATH))
-
-# Import table detector functions
-from custom_detector import detect_tables_custom
-from table_cleaner import clean_detected_tables
 import re
 
 
@@ -45,63 +34,90 @@ def _sanitize_sheet_name(sheet_name: str) -> str:
 
 def detect_and_clean_tables(df: pd.DataFrame, sheet_name: str) -> List[Dict[str, Any]]:
     """
-    Detect and clean multiple tables from a single sheet DataFrame.
-    
+    Detect and clean tables from a sheet DataFrame.
+
     Args:
-        df: Raw DataFrame from Google Sheets (with all data, no headers assumed)
-        sheet_name: Name of the source sheet (for context)
-    
+        df: Raw DataFrame from Google Sheets
+        sheet_name: Name of the source sheet
+
     Returns:
-        List of detected tables, each containing:
-        - table_id: Unique identifier
-        - row_range: (start_row, end_row)
-        - col_range: (start_col, end_col)
-        - dataframe: Cleaned table data with proper headers
-        - title: Optional table title if detected
-        - sheet_name: Source sheet name
-    """ 
-    try:
-        # Step 1: Detect tables using custom detector
-        detected_tables = detect_tables_custom(df)
+        List of detected tables with metadata
+    """
+    if df is None or df.empty:
+        return []
 
-        if not detected_tables:
-            # Fallback: treat entire sheet as one table with meaningful name
-            # Convert sheet name to snake_case for table_id
-            sanitized_name = _sanitize_sheet_name(sheet_name)
-            print(f"      ⚠️  No tables detected in '{sheet_name}', using entire sheet")
-            return [{
-                'table_id': f'{sanitized_name}_table_1',
-                'row_range': (0, int(len(df))),
-                'col_range': (0, int(len(df.columns))),
-                'dataframe': df,
-                'sheet_name': sheet_name
-            }]
+    sanitized_name = _sanitize_sheet_name(sheet_name)
 
-        # Step 2: Clean detected tables (remove title rows, set headers, etc.)
-        cleaned_tables = clean_detected_tables(detected_tables, keep_title=True)
+    # Clean the dataframe
+    cleaned_df = _clean_dataframe(df)
 
-        # Step 3: Add sheet context and update table_id with meaningful names
-        sanitized_name = _sanitize_sheet_name(sheet_name)
-        for i, table in enumerate(cleaned_tables):
-            table['sheet_name'] = sheet_name
-            # Replace generic table_0, table_1 with meaningful names like payroll_summary_table_1
-            table['table_id'] = f'{sanitized_name}_table_{i + 1}'
+    if cleaned_df.empty:
+        return []
 
-        return cleaned_tables
-        
-    except Exception as e:
-        print(f"      ⚠️  Error detecting tables in '{sheet_name}': {e}")
-        print(f"      → Falling back to treating entire sheet as one table")
+    return [{
+        'table_id': f'{sanitized_name}_table_1',
+        'row_range': (0, int(len(cleaned_df))),
+        'col_range': (0, int(len(cleaned_df.columns))),
+        'dataframe': cleaned_df,
+        'title': sheet_name,
+        'sheet_name': sheet_name
+    }]
 
-        # Fallback: treat entire sheet as one table with meaningful name
-        sanitized_name = _sanitize_sheet_name(sheet_name)
-        return [{
-            'table_id': f'{sanitized_name}_table_1',
-            'row_range': (0, int(len(df))),
-            'col_range': (0, int(len(df.columns))),
-            'dataframe': df,
-            'sheet_name': sheet_name
-        }]
+
+def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean a DataFrame by:
+    - Removing completely empty rows and columns
+    - Setting first row as header if it looks like headers
+    - Cleaning column names
+    """
+    if df is None or df.empty:
+        return df
+
+    # Make a copy
+    df = df.copy()
+
+    # Remove completely empty rows
+    df = df.dropna(how='all')
+
+    # Remove completely empty columns
+    df = df.dropna(axis=1, how='all')
+
+    if df.empty:
+        return df
+
+    # Check if first row looks like headers (mostly strings, no nulls)
+    first_row = df.iloc[0]
+    non_null_count = first_row.notna().sum()
+    string_count = sum(1 for v in first_row if isinstance(v, str) and v.strip())
+
+    if non_null_count > 0 and string_count >= non_null_count * 0.5:
+        # First row looks like headers
+        new_headers = [str(v).strip() if pd.notna(v) else f'Column_{i}'
+                       for i, v in enumerate(first_row)]
+        df = df.iloc[1:].reset_index(drop=True)
+        df.columns = new_headers
+    else:
+        # Generate generic column names
+        df.columns = [f'Column_{i}' for i in range(len(df.columns))]
+
+    # Clean column names (remove special chars, make unique)
+    seen = {}
+    new_cols = []
+    for col in df.columns:
+        col_clean = re.sub(r'[^\w\s]', '', str(col)).strip()
+        col_clean = col_clean.replace(' ', '_') if col_clean else 'Column'
+
+        if col_clean in seen:
+            seen[col_clean] += 1
+            col_clean = f'{col_clean}_{seen[col_clean]}'
+        else:
+            seen[col_clean] = 0
+        new_cols.append(col_clean)
+
+    df.columns = new_cols
+
+    return df
 
 
 def get_table_name(sheet_name: str, table_index: int) -> str:

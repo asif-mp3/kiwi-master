@@ -1,11 +1,8 @@
 # Core Dependencies
-google-generativeai>=0.3.0
+google-generativeai>=0.8.0
 pyyaml>=6.0
 jsonschema>=4.0.0
 python-dotenv>=1.0.0
-
-# Web Framework
-streamlit>=1.28.0
 
 # Database
 duckdb>=0.9.0
@@ -24,13 +21,11 @@ google-cloud-translate>=3.0.0
 # Data Processing
 pandas>=2.0.0
 numpy>=1.24.0
+openpyxl>=3.1.0  # For Excel file support
 
-# Voice & Audio
+# Voice & Audio (ElevenLabs only)
 elevenlabs>=1.0.0
-gtts>=2.4.0
 langdetect>=1.0.9
-pydub>=0.25.1
-scipy>=1.10.0
 
 # Utilities
 requests>=2.31.0

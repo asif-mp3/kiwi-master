@@ -124,22 +124,21 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         
         # Configure Gemini
         genai.configure(api_key=api_key)
-        
-        # Create model with JSON output
+
+        # Create model with JSON output (no system_instruction for compatibility with 0.3.x)
         model = genai.GenerativeModel(
             model_name="gemini-2.0-flash-exp",  # Fast model for detection
             generation_config={
                 "temperature": 0.0,
                 "response_mime_type": "application/json"
             },
-            system_instruction=MEMORY_DETECTION_PROMPT
         )
-        
-        # Build prompt
-        user_prompt = f"User input: {question}\n\nDetect memory intent and output JSON:"
-        
+
+        # Build prompt with system instruction prepended (for compatibility)
+        full_prompt = f"{MEMORY_DETECTION_PROMPT}\n\n---\n\nUser input: {question}\n\nDetect memory intent and output JSON:"
+
         # Call API
-        response = model.generate_content(user_prompt)
+        response = model.generate_content(full_prompt)
         
         # Parse JSON response
         result = json.loads(response.text)

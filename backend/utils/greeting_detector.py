@@ -938,7 +938,10 @@ def is_non_query_conversational(text: str) -> bool:
         # Tamil data keywords (Tamil script)
         'எவ்வளவு',    # how much
         'மொத்தம்',    # total
+        'மொத்த',      # total (alternate form)
         'விற்பனை',    # sales
+        'விற்பனையை',  # sales (accusative)
+        'வெற்பனை',    # sales (spoken variant)
         'லாபம்',      # profit
         'ஷீட்',       # sheet
         'அட்டவணை',    # table
@@ -946,6 +949,8 @@ def is_non_query_conversational(text: str) -> bool:
         'எத்தனை',     # how many
         'என்ன',       # what
         'எந்த',       # which
+        'எது',        # which (alternate)
+        'எதுல',       # which (spoken)
         'எங்கே',      # where
         'எப்படி',     # how
         'காட்டு',     # show
@@ -971,6 +976,8 @@ def is_non_query_conversational(text: str) -> bool:
         'கேட்டகிரி',   # category (Tanglish variant)
         'பிராஞ்ச்',    # branch (Tanglish)
         'ப்ராஞ்ச்',    # branch (Tanglish variant)
+        'பிரான்ச்',    # branch (Tanglish variant 2)
+        'பிரான்ச',     # branch (without virama)
         'பேட்டர்ன்',   # pattern (Tanglish)
         'ப்ரொஜெக்ஷன்', # projection (Tanglish)
         'ஃபோர்காஸ்ட்', # forecast (Tanglish)
@@ -995,7 +1002,11 @@ def is_non_query_conversational(text: str) -> bool:
         'முதல்',       # first/top
         'கடைசி',       # last/bottom
         'அதிகமான',     # highest/most
+        'அதிகமாக',     # highest/most (alternate form)
+        'அதிகமா',      # highest/most (spoken form)
+        'கொண்ட',       # having/with (used in "highest X having branch")
         'குறைவான',     # lowest/least
+        'குறைவா',      # lowest/least (spoken form)
         # Time-related Tamil words
         'நவம்பர்',     # November
         'டிசம்பர்',    # December
@@ -1069,9 +1080,22 @@ def is_non_query_conversational(text: str) -> bool:
             return False  # Let clarification handler deal with it
 
     # If we get here, it's likely random conversational text
-    # Be more aggressive for Tamil text that doesn't have data keywords
+    # For Tamil text, check if it looks like a question (data query intent)
     if has_tamil:
-        return True  # Tamil text without data keywords = conversational
+        # Tamil question patterns - these indicate data queries even without exact keyword match
+        tamil_question_patterns = [
+            r'எது\s*\??$',      # ends with "which?"
+            r'என்ன\s*\??$',    # ends with "what?"
+            r'எவ்வளவு',         # "how much"
+            r'எத்தனை',          # "how many"
+            r'எங்கே',           # "where"
+            r'யார்',            # "who"
+            r'ஏன்',             # "why"
+            r'\?$',             # ends with question mark
+        ]
+        if any(re.search(p, text_lower) for p in tamil_question_patterns):
+            return False  # Looks like a data question - let query pipeline handle
+        return True  # Tamil text without data keywords or question patterns = conversational
 
     # For English, be a bit more conservative
     # Check if it's a short statement without query intent

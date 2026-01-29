@@ -7,10 +7,37 @@ import google.generativeai as genai
 from pathlib import Path
 from planning_layer.planner_prompt import PLANNER_SYSTEM_PROMPT
 from dotenv import load_dotenv
+
+# Backend directory for relative paths
+_BACKEND_DIR = Path(__file__).parent.parent
 from utils.permanent_memory import format_memory_for_prompt
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+# ============================================
+# BACKWARD-COMPATIBLE MODEL WRAPPER
+# Works with google-generativeai 0.3.x (no system_instruction)
+# ============================================
+class CompatibleGenerativeModel:
+    """
+    Wrapper for GenerativeModel that supports system prompts
+    on older versions of google-generativeai (< 0.4.0).
+    """
+    def __init__(self, model, system_prompt: str):
+        self._model = model
+        self._system_prompt = system_prompt
+
+    def generate_content(self, prompt, **kwargs):
+        """Prepend system prompt to user message."""
+        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
+        return self._model.generate_content(full_prompt, **kwargs)
+
+    def __getattr__(self, name):
+        """Forward other attributes to underlying model."""
+        return getattr(self._model, name)
+
 
 # ============================================
 # SINGLETON PATTERN FOR LLM CLIENT
@@ -27,7 +54,7 @@ def load_config():
     if _config_cache is not None:
         return _config_cache
 
-    config_path = Path("config/settings.yaml")
+    config_path = _BACKEND_DIR / "config" / "settings.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
     _config_cache = config.get("llm", {})
@@ -94,18 +121,110 @@ def initialize_gemini_client(config):
         "response_mime_type": "application/json",
         "max_output_tokens": max_tokens,
     }
-    
+
     # Load and inject permanent memory into system prompt
     memory_constraints = format_memory_for_prompt()
     system_prompt = PLANNER_SYSTEM_PROMPT + memory_constraints
-    
-    model = genai.GenerativeModel(
+
+    # Create base model without system_instruction (for compatibility with 0.3.x)
+    base_model = genai.GenerativeModel(
         model_name=model_name,
         generation_config=generation_config,
-        system_instruction=system_prompt
     )
+
+    # Wrap with our compatible model that handles system prompts
+    return CompatibleGenerativeModel(base_model, system_prompt)
+
+
+# ============================================
+# ADAPTIVE MODEL SELECTION FOR LATENCY
+# Simple queries: gemini-2.0-flash (2-3x faster)
+# Complex queries: gemini-2.5-pro (more accurate)
+# ============================================
+
+def estimate_query_complexity(question: str, entities: dict = None) -> str:
+    """
+    Estimate query complexity to select appropriate model.
+
+    Returns:
+        'simple': Basic aggregation, lookup, count queries (~70% of queries)
+        'complex': Multi-table, trend analysis, complex comparisons
+    """
+    q_lower = question.lower()
+
+    # Complex query patterns (need powerful model)
+    complex_patterns = [
+        'compare', 'versus', 'vs', 'trend', 'over time',
+        'correlation', 'impact', 'why', 'how does',
+        'month over month', 'year over year', 'yoy', 'mom',
+        'projection', 'forecast', 'predict',
+        'between', 'from', 'and', 'across all',
+        'breakdown by', 'grouped by multiple'
+    ]
+
+    # Check for complex patterns
+    for pattern in complex_patterns:
+        if pattern in q_lower:
+            return 'complex'
+
+    # Check entities for complexity signals
+    if entities:
+        if entities.get('cross_table_intent'):
+            return 'complex'
+        if entities.get('comparison') and entities.get('multi_period'):
+            return 'complex'
+        if entities.get('trend_intent'):
+            return 'complex'
     
-    return model
+    # Simple queries (use fast model)
+    return 'simple'
+
+
+def get_model_for_complexity(complexity: str, config: dict):
+    """
+    Get appropriate model based on query complexity.
+    Creates a new model instance (not singleton) for adaptive selection.
+
+    Args:
+        complexity: 'simple' or 'complex'
+        config: LLM configuration
+
+    Returns:
+        tuple: (model, model_name)
+    """
+    api_key = os.getenv(config.get("api_key_env", "GEMINI_API_KEY"))
+    genai.configure(api_key=api_key)
+    temperature = config.get("temperature", 0.0)
+
+    if complexity == 'simple':
+        # Fast model for simple queries (2-3x faster)
+        model_name = "gemini-2.0-flash"
+        max_tokens = 1000
+    else:
+        # Powerful model for complex queries
+        model_name = config.get("model", "gemini-2.5-pro")
+        max_tokens = config.get("planner_max_tokens", 1500)
+
+    generation_config = {
+        "temperature": temperature,
+        "response_mime_type": "application/json",
+        "max_output_tokens": max_tokens,
+    }
+
+    # Load memory constraints
+    memory_constraints = format_memory_for_prompt()
+    system_prompt = PLANNER_SYSTEM_PROMPT + memory_constraints
+
+    # Create base model without system_instruction (for compatibility with 0.3.x)
+    base_model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config=generation_config,
+    )
+
+    # Wrap with our compatible model that handles system prompts
+    model = CompatibleGenerativeModel(base_model, system_prompt)
+
+    return model, model_name
 
 
 def format_schema_context(schema_context) -> str:
@@ -260,9 +379,11 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
     if max_retries is None:
         max_retries = config.get("max_retries", 3)
 
-    # Get singleton Gemini client (saves 4-9s per query)
-    model = get_planner_model()
-    
+    # ADAPTIVE MODEL SELECTION: Use faster model for simple queries
+    complexity = estimate_query_complexity(question, entities)
+    model, model_name = get_model_for_complexity(complexity, config)
+    print(f"  [Planner] Query complexity: {complexity} → using {model_name}")
+
     # Format schema context
     schema_text = format_schema_context(schema_context)
     
@@ -307,6 +428,29 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
             hint_parts.append(f"- Metric focus: {entities['metric']}")
         if entities.get('cross_table_intent'):
             hint_parts.append("- User wants data ACROSS multiple time periods (trend analysis)")
+        # CRITICAL: Pass specific date for date filtering (Tamil dates like "இருபத்தி நான்காம் தேதி")
+        if entities.get('date_specific'):
+            from datetime import datetime, timedelta
+            date_info = entities['date_specific']
+            day = date_info.get('day')
+            month = date_info.get('month')
+            if day and month:
+                # Convert to ISO format for filtering
+                year = date_info.get('year', 2025)  # Default to 2025
+                try:
+                    # Use datetime for proper date arithmetic (handles month boundaries)
+                    date_obj = datetime(year, month, day)
+                    next_date_obj = date_obj + timedelta(days=1)
+                    date_str = date_obj.strftime('%Y-%m-%d')
+                    next_date_str = next_date_obj.strftime('%Y-%m-%d')
+                    month_name = date_obj.strftime('%B')  # Full month name
+                    hint_parts.append(f"- **SPECIFIC DATE**: {month_name} {day} → MUST filter: Date >= '{date_str}' AND Date < '{next_date_str}'")
+                except ValueError:
+                    # Invalid date (e.g., Feb 30), skip date hint
+                    pass
+            elif day:
+                # Only day specified, use with month context
+                hint_parts.append(f"- **SPECIFIC DAY**: Day {day} of the month → Apply date filter for day {day}")
         if hint_parts:
             entity_hints = "\n**Extracted Entities (use these for filters):**\n" + "\n".join(hint_parts) + "\n"
 

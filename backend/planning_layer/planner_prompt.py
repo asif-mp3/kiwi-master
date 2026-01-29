@@ -140,6 +140,13 @@ When multiple tables with similar schemas are available in the schema context:
     - **"Sales" as a metric**: "Total sales", "Show me sales", "What are the sales" → Aggregate on "Gross sales", "Net sales", "Revenue", or "Sale Amount" column
     - **"Sales" as a category**: ONLY filter on Category if user says "Sales category", "products in Sales", "items under Sales category"
     - **CRITICAL - Date-specific sales queries**: When user asks "What is the sales on [date]?", "[date] enna sales?", "Total sales for [date]", use query_type "aggregation_on_subset" with SUM, NOT "filter"!
+    - **CRITICAL - PROFIT vs REVENUE Column Selection**:
+      - **PROFIT keywords**: "profit", "லாபம்", "இலாபம்", "margin", "net profit", "net income", "earnings" → Select columns containing "Profit", "Net_Profit", "Net_Income", "Margin", "Earnings". NEVER use "Revenue" or "Total_Revenue" columns for profit queries!
+      - **REVENUE keywords**: "revenue", "sales", "விற்பனை", "gross sales", "total sales", "turnover" → Select columns containing "Revenue", "Total_Revenue", "Gross_Sales", "Sale_Amount", "Sales"
+      - Example WRONG: User asks "Which category has highest profit?" → Using "Total_Revenue" column (WRONG! Revenue ≠ Profit)
+      - Example CORRECT: User asks "Which category has highest profit?" → Using "Profit" or "Net_Profit" column
+      - Example CORRECT: User asks "Which category has highest revenue?" → Using "Total_Revenue" or "Gross_Sales" column
+      - If table has BOTH "Profit" and "Total_Revenue" columns, you MUST pick the correct one based on user's question!
     - **CRITICAL - "Total X" aggregation queries**: When user asks "total payroll", "total salary", "total expenses", "sum of X", "overall budget", etc., ALWAYS use query_type "aggregation_on_subset" with aggregation_function "SUM". NEVER use "list" query type for totals!
         - "Total payroll" / "What is the total payroll?" → aggregation_on_subset with SUM(Salary)
         - "Total expenses" → aggregation_on_subset with SUM(Expense or Amount column)
@@ -531,6 +538,20 @@ When multiple tables with similar schemas are available in the schema context:
 "subset_limit": null
 }
 
+**Question:** "சென்னை sales data இருபத்தி நான்காம் தேதி நவம்பர் மாதம்" (Tamil: Chennai sales data on 24th November)
+**Schema context:** Table "Daily_Sales" with columns ["Date", "Branch_Name", "Sale_Amount"] where Date is datetime64[ns]
+**Extracted Entities:** Location = Chennai, SPECIFIC DATE: November 24 → filter Date >= '2025-11-24' AND Date < '2025-11-25'
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Daily_Sales",
+"aggregation_function": "SUM",
+"aggregation_column": "Sale_Amount",
+"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-24"}, {"column": "Date", "operator": "<", "value": "2025-11-25"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
 **Question:** "Show all transactions from November 15th" (LISTING rows, not total)
 **Schema context:** Table "Daily_Sales" with columns ["Date", "Sale_Amount", "Category"] where Date is datetime64[ns]
 **Output:**
@@ -636,6 +657,28 @@ When multiple tables with similar schemas are available in the schema context:
 "metrics": ["Gross sales"],
 "order_by": [["Gross sales", "DESC"]],
 "limit": 10
+}
+
+**Question:** "Which category has the highest profit?" (or "அதிக profit உருவாக்கிய category எது?")
+**Schema context:** Table "Sales_Category_Performance" with columns ["Category", "Total_Revenue", "Profit", "Quantity_Sold", "Average_Price"]
+**Output:**
+{
+"query_type": "extrema_lookup",
+"table": "Sales_Category_Performance",
+"select_columns": ["Category", "Profit"],
+"order_by": [["Profit", "DESC"]],
+"limit": 1
+}
+
+**Question:** "Which category has the highest revenue?"
+**Schema context:** Table "Sales_Category_Performance" with columns ["Category", "Total_Revenue", "Profit", "Quantity_Sold", "Average_Price"]
+**Output:**
+{
+"query_type": "extrema_lookup",
+"table": "Sales_Category_Performance",
+"select_columns": ["Category", "Total_Revenue"],
+"order_by": [["Total_Revenue", "DESC"]],
+"limit": 1
 }
 
 **Question:** "What is the sales breakdown by shipping zip?"

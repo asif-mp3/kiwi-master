@@ -20,9 +20,83 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+
+# ============================================
+# BACKWARD-COMPATIBLE MODEL WRAPPER
+# Works with google-generativeai 0.3.x (no system_instruction)
+# ============================================
+class CompatibleGenerativeModel:
+    """
+    Wrapper for GenerativeModel that supports system prompts
+    on older versions of google-generativeai (< 0.4.0).
+    """
+    def __init__(self, model, system_prompt: str):
+        self._model = model
+        self._system_prompt = system_prompt
+
+    def generate_content(self, prompt, **kwargs):
+        """Prepend system prompt to user message."""
+        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
+        return self._model.generate_content(full_prompt, **kwargs)
+
+    def __getattr__(self, name):
+        """Forward other attributes to underlying model."""
+        return getattr(self._model, name)
+
+
 # Singleton model for table selection (separate from planner)
 _selector_model = None
 _selector_model_lock = threading.Lock()
+
+
+TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job is to analyze a user's question and select the BEST table from the available tables to answer it.
+
+## How to Select the Right Table
+
+1. **Understand the Question Intent**:
+   - What is the user asking for? (count, percentage, comparison, list, lookup)
+   - What entity are they asking about? (branches, transactions, sales, employees)
+   - What dimensions/filters are mentioned? (payment mode, location, date, category)
+
+2. **Match Question to Table**:
+   - Look at table NAMES - they often indicate what data they contain
+   - Look at COLUMNS - ensure the table has the columns needed to answer
+   - Look at SAMPLE VALUES - ensure the table contains the specific values mentioned
+   - Look at ROW COUNT - for "how many" questions, need tables with complete data
+
+3. **Critical Rules for TOTALS/SUMS/COUNTS**:
+   **RULE #1: For "total", "sum", "count", "all", "how many" - ALWAYS use the table with HIGHEST ROW COUNT**
+   - If one table has 5000+ rows and another has <50 rows, USE THE HIGH ROW COUNT TABLE
+   - A table with only a few rows CANNOT contain raw transaction data - it's pre-aggregated!
+   - HIGH row count (1000+) = individual records/transactions = USE FOR TOTALS
+   - LOW row count (<50) = already summarized/grouped data = NEVER use for raw totals
+
+4. **Row Count Guide**:
+   - 5000+ rows = Transaction-level raw data → BEST for totals/counts
+   - 100-500 rows = Branch/item level data → Good for breakdowns
+   - 10-50 rows = Category/monthly summaries → Use only for summary questions
+   - 3-10 rows = Quarterly/annual summaries → NEVER use for "total" or "all" questions
+
+5. **Other Rules**:
+   - For "how many X" questions: Select the table with MOST rows that has X data
+   - For "percentage" questions: Need a table with the breakdown dimension
+   - For "show all" questions: Need the detailed transaction-level table
+
+6. **Validate Your Choice**:
+   - Does this table have the column needed for filtering? (e.g., State column for "Tamil Nadu")
+   - Does this table have the metric column? (e.g., Sales, Revenue, Amount)
+   - Does this table contain the specific values mentioned? (e.g., "UPI" in Payment_Mode values)
+
+## Output Format
+Return JSON with these fields:
+{
+  "selected_table": "exact_table_name",
+  "confidence": 0.0-1.0,
+  "reason": "why this table is best for this question",
+  "alternative": "second_best_table or null"
+}
+
+IMPORTANT: Output ONLY valid JSON, no other text."""
 
 
 def get_selector_model():
@@ -47,56 +121,20 @@ def get_selector_model():
 
         genai.configure(api_key=api_key)
 
-        # Use fast model for table selection
-        _selector_model = genai.GenerativeModel(
+        # Create base model without system_instruction (for compatibility with 0.3.x)
+        base_model = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
             generation_config={
                 "temperature": 0.0,  # Deterministic
                 "response_mime_type": "application/json",
                 "max_output_tokens": 500,
             },
-            system_instruction=TABLE_SELECTOR_PROMPT
         )
 
+        # Wrap with our compatible model that handles system prompts
+        _selector_model = CompatibleGenerativeModel(base_model, TABLE_SELECTOR_PROMPT)
+
         return _selector_model
-
-
-TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job is to analyze a user's question and select the BEST table from the available tables to answer it.
-
-## How to Select the Right Table
-
-1. **Understand the Question Intent**:
-   - What is the user asking for? (count, percentage, comparison, list, lookup)
-   - What entity are they asking about? (branches, transactions, sales, employees)
-   - What dimensions/filters are mentioned? (payment mode, location, date, category)
-
-2. **Match Question to Table**:
-   - Look at table NAMES - they often indicate what data they contain
-   - Look at COLUMNS - ensure the table has the columns needed to answer
-   - Look at SAMPLE VALUES - ensure the table contains the specific values mentioned
-   - Look at ROW COUNT - for "how many" questions, need tables with complete data
-
-3. **Critical Rules**:
-   - For "how many X" questions: Select the table with MOST rows that has X data. NEVER use "Top_N" tables.
-   - For "percentage" questions: Need a table with the breakdown dimension (e.g., Payment_Mode column for UPI %)
-   - For "show all" questions: Need the detailed transaction-level table
-   - Tables marked as "PARTIAL DATA" or "Top N only" do NOT have complete data
-
-4. **Validate Your Choice**:
-   - Does this table have the column needed for filtering? (e.g., State column for "Tamil Nadu")
-   - Does this table have the metric column? (e.g., Sales, Revenue, Amount)
-   - Does this table contain the specific values mentioned? (e.g., "UPI" in Payment_Mode values)
-
-## Output Format
-Return JSON with these fields:
-{
-  "selected_table": "exact_table_name",
-  "confidence": 0.0-1.0,
-  "reason": "why this table is best for this question",
-  "alternative": "second_best_table or null"
-}
-
-IMPORTANT: Output ONLY valid JSON, no other text."""
 
 
 def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
@@ -113,12 +151,23 @@ def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
         row_count = profile.get('row_count', 0)
         table_type = profile.get('table_type', 'unknown')
 
-        # Check if this is a partial data table
+        # Check if this is a partial data or aggregated table
         name_lower = table_name.lower()
-        is_partial = any(x in name_lower for x in ['top_', 'top20', 'top10', 'summary'])
-        partial_note = " [PARTIAL DATA - Top N only, NOT for counting]" if is_partial else ""
+        is_partial = any(x in name_lower for x in ['top_', 'top20', 'top10'])
+        is_aggregated = any(x in name_lower for x in ['summary', 'quarterly', 'monthly', 'yearly', 'performance', 'overview'])
+        is_transaction = any(x in name_lower for x in ['transaction', 'daily', 'detail', 'raw', 'order', 'sale'])
 
-        lines.append(f"## {table_name}{partial_note}")
+        # Add appropriate note
+        if is_partial:
+            note = " [PARTIAL DATA - Top N only, NOT for totals]"
+        elif is_aggregated:
+            note = " [AGGREGATED/SUMMARY - Pre-computed, NOT for raw totals]"
+        elif is_transaction and row_count > 100:
+            note = " [TRANSACTION-LEVEL - Use for totals/counts]"
+        else:
+            note = ""
+
+        lines.append(f"## {table_name}{note}")
         lines.append(f"- Rows: {row_count}")
         lines.append(f"- Type: {table_type}")
 
@@ -279,7 +328,6 @@ def select_table_hybrid(
 
     # Build rich context for LLM
     table_context = build_rich_table_context(profiles)
-
     # Use LLM for selection
     if use_llm:
         llm_result = select_table_with_llm(question, table_context, llm_timeout, verbose=verbose)

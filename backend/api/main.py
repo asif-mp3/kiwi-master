@@ -11,7 +11,7 @@ Updated with:
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import tempfile
 import os
 from pathlib import Path
@@ -27,6 +27,8 @@ from api.models import (
 )
 from api.services import (
     load_dataset_service,
+    load_dataset_from_source,
+    sync_drive_folder,
     process_query_service,
     transcribe_audio_service,
     start_onboarding_service,
@@ -35,6 +37,9 @@ from api.services import (
     get_table_profiles_service,
     clear_context_service
 )
+
+# Backend directory for relative paths (works in containers)
+_BACKEND_DIR = Path(__file__).parent.parent
 
 # Create FastAPI app
 app = FastAPI(
@@ -244,8 +249,7 @@ async def health_check():
 
     # Check DuckDB
     try:
-        from pathlib import Path
-        snapshot_path = Path("data_sources/snapshots/latest.duckdb")
+        snapshot_path = _BACKEND_DIR / "data_sources" / "snapshots" / "latest.duckdb"
         health["checks"]["duckdb"] = {
             "status": "ok" if snapshot_path.exists() else "warning",
             "snapshot_exists": snapshot_path.exists()
@@ -261,6 +265,76 @@ async def health_check():
         health["status"] = "degraded"
 
     return health
+
+
+# =============================================================================
+# URL Validation (SSRF Prevention)
+# =============================================================================
+
+# Allowlist of domains that can be fetched
+ALLOWED_URL_DOMAINS = [
+    "docs.google.com",
+    "drive.google.com",
+    "sheets.googleapis.com",
+    "www.googleapis.com",
+]
+
+
+def validate_url_for_ssrf(url: str) -> bool:
+    """
+    Validate URL against SSRF attacks.
+    Only allows specific trusted domains.
+
+    Returns True if URL is safe, raises HTTPException otherwise.
+    """
+    if not url:
+        return False
+
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+
+        # Must be http or https
+        if parsed.scheme not in ("http", "https"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid URL scheme: {parsed.scheme}. Only http/https allowed."
+            )
+
+        # Check against allowlist
+        hostname = parsed.hostname or ""
+        hostname_lower = hostname.lower()
+
+        # Check if hostname matches allowed domains
+        is_allowed = any(
+            hostname_lower == domain or hostname_lower.endswith(f".{domain}")
+            for domain in ALLOWED_URL_DOMAINS
+        )
+
+        if not is_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Domain not allowed: {hostname}. Only Google Sheets/Drive URLs are supported."
+            )
+
+        # Block internal/private IPs
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_reserved:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Access to internal/private addresses is not allowed."
+                )
+        except ValueError:
+            pass  # Not an IP address, that's fine
+
+        return True
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid URL: {str(e)}")
 
 
 # =============================================================================
@@ -303,6 +377,97 @@ async def load_dataset(request: LoadDataRequest, user: dict = Depends(require_au
         raise  # Re-raise HTTPExceptions as-is
     except Exception as e:
         print(f"[API] Exception in load_dataset: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/load-source", response_model=LoadDataResponse)
+async def load_source(request: LoadDataRequest, user: dict = Depends(require_auth)):
+    """
+    NEW: Load data from any supported source (CSV, Excel, Google Drive, or Google Sheets).
+
+    Supported sources:
+    - Google Sheets: https://docs.google.com/spreadsheets/d/...
+    - CSV files: https://example.com/data.csv or local paths
+    - Excel files: https://example.com/data.xlsx or local paths
+    - Google Drive files: https://drive.google.com/file/d/...
+
+    For Google Sheets URLs, this automatically uses the existing code path.
+    For other sources, it uses the new connector system.
+
+    ADDITIVE: Does not modify existing /api/load-dataset functionality.
+    """
+    try:
+        print(f"[API] load-source for URL: {request.url} (append={request.append})")
+
+        # Validate URL
+        if not request.url or not request.url.strip():
+            raise HTTPException(status_code=400, detail="URL is required")
+
+        # SSRF Prevention: Validate URL domain
+        validate_url_for_ssrf(request.url)
+
+        # Get user ID for OAuth credentials (used for Google Sheets)
+        user_id = user.get("id") if user else None
+
+        # Use new universal loader (routes to existing code for Google Sheets)
+        result = load_dataset_from_source(request.url, user_id=user_id, append=request.append)
+
+        if not result.get('success'):
+            error_msg = result.get('error', 'Failed to load data source')
+            print(f"[API] Load failed: {error_msg}")
+            raise HTTPException(status_code=422, detail=error_msg)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Exception in load_source: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sync-folder")
+async def sync_folder_endpoint(request: LoadDataRequest, user: dict = Depends(require_auth)):
+    """
+    Sync all CSV/Excel files from a Google Drive folder.
+
+    Usage:
+        POST /api/sync-folder
+        {"url": "https://drive.google.com/drive/folders/ABC123"}
+
+    The folder must be shared with "Anyone with link" permission.
+    All CSV and Excel files in the folder will be loaded.
+
+    Query params:
+        append: If true, append to existing data. Default: false (replace)
+    """
+    try:
+        print(f"[API] sync-folder for URL: {request.url}")
+
+        if not request.url or not request.url.strip():
+            raise HTTPException(status_code=400, detail="Folder URL is required")
+
+        # SSRF Prevention: Validate URL domain
+        validate_url_for_ssrf(request.url)
+
+        # Sync the folder
+        result = sync_drive_folder(request.url, replace=not request.append)
+
+        if not result.get('success'):
+            error_msg = result.get('error', 'Failed to sync folder')
+            print(f"[API] Sync failed: {error_msg}")
+            raise HTTPException(status_code=422, detail=error_msg)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Exception in sync_folder: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -431,6 +596,43 @@ async def text_to_speech_endpoint(request: dict, user: dict = Depends(require_au
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/text-to-speech/stream")
+async def text_to_speech_stream_endpoint(request: dict, user: dict = Depends(require_auth)):
+    """
+    Convert text to speech with STREAMING output.
+    First audio chunk arrives in ~200-500ms instead of waiting 2-4s.
+    Enables immediate playback while audio is still being generated.
+    """
+    try:
+        from utils.voice_utils import text_to_speech_streaming, get_default_voice_id
+
+        text = request.get("text", "")
+        voice_id = request.get("voice_id") or get_default_voice_id()
+
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required")
+
+        print(f"[API] TTS STREAM with voice {voice_id}: {text[:50]}...")
+
+        def generate():
+            for chunk in text_to_speech_streaming(text, voice_id=voice_id):
+                yield chunk
+
+        return StreamingResponse(
+            generate(),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "attachment; filename=speech.mp3",
+                "Transfer-Encoding": "chunked"
+            }
+        )
+    except Exception as e:
+        print(f"[API] Exception in text_to_speech_stream: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # Authentication Endpoints
 # =============================================================================
@@ -439,14 +641,20 @@ async def text_to_speech_endpoint(request: dict, user: dict = Depends(require_au
 async def login(request: dict):
     """
     Authenticate admin user with username/password.
-    Single admin credentials: HelloThara / MyBizEmpire@2026
+    Credentials are read from environment variables:
+    - ADMIN_USERNAME (required)
+    - ADMIN_PASSWORD (required)
     """
     username = request.get("username", "")
     password = request.get("password", "")
 
-    # Admin credentials
-    admin_username = "HelloThara"
-    admin_password = "MyBizEmpire@2026"
+    # Admin credentials from environment variables (NEVER hardcode these)
+    admin_username = os.getenv("ADMIN_USERNAME")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+
+    if not admin_username or not admin_password:
+        print("[Auth] WARNING: ADMIN_USERNAME or ADMIN_PASSWORD not set in environment!")
+        raise HTTPException(status_code=500, detail="Server authentication not configured")
 
     if username == admin_username and password == admin_password:
         # Generate a simple token for session management
@@ -531,8 +739,8 @@ async def get_sheets_oauth_url(request: Request):
 
         if not check_gsheet_oauth_configured():
             raise HTTPException(
-                status_code=500,
-                detail="Google Sheets OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+                status_code=503,  # Service Unavailable
+                detail="Google Sheets OAuth is not configured on this server. Contact the administrator."
             )
 
         # Get user from auth
@@ -540,12 +748,24 @@ async def get_sheets_oauth_url(request: Request):
         user_id = user.get("id", "dev-user") if user else "dev-user"
 
         url = get_gsheet_oauth_url(user_id)
-        return {"url": url}
+
+        if not url:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate authorization URL. Please try again."
+            )
+
+        return {"url": url, "user_id": user_id}
     except HTTPException:
         raise
     except Exception as e:
         print(f"[Sheets Auth] OAuth URL error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to start Google Sheets authorization. Please try again later."
+        )
 
 
 @app.post("/api/auth/sheets/callback")
@@ -555,6 +775,17 @@ async def sheets_oauth_callback(request: dict, req: Request):
         from utils.gsheet_oauth import exchange_code_for_tokens
 
         code = request.get("code")
+        error = request.get("error")
+
+        # Handle OAuth error responses (user denied access, etc.)
+        if error:
+            error_description = request.get("error_description", "Unknown error")
+            print(f"[Sheets Auth] OAuth error: {error} - {error_description}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Authorization failed: {error_description}"
+            )
+
         if not code:
             raise HTTPException(status_code=400, detail="Authorization code required")
 
@@ -563,12 +794,28 @@ async def sheets_oauth_callback(request: dict, req: Request):
         user_id = user.get("id", "dev-user") if user else "dev-user"
 
         result = exchange_code_for_tokens(code, user_id)
+
+        # Check if token exchange was successful
+        if not result.get("success", False):
+            error_msg = result.get("error", "Token exchange failed")
+            print(f"[Sheets Auth] Token exchange failed: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
+
         return result
     except HTTPException:
         raise
+    except ValueError as e:
+        # Handle specific validation errors
+        print(f"[Sheets Auth] Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"[Sheets Auth] Callback error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to complete Google Sheets authorization. Please try again."
+        )
 
 
 @app.post("/api/auth/sheets/revoke")
@@ -709,47 +956,85 @@ async def startup_event():
     except Exception as e:
         print(f"  WARNING: Could not pre-load spreadsheet_id: {e}")
 
-    # === DEMO MODE: Auto-load hardcoded sheets on startup ===
+    # === DEMO MODE: Auto-load from Google Drive folder on startup ===
     try:
         from utils.config_loader import get_config
-        from api.services import load_dataset_service, app_state
+        from api.services import load_dataset_service, sync_drive_folder, app_state
         config = get_config()
 
         # Check if demo_mode is configured in settings.yaml
         demo_mode = config.google_sheets.demo_mode
 
         if demo_mode and demo_mode.enabled:
-            auto_load_ids = demo_mode.auto_load_spreadsheets
+            # Check for Google Drive folder URL first (new plug-and-play mode)
+            drive_folder_url = getattr(demo_mode, 'drive_folder_url', None)
 
-            if auto_load_ids:
+            if drive_folder_url:
                 print()
-                print("  [DEMO MODE] Auto-loading spreadsheets...")
-                for idx, sheet_id in enumerate(auto_load_ids, 1):
-                    try:
-                        sheets_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-                        print(f"    [{idx}/{len(auto_load_ids)}] Loading {sheet_id[:20]}...")
-                        # Use append=True for subsequent spreadsheets (idx > 1)
-                        # This merges data from multiple spreadsheets
-                        result = load_dataset_service(sheets_url, user_id=None, append=(idx > 1))
+                print("  [DEMO MODE] Checking Google Drive folder...")
+                print(f"    Folder: {drive_folder_url[:60]}...")
+                try:
+                    # Check if folder has changes before syncing
+                    from data_sources.connectors.gdrive_folder_connector import GoogleDriveFolderConnector
+                    connector = GoogleDriveFolderConnector(drive_folder_url)
+
+                    # Only sync if data not loaded OR folder has changes
+                    if not app_state.data_loaded or connector.has_changes():
+                        print("  [DEMO MODE] Syncing from Google Drive folder...")
+                        result = sync_drive_folder(drive_folder_url, replace=True)
 
                         if result.get('success'):
+                            files = result.get('files_loaded', [])
                             stats = result.get('stats', {})
-                            tables = stats.get('totalTables', 0) if stats else 0
-                            sheets = stats.get('sheetCount', 0) if stats else 0
-                            print(f"    [{idx}/{len(auto_load_ids)}] ✓ Loaded {tables} tables from {sheets} sheets")
+                            tables = stats.get('totalTables', 0)
+                            records = stats.get('totalRecords', 0)
+                            print(f"    ✓ Loaded {len(files)} files: {', '.join(files)}")
+                            print(f"    ✓ Total: {tables} tables, {records:,} records")
                         else:
-                            print(f"    [{idx}/{len(auto_load_ids)}] ✗ Failed: {result.get('error', 'Unknown error')}")
-                    except Exception as e:
-                        print(f"    [{idx}/{len(auto_load_ids)}] ✗ Error: {e}")
+                            print(f"    ✗ Failed: {result.get('error', 'Unknown error')}")
+                    else:
+                        print("    ✓ No changes detected - using cached data")
 
-                print("  [DEMO MODE] Auto-load complete!")
+                except Exception as e:
+                    print(f"    ✗ Error syncing folder: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                print("  [DEMO MODE] Folder sync complete!")
                 print()
+
+            # Fallback to legacy spreadsheet IDs if no folder URL
+            else:
+                auto_load_ids = getattr(demo_mode, 'auto_load_spreadsheets', [])
+
+                if auto_load_ids:
+                    print()
+                    print("  [DEMO MODE] Auto-loading spreadsheets...")
+                    for idx, sheet_id in enumerate(auto_load_ids, 1):
+                        try:
+                            sheets_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+                            print(f"    [{idx}/{len(auto_load_ids)}] Loading {sheet_id[:20]}...")
+                            result = load_dataset_service(sheets_url, user_id=None, append=(idx > 1))
+
+                            if result.get('success'):
+                                stats = result.get('stats', {})
+                                tables = stats.get('totalTables', 0) if stats else 0
+                                sheets = stats.get('sheetCount', 0) if stats else 0
+                                print(f"    [{idx}/{len(auto_load_ids)}] ✓ Loaded {tables} tables from {sheets} sheets")
+                            else:
+                                print(f"    [{idx}/{len(auto_load_ids)}] ✗ Failed: {result.get('error', 'Unknown error')}")
+                        except Exception as e:
+                            print(f"    [{idx}/{len(auto_load_ids)}] ✗ Error: {e}")
+
+                    print("  [DEMO MODE] Auto-load complete!")
+                    print()
     except Exception as e:
         print(f"  WARNING: Demo mode auto-load failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     # Ensure snapshots directory exists (prevents confusing DuckDB errors)
-    from pathlib import Path
-    snapshots_dir = Path("data_sources/snapshots")
+    snapshots_dir = _BACKEND_DIR / "data_sources" / "snapshots"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Snapshots dir: OK")
 

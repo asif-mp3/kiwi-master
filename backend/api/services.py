@@ -263,10 +263,9 @@ class AppState:
         """
         try:
             from analytics_engine.duckdb_manager import DuckDBManager
-            from pathlib import Path
 
-            db_path = Path("data_sources/snapshots/latest.duckdb")
-            profiles_path = Path("data_sources/table_profiles.json")
+            db_path = project_root / "data_sources" / "snapshots" / "latest.duckdb"
+            profiles_path = project_root / "data_sources" / "table_profiles.json"
 
             # Check DuckDB has data
             has_duckdb_data = False
@@ -633,6 +632,324 @@ def load_dataset_service(url: str, user_id: str = None, append: bool = False) ->
 
     except Exception as e:
         print(f"[Dataset] Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def load_dataset_from_source(url: str, user_id: str = None, append: bool = False) -> Dict[str, Any]:
+    """
+    NEW: Load data from any supported source (CSV, Excel, Drive, Sheets).
+    Falls back to existing Google Sheets flow for spreadsheet URLs.
+
+    This is ADDITIVE code - does not modify existing load_dataset_service.
+
+    Args:
+        url: Data source URL (Google Sheets, CSV, Excel, or Google Drive)
+        user_id: Optional user ID for OAuth credentials
+        append: If True, append to existing data instead of replacing
+    """
+    from data_sources.connector_factory import ConnectorFactory, is_google_sheets_url
+
+    # SAFETY: Google Sheets URLs use EXISTING code path (unchanged)
+    if is_google_sheets_url(url):
+        print(f"[Source] Google Sheets URL detected, using existing code path")
+        return load_dataset_service(url, user_id, append)
+
+    try:
+        print(f"[Source] Loading from new connector: {url}")
+
+        # Create appropriate connector for this URL
+        connector = ConnectorFactory.create(url)
+        source_name = connector.get_source_name()
+
+        # Fetch tables (same format as fetch_sheets_with_tables)
+        sheets_with_tables = connector.fetch_tables()
+
+        if not sheets_with_tables:
+            return {
+                'success': False,
+                'error': 'No data found in the source'
+            }
+
+        print(f"[Source] Fetched {len(sheets_with_tables)} sheets/files")
+
+        # From here, use EXISTING pipeline functions (unchanged)
+        app_state.initialize()
+        store = app_state.vector_store
+
+        # Prepare sheets with table structure (matching existing format)
+        prefixed_sheets_with_tables = {}
+        source_prefix = source_name[:10].replace(' ', '_')
+
+        for sheet_name, tables in sheets_with_tables.items():
+            prefixed_sheet_name = f"{source_prefix}_{sheet_name}"
+            table_list = []
+
+            for idx, df in enumerate(tables):
+                table_info = {
+                    'table_id': f"{prefixed_sheet_name}_t{idx}",
+                    'title': sheet_name,
+                    'sheet_name': prefixed_sheet_name,
+                    'original_sheet_name': sheet_name,
+                    'source_id': source_prefix,
+                    'dataframe': df,
+                    'row_range': [0, len(df)],
+                    'col_range': [0, len(df.columns)]
+                }
+                table_list.append(table_info)
+
+            prefixed_sheets_with_tables[prefixed_sheet_name] = table_list
+
+        # Use existing load_snapshot (unchanged)
+        if append and app_state.data_loaded:
+            print(f"[Source] APPEND MODE: Adding to existing data...")
+            load_snapshot(prefixed_sheets_with_tables, full_reset=False,
+                         changed_sheets=list(prefixed_sheets_with_tables.keys()))
+            store.rebuild()
+        else:
+            if not append:
+                app_state.data_loaded = False
+                app_state.loaded_spreadsheet_ids = []
+                app_state.detected_tables = []
+                app_state.original_sheet_names = []
+                app_state.total_records = 0
+                print(f"[Source] REPLACE MODE: Clearing existing data...")
+
+            store.clear_collection()
+            load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+            store.rebuild()
+
+        # Profile tables using existing profiler (unchanged)
+        print(f"[Source] Profiling tables...")
+        profiler = DataProfiler()
+        db = DuckDBManager()
+        tables = db.list_tables()
+
+        if not append:
+            app_state.profile_store.clear_profiles()
+
+        profile_count = 0
+        for table_name in tables:
+            try:
+                df = db.query(f'SELECT * FROM "{table_name}" LIMIT 10000')
+                profile = profiler.profile_table(table_name, df)
+                app_state.profile_store.set_profile(table_name, profile)
+                profile_count += 1
+            except Exception as e:
+                print(f"[Source] Warning: Could not profile {table_name}: {e}")
+
+        app_state.profile_store.save_profiles()
+        app_state.entity_extractor.refresh_from_profiles(app_state.profile_store)
+
+        # Build response
+        total_tables = sum(len(tbls) for tbls in prefixed_sheets_with_tables.values())
+        total_records = 0
+        detected_tables = []
+
+        for sheet_name, tables_list in prefixed_sheets_with_tables.items():
+            for table in tables_list:
+                df = table.get('dataframe')
+                actual_rows = len(df) if df is not None else 0
+                actual_columns = [str(col) for col in df.columns] if df is not None else []
+
+                detected_tables.append({
+                    'table_id': table.get('table_id', ''),
+                    'title': table.get('title', ''),
+                    'sheet_name': table.get('original_sheet_name', sheet_name),
+                    'source_id': table.get('source_id', ''),
+                    'total_rows': actual_rows,
+                    'columns': actual_columns
+                })
+                total_records += actual_rows
+
+        app_state.data_loaded = True
+        app_state.detected_tables = detected_tables if not append else app_state.detected_tables + detected_tables
+        app_state.total_records = total_records if not append else app_state.total_records + total_records
+
+        print(f"[Source] Successfully loaded: {total_tables} tables, {total_records} records")
+
+        return {
+            'success': True,
+            'stats': {
+                'totalTables': total_tables,
+                'totalRecords': total_records,
+                'sheetCount': len(prefixed_sheets_with_tables),
+                'sheets': list(sheets_with_tables.keys()),
+                'detectedTables': detected_tables,
+                'profiledTables': profile_count,
+                'sourceType': 'external'
+            }
+        }
+
+    except Exception as e:
+        print(f"[Source] Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def sync_drive_folder(folder_url: str, replace: bool = True) -> Dict[str, Any]:
+    """
+    Sync all CSV/Excel files from a Google Drive folder.
+
+    Args:
+        folder_url: Google Drive folder URL
+        replace: If True, replace existing data. If False, append.
+
+    Returns:
+        Dict with success status and loaded file info
+    """
+    from data_sources.connectors.gdrive_folder_connector import GoogleDriveFolderConnector
+
+    try:
+        print(f"[FolderSync] Starting sync from: {folder_url}")
+
+        # Validate URL
+        if not GoogleDriveFolderConnector.can_handle(folder_url):
+            return {
+                'success': False,
+                'error': 'Invalid Google Drive folder URL'
+            }
+
+        # Create connector and list files
+        connector = GoogleDriveFolderConnector(folder_url)
+        files = connector.list_files()
+
+        if not files:
+            return {
+                'success': False,
+                'error': 'No files found in folder. Make sure the folder is shared publicly.'
+            }
+
+        print(f"[FolderSync] Found {len(files)} files in folder")
+
+        # Fetch all tables from the folder
+        sheets_with_tables = connector.fetch_tables()
+
+        if not sheets_with_tables:
+            return {
+                'success': False,
+                'error': 'No data could be loaded from the files'
+            }
+
+        # Initialize app state
+        app_state.initialize()
+        store = app_state.vector_store
+
+        # Prepare sheets with table structure
+        prefixed_sheets_with_tables = {}
+        source_prefix = "drive"
+
+        for sheet_name, tables in sheets_with_tables.items():
+            prefixed_sheet_name = f"{source_prefix}_{sheet_name}"
+            table_list = []
+
+            for idx, df in enumerate(tables):
+                table_info = {
+                    'table_id': f"{prefixed_sheet_name}_t{idx}".replace(' ', '_').lower(),
+                    'title': sheet_name,
+                    'sheet_name': prefixed_sheet_name,
+                    'original_sheet_name': sheet_name,
+                    'source_id': source_prefix,
+                    'dataframe': df,
+                    'row_range': [0, len(df)],
+                    'col_range': [0, len(df.columns)]
+                }
+                table_list.append(table_info)
+
+            prefixed_sheets_with_tables[prefixed_sheet_name] = table_list
+
+        # Load into DuckDB
+        if replace:
+            app_state.data_loaded = False
+            app_state.loaded_spreadsheet_ids = []
+            app_state.detected_tables = []
+            app_state.original_sheet_names = []
+            app_state.total_records = 0
+            print(f"[FolderSync] REPLACE MODE: Clearing existing data...")
+            store.clear_collection()
+            load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+        else:
+            print(f"[FolderSync] APPEND MODE: Adding to existing data...")
+            load_snapshot(prefixed_sheets_with_tables, full_reset=False,
+                         changed_sheets=list(prefixed_sheets_with_tables.keys()))
+
+        store.rebuild()
+
+        # Profile tables
+        print(f"[FolderSync] Profiling tables...")
+        profiler = DataProfiler()
+        db = DuckDBManager()
+        tables = db.list_tables()
+
+        if replace:
+            app_state.profile_store.clear_profiles()
+
+        profile_count = 0
+        for table_name in tables:
+            try:
+                df = db.query(f'SELECT * FROM "{table_name}" LIMIT 10000')
+                profile = profiler.profile_table(table_name, df)
+                app_state.profile_store.set_profile(table_name, profile)
+                profile_count += 1
+            except Exception as e:
+                print(f"[FolderSync] Warning: Could not profile {table_name}: {e}")
+
+        app_state.profile_store.save_profiles()
+        app_state.entity_extractor.refresh_from_profiles(app_state.profile_store)
+
+        # Build response
+        total_tables = sum(len(tbls) for tbls in prefixed_sheets_with_tables.values())
+        total_records = 0
+        detected_tables = []
+
+        for sheet_name, tables_list in prefixed_sheets_with_tables.items():
+            for table in tables_list:
+                df = table.get('dataframe')
+                actual_rows = len(df) if df is not None else 0
+                actual_columns = [str(col) for col in df.columns] if df is not None else []
+
+                detected_tables.append({
+                    'table_id': table.get('table_id', ''),
+                    'title': table.get('title', ''),
+                    'sheet_name': table.get('original_sheet_name', sheet_name),
+                    'source_id': table.get('source_id', ''),
+                    'total_rows': actual_rows,
+                    'columns': actual_columns
+                })
+                total_records += actual_rows
+
+        app_state.data_loaded = True
+        app_state.detected_tables = detected_tables
+        app_state.total_records = total_records
+        app_state.original_sheet_names = list(sheets_with_tables.keys())
+
+        print(f"[FolderSync] Successfully synced: {len(files)} files, {total_tables} tables, {total_records} records")
+
+        return {
+            'success': True,
+            'files_found': len(files),
+            'files_loaded': [f.get('name') for f in files],
+            'stats': {
+                'totalTables': total_tables,
+                'totalRecords': total_records,
+                'sheetCount': len(prefixed_sheets_with_tables),
+                'sheets': list(sheets_with_tables.keys()),
+                'detectedTables': detected_tables,
+                'profiledTables': profile_count,
+                'sourceType': 'drive_folder'
+            }
+        }
+
+    except Exception as e:
+        print(f"[FolderSync] Exception: {str(e)}")
         import traceback
         traceback.print_exc()
         return {
@@ -2753,34 +3070,9 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 print("  → Returning memory confirmation")
                 print("=" * 60 + "\n")
 
-                # Generate personalized response with data availability
+                # Generate SHORT response - user doesn't want verbose info
                 if key == "address_as":
-                    # Get data availability info
-                    if app_state.profile_store:
-                        profiles = app_state.profile_store.get_all_profiles()
-                        table_count = len(profiles)
-                        # Extract months from profiles
-                        months = set()
-                        for name, profile in profiles.items():
-                            month = profile.get('date_range', {}).get('month')
-                            if month:
-                                months.add(month)
-                            # Also check table name for month keywords
-                            name_lower = name.lower()
-                            for m in ['august', 'september', 'october', 'november', 'december',
-                                      'january', 'february', 'march', 'april', 'may', 'june', 'july']:
-                                if m in name_lower:
-                                    months.add(m.capitalize())
-
-                        if table_count > 0 and months:
-                            month_str = ", ".join(sorted(months))
-                            explanation = f"Great to meet you, {value}! I have access to {table_count} data tables covering {month_str}. What would you like to know?"
-                        elif table_count > 0:
-                            explanation = f"Great to meet you, {value}! I have access to {table_count} data tables. What would you like to know?"
-                        else:
-                            explanation = f"Great to meet you, {value}! Please connect a dataset so I can help you explore your data."
-                    else:
-                        explanation = f"Great to meet you, {value}! Please connect a dataset so I can help you explore your data."
+                    explanation = f"Got it, {value}! What can I help you with?"
                 else:
                     explanation = "Got it! I'll remember that."
 
@@ -2853,41 +3145,119 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             print("  ✗ Not a schema inquiry")
         _log_timing("schema_inquiry", _step_start)
 
-        # === TRANSLATION LAYER (PRE-PROCESS) ===
+        # === EARLY CACHE CHECK (BEFORE TRANSLATION - SAVES 300-600ms) ===
         _step_start = _time.time()
-        print("\n[STEP 4/8] TRANSLATION LAYER...")
+        print("\n[STEP 3.5/8] EARLY CACHE CHECK...")
+
+        # Get spreadsheet_id for cache lookup
+        spreadsheet_id = app_state.current_spreadsheet_id
+        if not spreadsheet_id:
+            try:
+                config = get_config()
+                spreadsheet_id = config.google_sheets.spreadsheet_id
+                if spreadsheet_id:
+                    app_state.current_spreadsheet_id = spreadsheet_id
+            except (AttributeError, KeyError, FileNotFoundError):
+                spreadsheet_id = ""
+
+        # Check cache with ORIGINAL question (before translation)
+        early_cache_checked = False
+        if spreadsheet_id:
+            cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
+            early_cache_checked = True
+
+            if cache_hit and cached_result and isinstance(cached_result, dict):
+                print(f"  ⚡ EARLY CACHE HIT - skipping translation/entity extraction")
+                _log_timing("early_cache_check", _step_start)
+
+                # Translate cached explanation if Tamil input
+                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                cached_explanation = cached_result.get('explanation', '')
+                if is_tamil and cached_explanation:
+                    cached_explanation = translate_to_tamil(cached_explanation)
+
+                _total_time = (_time.time() - _query_start) * 1000
+                print(f"\n  ⏱️  TIMING SUMMARY (EARLY CACHE HIT):")
+                print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                print("=" * 60 + "\n")
+
+                return {
+                    'success': True,
+                    'explanation': cached_explanation,
+                    'data': cached_result.get('data'),
+                    'plan': cached_result.get('plan'),
+                    'table_used': cached_result.get('table_used'),
+                    'routing_confidence': cached_result.get('routing_confidence'),
+                    'was_followup': False,
+                    'entities_extracted': cached_result.get('entities_extracted', {}),
+                    'data_refreshed': False,
+                    'from_cache': True,
+                    'no_results': cached_result.get('no_results', False),
+                    'visualization': cached_result.get('visualization')
+                }
+            else:
+                print("  ✗ Cache miss - continuing with full pipeline")
+        else:
+            print("  ✗ No spreadsheet_id - skipping cache check")
+        _log_timing("early_cache_check", _step_start)
+
+        # === PARALLEL: TRANSLATION + ENTITY EXTRACTION (SAVES 200-400ms) ===
+        _step_start = _time.time()
+        print("\n[STEP 4-5/8] PARALLEL: TRANSLATION + ENTITY EXTRACTION...")
+
         processing_query = question
         is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        entities = {}
 
         if is_tamil:
-            print(f"  ✓ Tamil detected in input")
+            print(f"  ✓ Tamil detected - running translation + entity extraction in parallel")
             print(f"    Original: {question[:50]}...")
-            processing_query = translate_to_english(question)
-            print(f"    Translated: {processing_query[:50]}...")
             ctx.set_language('ta')
-        else:
-            print("  ✗ No translation needed (English)")
-        _log_timing("translation", _step_start)
 
-        # === CONTEXT DETECTION ===
-        _step_start = _time.time()
-        print("\n[STEP 5/8] CONTEXT & ENTITY EXTRACTION...")
-        is_followup = ctx.is_followup(processing_query)
-        if is_followup:
-            print(f"  ✓ Follow-up question detected")
-        else:
-            print("  ✗ Not a follow-up (new query)")
+            # Run translation and entity extraction in parallel
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both tasks
+                future_translation = executor.submit(translate_to_english, question)
+                future_entities = executor.submit(app_state.entity_extractor.extract, question)
 
-        # === ENTITY EXTRACTION ===
-        entities = app_state.entity_extractor.extract(processing_query)
+                # Get results
+                try:
+                    processing_query = future_translation.result(timeout=10)
+                    print(f"    Translated: {processing_query[:50]}...")
+                except Exception as e:
+                    print(f"  ! Translation failed: {e}, using original")
+                    processing_query = question
+
+                try:
+                    entities = future_entities.result(timeout=5)
+                except Exception as e:
+                    print(f"  ! Entity extraction failed: {e}")
+                    entities = {}
+
+            # Re-extract entities from translated text for better accuracy
+            if processing_query != question:
+                translated_entities = app_state.entity_extractor.extract(processing_query)
+                # Merge: prefer translated entities but keep Tamil-detected ones
+                for key, value in translated_entities.items():
+                    if value and (not entities.get(key) or key in ['time_period', 'locations', 'categories']):
+                        entities[key] = value
+        else:
+            print("  ✗ No translation needed (English) - extracting entities")
+            entities = app_state.entity_extractor.extract(processing_query)
+
         entity_summary = app_state.entity_extractor.get_entities_summary(entities)
         print(f"  ✓ Entities extracted: {entity_summary}")
 
-        # Merge with previous context if follow-up
+        # Check for follow-up
+        is_followup = ctx.is_followup(processing_query)
         if is_followup:
+            print(f"  ✓ Follow-up question detected")
             entities = ctx.merge_entities(entities)
-            print(f"  ✓ Merged with context (follow-up): {app_state.entity_extractor.get_entities_summary(entities)}")
-        _log_timing("entity_extraction", _step_start)
+            print(f"  ✓ Merged with context: {app_state.entity_extractor.get_entities_summary(entities)}")
+        else:
+            print("  ✗ Not a follow-up (new query)")
+
+        _log_timing("parallel_translation_entities", _step_start)
 
         # === CHECK FOR DATA CHANGES (INVALIDATE STALE CACHE) ===
         _step_start = _time.time()
@@ -2908,35 +3278,35 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             print(f"  ! Data was refreshed - invalidating stale cache")
             invalidate_spreadsheet_cache(spreadsheet_id)
 
-        # === CHECK CACHE (CACHING FLOW FROM ARCHITECTURE) ===
-        # Generate cache key: Hash(ORIGINAL question + spreadsheet_id)
-        # Use original question (before translation) to avoid cache collisions
-        # when different Tamil queries translate to similar English
-        cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
+        # === CHECK CACHE (SKIP IF EARLY CHECK ALREADY RAN) ===
+        # Early cache check happens before translation - this is backup for edge cases
+        if not early_cache_checked:
+            cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
 
-        if cache_hit and cached_result and isinstance(cached_result, dict):
-            print(f"  ✓ CACHE HIT - returning cached result")
-            print("=" * 60 + "\n")
-            # Return cached response (still personalize it)
-            cached_explanation = cached_result.get('explanation', '')
-            if is_tamil:
-                cached_explanation = translate_to_tamil(cached_explanation)
+            if cache_hit and cached_result and isinstance(cached_result, dict):
+                print(f"  ✓ CACHE HIT - returning cached result")
+                print("=" * 60 + "\n")
+                cached_explanation = cached_result.get('explanation', '')
+                if is_tamil:
+                    cached_explanation = translate_to_tamil(cached_explanation)
 
-            return {
-                'success': True,
-                'explanation': cached_explanation,
-                'data': cached_result.get('data'),
-                'plan': cached_result.get('plan'),
-                'table_used': cached_result.get('table_used'),
-                'routing_confidence': cached_result.get('routing_confidence'),
-                'was_followup': is_followup,
-                'entities_extracted': cached_result.get('entities_extracted', {}),
-                'data_refreshed': data_was_refreshed,  # Inform if data changed since last cache
-                'from_cache': True,
-                'no_results': cached_result.get('no_results', False)
-            }
+                return {
+                    'success': True,
+                    'explanation': cached_explanation,
+                    'data': cached_result.get('data'),
+                    'plan': cached_result.get('plan'),
+                    'table_used': cached_result.get('table_used'),
+                    'routing_confidence': cached_result.get('routing_confidence'),
+                    'was_followup': is_followup,
+                    'entities_extracted': cached_result.get('entities_extracted', {}),
+                    'data_refreshed': data_was_refreshed,
+                    'from_cache': True,
+                    'no_results': cached_result.get('no_results', False)
+                }
+            else:
+                print("  ✗ Cache miss - proceeding with full query")
         else:
-            print("  ✗ Cache miss - proceeding with full query")
+            print("  ✓ Early cache check already performed - skipping")
         _log_timing("cache_check", _step_start)
 
         # === CHECK DATA LOADED ===

@@ -355,8 +355,8 @@ def _format_data(
         if isinstance(value, str):
             try:
                 value = float(value.replace(',', ''))
-            except:
-                value = 0
+            except (ValueError, AttributeError):
+                value = 0  # Default to 0 if conversion fails
 
         # Round floats
         if isinstance(value, float):

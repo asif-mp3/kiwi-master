@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import {
   LogOut,
   Mic,
+  MicOff,
   Square,
   MessageCircle,
   ChevronLeft,
@@ -71,7 +72,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ChatTab } from '@/lib/types';
-import { DatasetConnection, DatasetStats } from './DatasetConnection';
+// DatasetConnection removed - using demo mode only
 import { DatasetInfoPopover, DatasetInfo } from './DatasetInfoPopover';
 import {
   VOICE_RECORDING_TIMEOUT,
@@ -189,7 +190,6 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showChatsPanel, setShowChatsPanel] = useState(false);
-  const [isDatasetModalOpen, setIsDatasetModalOpen] = useState(false);
   const [inputMessage, setInputMessage] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -198,7 +198,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
+  // Voice enabled toggle for chat mode (home screen always has voice on)
+  const [isVoiceEnabledInChat, setIsVoiceEnabledInChat] = useState(false);
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState('');
 
@@ -358,6 +359,18 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
 
+  // EFFECT: Stop recording when voice is disabled in chat mode
+  useEffect(() => {
+    if (!isVoiceEnabledInChat && isRecording && showChat) {
+      console.log('🔇 Voice disabled in chat - stopping recording');
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        userAbortedRef.current = true; // Don't process the audio
+        mediaRecorder.stop();
+      }
+      setIsRecording(false);
+    }
+  }, [isVoiceEnabledInChat, isRecording, showChat, mediaRecorder]);
+
   // EFFECT: Check for demo mode (pre-loaded dataset) on mount
   // If backend has pre-loaded data, skip the connection dialog entirely
   useEffect(() => {
@@ -429,13 +442,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           setIsConnectionVerified(true);
           // Continue with the message
         } else {
-          setIsDatasetModalOpen(true);
-          toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
+          toast.error("Data not loaded", { description: "Please wait for the data to load or refresh the page." });
           return;
         }
       } catch {
-        setIsDatasetModalOpen(true);
-        toast.error("Dataset Required", { description: "Please connect a Google Sheet to continue." });
+        toast.error("Connection error", { description: "Could not verify data connection." });
         return;
       }
     }
@@ -816,64 +827,45 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
   };
 
-  // Sync dataset changes
-  const handleSyncDataset = async () => {
-    if (!activeChat?.datasetUrl || isSyncing) return;
-
-    setIsSyncing(true);
-    try {
-      console.log('[Sync] Refreshing dataset...');
-      const response = await api.loadDataset(activeChat.datasetUrl);
-      if (response.success && response.stats) {
-        // Update the chat's dataset stats
-        setDatasetForChat(activeChat.datasetUrl, 'ready', response.stats);
-        toast.success("Data synced", {
-          description: `${response.stats.totalTables} tables, ${response.stats.totalRecords?.toLocaleString()} records`
-        });
-      }
-    } catch (error) {
-      console.error('[Sync] Failed:', error);
-      toast.error("Sync failed", { description: "Could not refresh data" });
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  // Ref to prevent double-clicking on mic button
+  // Ref to prevent double-clicking on mic button (race condition prevention)
   const isTogglingVoiceRef = useRef(false);
+  // Ref to track active recording session
+  const activeRecordingRef = useRef(false);
 
   const handleVoiceToggle = async () => {
-    // Prevent double-click issues
+    // Prevent double-click issues - check both toggle lock AND active recording
     if (isTogglingVoiceRef.current) {
       console.log('⚠️ Voice toggle already in progress, ignoring...');
       return;
     }
 
     if (!activeChat) {
-      // Trigger new chat or mandatory dataset prompt
-      if (!isDatasetModalOpen) setIsDatasetModalOpen(true);
+      toast.error("No active chat");
       return;
     }
 
-    // In demo mode, datasetUrl might be 'demo://preloaded' or connection is verified
-    if (!activeChat.datasetUrl && !isConnectionVerified) {
-      toast.error("Please connect a dataset first", {
-        description: "Thara needs data to answer your questions."
+    // In demo mode, data is pre-loaded
+    if (!isConnectionVerified) {
+      toast.error("Data not loaded yet", {
+        description: "Please wait for the data to load."
       });
-      setIsDatasetModalOpen(true);
       return;
     }
 
-    // Set toggle lock
+    // Set toggle lock - will be released in finally block
     isTogglingVoiceRef.current = true;
 
-    const newIsRecording = !isRecording;
-    setIsRecording(newIsRecording);
+    try {
+      const newIsRecording = !isRecording;
 
-    // Release lock after a short delay
-    setTimeout(() => {
-      isTogglingVoiceRef.current = false;
-    }, 300);
+      // Prevent starting a new recording if one is already active
+      if (newIsRecording && activeRecordingRef.current) {
+        console.log('⚠️ Recording already active, ignoring start request...');
+        return;
+      }
+
+      setIsRecording(newIsRecording);
+      activeRecordingRef.current = newIsRecording;
 
     // Haptic feedback for mobile
     if (newIsRecording) {
@@ -917,6 +909,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
         recorder.onstop = async () => {
           console.log('🎤 Recording stopped, processing...');
+
+          // Mark recording as inactive
+          activeRecordingRef.current = false;
 
           // Stop all tracks
           stream.getTracks().forEach(track => track.stop());
@@ -1093,6 +1088,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           description: "Please allow microphone access to use voice input."
         });
         setIsRecording(false);
+        activeRecordingRef.current = false;
       }
 
     } else {
@@ -1120,36 +1116,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
       }
+      // Mark recording as inactive when stopping
+      activeRecordingRef.current = false;
     }
-  };
-
-  const handleDatasetSuccess = (url: string, stats: DatasetStats) => {
-    console.log('[ChatScreen] Dataset connected with stats:', stats);
-
-    // Ensure a chat exists before connecting dataset
-    let chatIdToUse = activeChatId;
-    if (!chatIdToUse) {
-      console.log('[ChatScreen] No active chat, creating one for dataset connection');
-      const newChat = createNewChat();
-      chatIdToUse = newChat.id;
+    } finally {
+      // Always release the toggle lock after async operations complete
+      // Use a small delay to prevent rapid re-triggering
+      setTimeout(() => {
+        isTogglingVoiceRef.current = false;
+      }, 100);
     }
-
-    // Update the chat with dataset info (passing chatId explicitly)
-    setDatasetForChat(url, 'ready', {
-      totalTables: stats.totalTables,
-      totalRecords: stats.totalRecords,
-      sheetCount: stats.sheetCount,
-      sheets: stats.sheets,
-      detectedTables: stats.detectedTables || []
-    }, chatIdToUse);
-
-    // Dataset just loaded successfully - mark as verified immediately (no need to re-verify)
-    setIsConnectionVerified(true);
-    hasVerifiedOnce.current = true; // Prevent useEffect from re-verifying
-    setIsDatasetModalOpen(false);
-    toast.success("Dataset Connected & Locked", {
-      description: `${stats.sheetCount} sheets with ${stats.totalTables} tables loaded.`
-    });
   };
 
   const handleNewChat = () => {
@@ -1476,59 +1452,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Dataset Button - shows info popover in demo mode, or connection dialog otherwise */}
-            {isDemoMode ? (
-              /* Demo Mode: Show simple info button with popover */
-              <DatasetInfoPopover
-                datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
-                isConnected={isConnectionVerified}
-              />
-            ) : (
-              /* Non-Demo Mode: Show connect/connected button */
-              <>
-                <Button
-                  variant="ghost"
-                  onClick={() => setIsDatasetModalOpen(true)}
-                  className={cn(
-                    "h-9 sm:h-11 px-2 sm:px-4 rounded-xl glass border transition-all gap-1.5 sm:gap-2",
-                    activeChat?.datasetStatus === 'ready' && isConnectionVerified
-                      ? "border-violet-500/50 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20"
-                      : "border-border hover:border-violet-500/30 hover:bg-accent"
-                  )}
-                >
-                  <Table className={cn("w-4 h-4", activeChat?.datasetStatus === 'ready' && isConnectionVerified ? "text-violet-400" : "text-zinc-400")} />
-                  <span className="text-xs sm:text-sm font-medium hidden sm:inline">
-                    {activeChat?.datasetStatus === 'ready' && isConnectionVerified
-                      ? 'Connected'
-                      : 'Connect Data'}
-                  </span>
-                </Button>
-
-                {/* Sync Button - Only show when dataset is connected (non-demo mode) */}
-                {activeChat?.datasetStatus === 'ready' && isConnectionVerified && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={handleSyncDataset}
-                    disabled={isSyncing}
-                    aria-label="Sync dataset"
-                    className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 transition-all"
-                  >
-                    <RefreshCw className={cn("w-4 h-4 text-emerald-400", isSyncing && "animate-spin")} />
-                  </Button>
-                )}
-
-                <DatasetConnection
-                  isOpen={isDatasetModalOpen}
-                  onClose={() => setIsDatasetModalOpen(false)}
-                  onSuccess={handleDatasetSuccess}
-                  initialUrl={activeChat?.datasetUrl || ''}
-                  isLocked={activeChat?.datasetStatus === 'ready'}
-                  isConnectionVerified={isConnectionVerified}
-                  initialStats={activeChat?.datasetStats}
-                />
-              </>
-            )}
+            {/* Info Button - Shows dataset stats */}
+            <DatasetInfoPopover
+              datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
+              isConnected={isConnectionVerified}
+            />
 
             <Button
               variant="ghost"
@@ -1905,39 +1833,25 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           <div className="space-y-2">
                             <h3 className="text-lg font-semibold text-foreground">Start a conversation</h3>
                             <p className="text-sm text-muted-foreground max-w-sm">
-                              {activeChat?.datasetStatus === 'ready'
-                                ? "Ask questions about your data using voice or text"
-                                : "Connect a dataset first, then ask questions about your data"}
+                              Ask questions about your data using voice or text
                             </p>
                           </div>
-                          {activeChat?.datasetStatus !== 'ready' && (
-                            <Button
-                              variant="outline"
-                              onClick={() => setIsDatasetModalOpen(true)}
-                              className="mt-4 gap-2"
-                            >
-                              <Table className="w-4 h-4" />
-                              Connect Dataset
-                            </Button>
-                          )}
-                          {activeChat?.datasetStatus === 'ready' && (
-                            <div className="mt-6 space-y-2">
-                              <p className="text-xs text-muted-foreground uppercase tracking-wider">Try asking</p>
-                              <div className="flex flex-wrap justify-center gap-2">
-                                {["Show me total sales", "What are the top 5 items?", "Compare categories"].map((suggestion) => (
-                                  <button
-                                    key={suggestion}
-                                    onClick={() => {
-                                      setInputMessage(suggestion);
-                                    }}
-                                    className="px-3 py-1.5 text-xs rounded-full bg-muted hover:bg-accent border border-border hover:border-violet-500/30 transition-all"
-                                  >
-                                    {suggestion}
-                                  </button>
-                                ))}
-                              </div>
+                          <div className="mt-6 space-y-2">
+                            <p className="text-xs text-muted-foreground uppercase tracking-wider">Try asking</p>
+                            <div className="flex flex-wrap justify-center gap-2">
+                              {["Show me total sales", "What are the top 5 items?", "Compare categories"].map((suggestion) => (
+                                <button
+                                  key={suggestion}
+                                  onClick={() => {
+                                    setInputMessage(suggestion);
+                                  }}
+                                  className="px-3 py-1.5 text-xs rounded-full bg-muted hover:bg-accent border border-border hover:border-violet-500/30 transition-all"
+                                >
+                                  {suggestion}
+                                </button>
+                              ))}
                             </div>
-                          )}
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -1999,6 +1913,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         placeholder="Type your message..."
                         className="flex-1 bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-sm sm:text-base text-foreground placeholder:text-muted-foreground"
                       />
+                      {/* Single Mic Button - Click to enable voice & record, or stop recording */}
                       <motion.button
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
@@ -2016,7 +1931,10 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           ease: "easeInOut"
                         } : {}}
                         onClick={() => {
-                          // Click to toggle recording on/off
+                          if (!isVoiceEnabledInChat) {
+                            // Enable voice and start recording
+                            setIsVoiceEnabledInChat(true);
+                          }
                           handleVoiceToggle();
                         }}
                         aria-label={isRecording ? "Stop recording" : "Start recording"}

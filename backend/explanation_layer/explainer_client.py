@@ -5,11 +5,37 @@ import threading
 import google.generativeai as genai
 from pathlib import Path
 from explanation_layer.explanation_prompt import EXPLANATION_SYSTEM_PROMPT
+
+# Backend directory for relative paths
+_BACKEND_DIR = Path(__file__).parent.parent
 from dotenv import load_dotenv
 from utils.permanent_memory import format_memory_for_prompt
 
 # Load environment variables
 load_dotenv()
+
+# ============================================
+# BACKWARD-COMPATIBLE MODEL WRAPPER
+# Works with google-generativeai 0.3.x (no system_instruction)
+# ============================================
+class CompatibleGenerativeModel:
+    """
+    Wrapper for GenerativeModel that supports system prompts
+    on older versions of google-generativeai (< 0.4.0).
+    """
+    def __init__(self, model, system_prompt: str):
+        self._model = model
+        self._system_prompt = system_prompt
+
+    def generate_content(self, prompt, **kwargs):
+        """Prepend system prompt to user message."""
+        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
+        return self._model.generate_content(full_prompt, **kwargs)
+
+    def __getattr__(self, name):
+        """Forward other attributes to underlying model."""
+        return getattr(self._model, name)
+
 
 # ============================================
 # SINGLETON PATTERN FOR LLM CLIENT
@@ -26,7 +52,7 @@ def load_config():
     if _config_cache is not None:
         return _config_cache
 
-    config_path = Path("config/settings.yaml")
+    config_path = _BACKEND_DIR / "config" / "settings.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
     _config_cache = config.get("llm", {})
@@ -73,14 +99,14 @@ def initialize_gemini_client(config):
     """Initialize Gemini API client with configuration and memory injection"""
     api_key_env = config.get("api_key_env", "GEMINI_API_KEY")
     api_key = os.getenv(api_key_env)
-    
+
     if not api_key:
         raise ValueError(
             f"Gemini API key not found. Please set the {api_key_env} environment variable."
         )
-    
+
     genai.configure(api_key=api_key)
-    
+
     model_name = config.get("model", "gemini-2.0-flash-exp")
     temperature = config.get("temperature", 0.0)
 
@@ -91,18 +117,19 @@ def initialize_gemini_client(config):
         "temperature": temperature,
         "max_output_tokens": max_tokens,
     }
-    
+
     # Load and inject permanent memory into system prompt
     memory_constraints = format_memory_for_prompt()
     system_prompt = EXPLANATION_SYSTEM_PROMPT + memory_constraints
-    
-    model = genai.GenerativeModel(
+
+    # Create base model without system_instruction (for compatibility with 0.3.x)
+    base_model = genai.GenerativeModel(
         model_name=model_name,
         generation_config=generation_config,
-        system_instruction=system_prompt
     )
-    
-    return model
+
+    # Wrap with our compatible model that handles system prompts
+    return CompatibleGenerativeModel(base_model, system_prompt)
 
 
 def _format_number_indian(value, use_word=True):

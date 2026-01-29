@@ -51,6 +51,32 @@ class EntityExtractor:
         'டிசம்பர்': '12',
     }
 
+    # Tamil ordinal numbers (1-31 for date extraction)
+    # Includes both cardinal and ordinal forms
+    TAMIL_NUMBERS = {
+        # Cardinal numbers
+        'ஒன்று': 1, 'இரண்டு': 2, 'மூன்று': 3, 'நான்கு': 4, 'ஐந்து': 5,
+        'ஆறு': 6, 'ஏழு': 7, 'எட்டு': 8, 'ஒன்பது': 9, 'பத்து': 10,
+        'பதினொன்று': 11, 'பன்னிரண்டு': 12, 'பதிமூன்று': 13, 'பதினான்கு': 14, 'பதினைந்து': 15,
+        'பதினாறு': 16, 'பதினேழு': 17, 'பதினெட்டு': 18, 'பத்தொன்பது': 19, 'இருபது': 20,
+        'இருபத்தொன்று': 21, 'இருபத்திரண்டு': 22, 'இருபத்திமூன்று': 23, 'இருபத்தி நான்கு': 24,
+        'இருபத்தைந்து': 25, 'இருபத்தாறு': 26, 'இருபத்தேழு': 27, 'இருபத்தெட்டு': 28,
+        'இருபத்தொன்பது': 29, 'முப்பது': 30, 'முப்பத்தொன்று': 31,
+        # Ordinal forms (with -ஆம் suffix)
+        'ஒன்றாம்': 1, 'இரண்டாம்': 2, 'மூன்றாம்': 3, 'நான்காம்': 4, 'ஐந்தாம்': 5,
+        'ஆறாம்': 6, 'ஏழாம்': 7, 'எட்டாம்': 8, 'ஒன்பதாம்': 9, 'பத்தாம்': 10,
+        'பதினொன்றாம்': 11, 'பன்னிரண்டாம்': 12, 'பதிமூன்றாம்': 13, 'பதினான்காம்': 14, 'பதினைந்தாம்': 15,
+        'பதினாறாம்': 16, 'பதினேழாம்': 17, 'பதினெட்டாம்': 18, 'பத்தொன்பதாம்': 19, 'இருபதாம்': 20,
+        'இருபத்தொன்றாம்': 21, 'இருபத்திரண்டாம்': 22, 'இருபத்திமூன்றாம்': 23, 'இருபத்தி நான்காம்': 24,
+        'இருபத்தைந்தாம்': 25, 'இருபத்தாறாம்': 26, 'இருபத்தேழாம்': 27, 'இருபத்தெட்டாம்': 28,
+        'இருபத்தொன்பதாம்': 29, 'முப்பதாம்': 30, 'முப்பத்தொன்றாம்': 31,
+        # Alternative spellings (with space variations)
+        'இருபத்திநான்கு': 24, 'இருபத்திநான்காம்': 24,
+    }
+
+    # Tamil date keywords
+    TAMIL_DATE_KEYWORDS = ['தேதி', 'நாள்', 'தினம்']  # date, day, day
+
     # Metric terms (order matters - longer matches first)
     METRICS = [
         'gross sales', 'net sales', 'total sales',
@@ -601,7 +627,13 @@ class EntityExtractor:
     def _extract_specific_date(self, text: str) -> Optional[Dict]:
         """
         Extract specific date references like "November 15th" or "15/11/2025"
+        Also handles Tamil date patterns like "இருபத்தி நான்காம் தேதி நவம்பர்"
         """
+        # First, try Tamil number + month pattern
+        tamil_date = self._extract_tamil_date(text)
+        if tamil_date:
+            return tamil_date
+
         # Pattern: Month Day (e.g., "November 15th", "Nov 15")
         # Use word boundaries to avoid false matches like "margin" matching "mar"
         month_names_escaped = '|'.join(re.escape(m) for m in self.MONTHS.keys())
@@ -633,6 +665,55 @@ class EntityExtractor:
                     'day': day,
                     'month': month,
                     'year': year
+                }
+
+        return None
+
+    def _extract_tamil_date(self, text: str) -> Optional[Dict]:
+        """
+        Extract date from Tamil text patterns like:
+        - "இருபத்தி நான்காம் தேதி நவம்பர்" (24th date November)
+        - "நவம்பர் மாதம் இருபத்தி நான்காம் தேதி" (November month 24th date)
+        - "24 தேதி நவம்பர்" (24 date November)
+        """
+        day = None
+        month_num = None
+
+        # Try to find Tamil number word in text
+        for tamil_num, num_value in self.TAMIL_NUMBERS.items():
+            if tamil_num in text:
+                day = num_value
+                break
+
+        # If no Tamil number found, try numeric + தேதி pattern
+        if day is None:
+            numeric_date_pattern = r'(\d{1,2})\s*(?:' + '|'.join(self.TAMIL_DATE_KEYWORDS) + r')'
+            match = re.search(numeric_date_pattern, text)
+            if match:
+                day = int(match.group(1))
+
+        # Find Tamil month name
+        for month_name, m_num in self.MONTHS.items():
+            if month_name in text:
+                month_num = int(m_num)
+                break
+
+        # Return if we found both day and month
+        if day is not None and month_num is not None:
+            if 1 <= day <= 31:
+                return {
+                    'type': 'specific_day',
+                    'month': month_num,
+                    'day': day
+                }
+
+        # If only day found with Tamil date keyword, return partial
+        if day is not None and any(kw in text for kw in self.TAMIL_DATE_KEYWORDS):
+            if 1 <= day <= 31:
+                return {
+                    'type': 'specific_day',
+                    'day': day,
+                    'month': None  # Month to be inferred from context
                 }
 
         return None
