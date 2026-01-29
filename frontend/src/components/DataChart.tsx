@@ -1,6 +1,6 @@
 'use client';
 
-import { VisualizationConfig } from '@/lib/types';
+import { VisualizationConfig, VisualizationDataPoint } from '@/lib/types';
 import {
   BarChart,
   Bar,
@@ -17,6 +17,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  ReferenceLine,
 } from 'recharts';
 
 interface DataChartProps {
@@ -82,18 +83,29 @@ export function DataChart({ visualization }: DataChartProps) {
     return aggregated;
   };
 
-  // Custom tooltip styling
+  // Custom tooltip styling with projection support
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
+      // Check if this is a projection chart with both actual and projected
+      const actualPayload = payload.find((p: any) => p.dataKey === 'actual' && p.value !== null);
+      const projectedPayload = payload.find((p: any) => p.dataKey === 'projected' && p.value !== null);
+      const isProjected = projectedPayload && !actualPayload;
+      const displayValue = actualPayload?.value ?? projectedPayload?.value ?? payload[0]?.value;
+
       return (
-        <div className="bg-zinc-900/95 border border-violet-500/30 rounded-lg px-3 py-2 shadow-xl">
-          <p className="text-violet-300 text-xs font-medium mb-1">
+        <div className={`bg-zinc-900/95 border rounded-lg px-3 py-2 shadow-xl ${
+          isProjected ? 'border-amber-500/30' : 'border-violet-500/30'
+        }`}>
+          <p className={`text-xs font-medium mb-1 ${
+            isProjected ? 'text-amber-300' : 'text-violet-300'
+          }`}>
             {formatLabel(label) || payload[0]?.name}
+            {isProjected && <span className="ml-1 text-[10px] opacity-70">(projected)</span>}
           </p>
           <p className="text-white text-sm font-semibold">
-            {typeof payload[0]?.value === 'number'
-              ? payload[0].value.toLocaleString('en-IN')
-              : payload[0]?.value}
+            {typeof displayValue === 'number'
+              ? displayValue.toLocaleString('en-IN')
+              : displayValue}
           </p>
         </div>
       );
@@ -174,11 +186,102 @@ export function DataChart({ visualization }: DataChartProps) {
   );
 
   // Render line/area chart (cleaner for trends)
+  // Supports projection data with dotted lines
   const renderLineChart = () => {
     // Aggregate data if too many points
     const chartData = aggregateData(data);
     const showDots = chartData.length <= 15;
 
+    // Check if this chart has projection data
+    const hasProjection = visualization.isProjection || chartData.some((d: VisualizationDataPoint) => d.projected);
+
+    // If has projection, split data for dual rendering
+    if (hasProjection) {
+      // Find the split point (last actual data point)
+      const lastActualIndex = chartData.findIndex((d: VisualizationDataPoint) => d.projected) - 1;
+      const splitIndex = lastActualIndex >= 0 ? lastActualIndex : Math.floor(chartData.length * 0.7);
+
+      // Create data arrays: actual has nulls for projected, projected has nulls for actual
+      // Include one overlapping point for smooth connection
+      const actualData = chartData.map((d: VisualizationDataPoint, i: number) => ({
+        ...d,
+        actual: i <= splitIndex ? d.value : null,
+        projected: i >= splitIndex ? d.value : null,
+      }));
+
+      return (
+        <ResponsiveContainer width="100%" height={220}>
+          <AreaChart data={actualData} margin={{ top: 10, right: 10, left: -5, bottom: 5 }}>
+            <defs>
+              {/* Gradient for actual data */}
+              <linearGradient id="colorActual" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={colors[0]} stopOpacity={0.3}/>
+                <stop offset="95%" stopColor={colors[0]} stopOpacity={0}/>
+              </linearGradient>
+              {/* Gradient for projected data - lighter/different shade */}
+              <linearGradient id="colorProjected" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.2}/>
+                <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(139, 92, 246, 0.1)" vertical={false} />
+            <XAxis
+              dataKey="name"
+              tick={{ fill: '#a78bfa', fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={formatLabel}
+              interval={Math.max(0, Math.floor(chartData.length / 6) - 1)}
+            />
+            <YAxis
+              tick={{ fill: '#a78bfa', fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={formatAxisValue}
+              width={45}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            {/* Actual data - solid line */}
+            <Area
+              type="monotone"
+              dataKey="actual"
+              stroke={colors[0]}
+              strokeWidth={2}
+              fill="url(#colorActual)"
+              dot={showDots ? { fill: colors[0], strokeWidth: 0, r: 3 } : false}
+              activeDot={{ r: 5, fill: colors[0], stroke: '#fff', strokeWidth: 2 }}
+              connectNulls={false}
+              name="Actual"
+            />
+            {/* Projected data - dotted line with different color */}
+            <Area
+              type="monotone"
+              dataKey="projected"
+              stroke="#f59e0b"
+              strokeWidth={2}
+              strokeDasharray="5 5"
+              fill="url(#colorProjected)"
+              dot={showDots ? { fill: '#f59e0b', strokeWidth: 0, r: 3 } : false}
+              activeDot={{ r: 5, fill: '#f59e0b', stroke: '#fff', strokeWidth: 2 }}
+              connectNulls={false}
+              name="Projected"
+            />
+            {/* Legend to show actual vs projected */}
+            <Legend
+              verticalAlign="top"
+              height={24}
+              formatter={(value) => (
+                <span style={{ color: value === 'Actual' ? colors[0] : '#f59e0b', fontSize: '10px' }}>
+                  {value === 'Actual' ? '● Actual' : '◌ Projected'}
+                </span>
+              )}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Standard chart without projection
     return (
       <ResponsiveContainer width="100%" height={220}>
         <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -5, bottom: 5 }}>

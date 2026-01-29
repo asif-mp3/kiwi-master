@@ -70,8 +70,53 @@ class TableRouter:
         entities = self.entity_extractor.extract(question)
 
         # Check if this is a follow-up question
-        if previous_context and self.entity_extractor.is_followup_question(question, True):
+        is_followup = previous_context and self.entity_extractor.is_followup_question(question, True)
+        if is_followup:
             entities = self._merge_with_context(entities, previous_context)
+
+        # CRITICAL FIX: For projection/continuation follow-ups, USE THE PREVIOUS TABLE
+        # Questions like "If the top category continues this pattern..." should use same table
+        if previous_context and previous_context.get('table'):
+            prev_table = previous_context['table']
+            q_lower = question.lower()
+
+            # Detect projection/continuation phrases that MUST use same table
+            projection_phrases = [
+                'continues', 'continue', 'if this', 'if the', 'expected', 'predict',
+                'projection', 'project', 'forecast', 'trend', 'pattern',
+                'next month', 'next quarter', 'next week', 'next year',
+                'going forward', 'moving forward', 'in the future',
+                'based on this', 'based on that', 'given this', 'given that',
+                'same data', 'same table', 'this data', 'that data',
+                # Pronouns referring to previous result
+                'it ', 'they ', 'these ', 'those ', 'this ',
+                'the top', 'the bottom', 'the highest', 'the lowest',
+                'the best', 'the worst', 'that category', 'this category',
+            ]
+
+            # Check if this is a projection/continuation query
+            is_projection = any(phrase in q_lower for phrase in projection_phrases)
+
+            # Also check for very short follow-up questions (likely referring to previous result)
+            is_short_followup = len(question.split()) < 8 and is_followup
+
+            if is_projection or is_short_followup:
+                # Validate that previous table still exists
+                actual_tables = _get_actual_duckdb_tables()
+                if not actual_tables or prev_table in actual_tables:
+                    print(f"[TableRouter] ✓ PROJECTION QUERY - using previous table: {prev_table}")
+                    self._last_routing_debug = {
+                        'method': 'projection_followup',
+                        'table': prev_table,
+                        'confidence': 0.95,
+                        'reason': f"Projection/continuation query - using previous table"
+                    }
+                    return RoutingResult(
+                        table=prev_table,
+                        entities=entities,
+                        confidence=0.95,
+                        alternatives=[(prev_table, 95)]
+                    )
 
         # Check for explicit table reference first
         if entities.get('explicit_table'):

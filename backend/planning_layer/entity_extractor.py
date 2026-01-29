@@ -570,6 +570,13 @@ class EntityExtractor:
                 found_keywords.append(keyword)
         return found_keywords
 
+    # Spelled-out numbers for time period parsing
+    SPELLED_NUMBERS = {
+        'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+        'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+        'eleven': '11', 'twelve': '12'
+    }
+
     def _extract_time_period(self, text: str) -> Optional[str]:
         """Extract special time period references"""
         # Top N pattern
@@ -582,10 +589,17 @@ class EntityExtractor:
         if bottom_match:
             return f"bottom_{bottom_match.group(1)}"
 
-        # Last N days/weeks/months
+        # Last N days/weeks/months (with digits)
         last_match = re.search(r'last\s+(\d+)\s*(days?|weeks?|months?)', text)
         if last_match:
             return f"last_{last_match.group(1)}_{last_match.group(2)}"
+
+        # Last N days/weeks/months (with spelled-out numbers like "three", "two")
+        spelled_pattern = r'last\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(days?|weeks?|months?)'
+        spelled_match = re.search(spelled_pattern, text)
+        if spelled_match:
+            num = self.SPELLED_NUMBERS.get(spelled_match.group(1), '1')
+            return f"last_{num}_{spelled_match.group(2)}"
 
         # First N pattern
         first_match = re.search(r'first\s+(\d+)', text)
@@ -787,10 +801,26 @@ class EntityExtractor:
         if any(phrase in q_lower for phrase in english_followup_phrases):
             return True
 
+        # Projection/continuation phrases - user is asking about previous result
+        projection_phrases = [
+            'if this', 'if the', 'if it', 'if they',
+            'continues', 'continue', 'expected', 'predict',
+            'projection', 'forecast', 'trend', 'pattern',
+            'next month', 'next quarter', 'next week',
+            'going forward', 'based on this', 'given this',
+            'the top', 'the bottom', 'the highest', 'the lowest',
+            'that category', 'this category', 'these categories',
+            'the best', 'the worst', 'the same',
+        ]
+
+        if any(phrase in q_lower for phrase in projection_phrases):
+            return True
+
         # Tamil follow-up phrases (check against original, not lowercase)
         tamil_followup_phrases = [
             'அதே நாள்', 'அதே தேதி', 'அந்த நாள்',  # same day, same date, that day
             'எப்படி', 'என்ன பற்றி',  # how about, what about
+            'தொடர்ந்தால்', 'அடுத்த', 'எதிர்பார்க்கப்படும்',  # continues, next, expected
         ]
 
         if any(phrase in question for phrase in tamil_followup_phrases):

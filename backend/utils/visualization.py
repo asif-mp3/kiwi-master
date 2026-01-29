@@ -6,11 +6,46 @@ Maps query types to appropriate visualizations:
 - trend → line chart
 - percentage → pie/donut chart
 - rank → horizontal bar chart
+- projection → line chart with dotted forecast line
 - metric (single value) → no chart (just number)
 - list/filter/lookup → table (no chart)
 """
 
 from typing import Dict, Any, List, Optional
+
+# Keywords that indicate a projection/forecast query
+PROJECTION_KEYWORDS = [
+    'projection', 'forecast', 'predict', 'expected',
+    'next month', 'next quarter', 'next year',
+    'if continues', 'will be', 'going forward',
+    'extrapolate', 'estimate', 'future'
+]
+
+
+def _is_projection_query(plan: Dict[str, Any], entities: Dict[str, Any] = None) -> bool:
+    """Detect if this is a projection/forecast query."""
+    # Check query type
+    query_type = plan.get('query_type', '')
+    if query_type in ['projection', 'forecast']:
+        return True
+
+    # Check for projection flag in plan
+    if plan.get('is_projection') or plan.get('projection'):
+        return True
+
+    # Check analysis metadata
+    analysis = plan.get('analysis', {})
+    if analysis.get('is_projection') or analysis.get('forecast'):
+        return True
+
+    # Check raw question for projection keywords
+    raw_question = ''
+    if entities:
+        raw_question = entities.get('raw_question', '').lower()
+    if any(kw in raw_question for kw in PROJECTION_KEYWORDS):
+        return True
+
+    return False
 
 
 def determine_visualization(
@@ -116,9 +151,17 @@ def _build_chart_config(
     # Purple theme colors
     colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
 
-    # Determine chart type
-    chart_type = _get_chart_type(query_type, plan)
+    # Check if this is a projection query
+    is_projection = _is_projection_query(plan, entities)
+
+    # Determine chart type (projections always use line charts)
+    chart_type = 'line' if is_projection else _get_chart_type(query_type, plan)
     title = _generate_title(plan, query_type)
+
+    # For projection queries, mark projected data points
+    if is_projection:
+        chart_data = _mark_projection_data(chart_data, plan, entities)
+        title = f"{title} (Projection)" if 'Projection' not in title else title
 
     return {
         'type': chart_type,
@@ -126,7 +169,8 @@ def _build_chart_config(
         'data': chart_data,
         'xKey': 'name',
         'yKey': 'value',
-        'colors': colors
+        'colors': colors,
+        'isProjection': is_projection
     }
 
 
@@ -370,6 +414,54 @@ def _format_data(
     return formatted
 
 
+def _mark_projection_data(
+    chart_data: List[Dict],
+    plan: Dict[str, Any],
+    entities: Dict[str, Any] = None
+) -> List[Dict]:
+    """
+    Mark projected data points in the chart data.
+
+    For projection queries, determines which data points are actual historical data
+    vs projected/forecasted data and marks them accordingly.
+
+    The frontend will render projected points with dotted lines.
+    """
+    if not chart_data or len(chart_data) < 2:
+        return chart_data
+
+    # Check analysis for explicit projection boundary
+    analysis = plan.get('analysis', {})
+    projection_start_index = analysis.get('projection_start_index')
+    actual_count = analysis.get('actual_data_count')
+
+    if projection_start_index is not None:
+        # Use explicit boundary from analysis
+        split_index = projection_start_index
+    elif actual_count is not None:
+        # Use actual data count from analysis
+        split_index = actual_count
+    else:
+        # Default: assume last 30% is projected (typical forecast pattern)
+        # Or if only 2-3 points, the last one is projected
+        if len(chart_data) <= 3:
+            split_index = len(chart_data) - 1
+        else:
+            split_index = int(len(chart_data) * 0.7)
+
+    # Mark projected data points
+    marked_data = []
+    for i, point in enumerate(chart_data):
+        new_point = point.copy()
+        new_point['projected'] = i >= split_index
+        marked_data.append(new_point)
+
+    projected_count = len([p for p in marked_data if p.get('projected')])
+    print(f"[Viz] Marked {projected_count}/{len(marked_data)} points as projected (split at index {split_index})")
+
+    return marked_data
+
+
 def _get_chart_type(query_type: str, plan: Dict[str, Any]) -> str:
     """Determine the best chart type for the query."""
 
@@ -380,6 +472,7 @@ def _get_chart_type(query_type: str, plan: Dict[str, Any]) -> str:
         'rank': 'horizontal_bar',
         'aggregation_on_subset': 'bar',
         'extrema_lookup': 'bar',
+        'projection': 'line',  # Projections always use line charts
     }
 
     return type_map.get(query_type, 'bar')

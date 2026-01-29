@@ -107,10 +107,11 @@ class VisualizationConfig(BaseModel):
     """Chart visualization configuration for frontend rendering"""
     type: Literal['bar', 'line', 'pie', 'horizontal_bar']
     title: str
-    data: List[dict]  # Formatted for Recharts
+    data: List[dict]  # Formatted for Recharts - each item has {name, value, projected?}
     xKey: Optional[str] = None  # X-axis data key (for bar/line)
     yKey: Optional[str] = None  # Y-axis data key (for bar/line)
     colors: List[str] = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6']
+    isProjection: Optional[bool] = False  # True if chart contains projection/forecast data
 
 
 class ProcessQueryResponse(BaseModel):

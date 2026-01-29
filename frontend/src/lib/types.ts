@@ -106,13 +106,20 @@ export interface LoadDataResponse {
 }
 
 // Visualization configuration for charts
+export interface VisualizationDataPoint {
+  name: string;
+  value: number;
+  projected?: boolean;  // True for forecast/projection data points
+}
+
 export interface VisualizationConfig {
   type: 'bar' | 'line' | 'pie' | 'horizontal_bar';
   title: string;
-  data: { name: string; value: number }[];
+  data: VisualizationDataPoint[];
   xKey?: string;
   yKey?: string;
   colors: string[];
+  isProjection?: boolean;  // True if chart contains projection data
 }
 
 export interface ProcessQueryResponse {

@@ -77,12 +77,21 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    - 10-50 rows = Category/monthly summaries → Use only for summary questions
    - 3-10 rows = Quarterly/annual summaries → NEVER use for "total" or "all" questions
 
-5. **Other Rules**:
+5. **CRITICAL: Time-Filtered Queries**:
+   **RULE #2: For queries with TIME FILTERS, ALWAYS use TRANSACTIONAL tables with Date column**
+   - Keywords: "last month", "last 3 months", "yesterday", "this week", "November", "October", etc.
+   - Summary tables (10-50 rows) have PRE-AGGREGATED data - they CANNOT be filtered by date!
+   - Example: "category-wise sales for last 3 months" → MUST use Daily_Sales_Transactions (has Date column)
+   - Example: "sales in November" → MUST use table with Date column, NOT a summary table
+   - If question mentions ANY time period, use the HIGH ROW COUNT table with Date column
+   - A Monthly_Category_Summary table shows ALL-TIME data, not filterable by date
+
+6. **Other Rules**:
    - For "how many X" questions: Select the table with MOST rows that has X data
    - For "percentage" questions: Need a table with the breakdown dimension
    - For "show all" questions: Need the detailed transaction-level table
 
-6. **Validate Your Choice**:
+7. **Validate Your Choice**:
    - Does this table have the column needed for filtering? (e.g., State column for "Tamil Nadu")
    - Does this table have the metric column? (e.g., Sales, Revenue, Amount)
    - Does this table contain the specific values mentioned? (e.g., "UPI" in Payment_Mode values)
