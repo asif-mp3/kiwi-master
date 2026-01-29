@@ -21,7 +21,8 @@ google-cloud-translate>=3.0.0
 # Data Processing
 pandas>=2.0.0
 numpy>=1.24.0
-openpyxl>=3.1.0  # For Excel file support
+openpyxl==3.1.5  # For Excel file support - pinned to force install
+et-xmlfile>=1.1.0  # Required by openpyxl
 
 # Voice & Audio (ElevenLabs only)
 elevenlabs>=1.0.0

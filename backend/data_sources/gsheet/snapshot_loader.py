@@ -155,10 +155,13 @@ def drop_all_tables(conn):
 def reset_duckdb_snapshot():
     """Delete and recreate DuckDB snapshot file for clean state"""
     try:
+        # Ensure parent directory exists (critical for container deployments)
+        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
         if Path(DB_PATH).exists():
             os.remove(DB_PATH)
             print(f"   Deleted old DuckDB file: {DB_PATH}")
-        
+
         # Create new empty database
         conn = duckdb.connect(DB_PATH)
         conn.close()
