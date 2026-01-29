@@ -353,11 +353,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       setIsConnectionVerified(true);
       hasVerifiedOnce.current = true;
       console.log("✅ Using stored dataset state (no auto-reload)");
-    } else {
-      // No dataset connected - reset verification state (be honest)
+    } else if (!isDemoMode) {
+      // Only reset verification if NOT in demo mode
+      // Demo mode data is pre-loaded on the backend, so we trust it
       setIsConnectionVerified(false);
     }
-  }, [activeChat?.datasetStatus, activeChat?.datasetUrl]);
+  }, [activeChat?.datasetStatus, activeChat?.datasetUrl, isDemoMode]);
 
   // EFFECT: Stop recording when voice is disabled in chat mode
   useEffect(() => {
