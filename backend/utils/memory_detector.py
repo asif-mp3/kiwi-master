@@ -116,8 +116,8 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         }
     """
     try:
-        # Get API key
-        api_key = os.getenv("GEMINI_API_KEY")
+        # Get API key (strip whitespace from HF Spaces)
+        api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
         if not api_key:
             print("Warning: GEMINI_API_KEY not found, memory detection disabled")
             return {"has_memory_intent": False}

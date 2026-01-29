@@ -187,7 +187,7 @@ class GoogleDriveFolderConnector(BaseConnector):
         api_url = f"https://www.googleapis.com/drive/v3/files"
         params = {
             "q": f"'{folder_id}' in parents and trashed = false",
-            "key": os.getenv("GOOGLE_API_KEY", ""),  # Optional API key
+            "key": os.getenv("GOOGLE_API_KEY", "").strip(),  # Optional API key (strip whitespace)
             "fields": "files(id,name,mimeType,size,modifiedTime)",
             "pageSize": 100
         }

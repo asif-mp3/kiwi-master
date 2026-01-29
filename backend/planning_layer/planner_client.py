@@ -192,7 +192,7 @@ def get_model_for_complexity(complexity: str, config: dict):
     Returns:
         tuple: (model, model_name)
     """
-    api_key = os.getenv(config.get("api_key_env", "GEMINI_API_KEY"))
+    api_key = (os.getenv(config.get("api_key_env", "GEMINI_API_KEY")) or "").strip()
     genai.configure(api_key=api_key)
     temperature = config.get("temperature", 0.0)
 

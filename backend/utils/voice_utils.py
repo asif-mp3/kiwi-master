@@ -14,8 +14,8 @@ from typing import Optional
 # Load environment variables
 load_dotenv()
 
-# Get API key from environment
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+# Get API key from environment (strip whitespace/newlines that may be added in HF Spaces)
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 
 # ============================================
 # VOICE CONFIGURATION LOADER

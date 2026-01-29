@@ -40,7 +40,8 @@ import {
   Eraser,
   Search,
   PanelLeftClose,
-  PanelLeft
+  PanelLeft,
+  PhoneOff
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
@@ -337,6 +338,61 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     }
     silenceStartRef.current = null;
     speechStartRef.current = null;
+  };
+
+  // Abruptly end voice mode - stops everything immediately without processing
+  const abruptEndVoiceMode = () => {
+    console.log('🔴 Abruptly ending voice mode...');
+
+    // 1. Mark as aborted to prevent any pending audio from being processed
+    userAbortedRef.current = true;
+
+    // 2. Stop recording if active
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+    setIsRecording(false);
+    activeRecordingRef.current = false;
+
+    // 3. Stop TTS if playing
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    setIsSpeaking(false);
+    setSpeakingMessageId(null);
+
+    // 4. Stop VAD
+    stopVAD();
+
+    // 5. Clear all timeouts
+    if (recordingTimeoutRef.current) {
+      clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
+    if (voiceModeTimeoutRef.current) {
+      clearTimeout(voiceModeTimeoutRef.current);
+      voiceModeTimeoutRef.current = null;
+    }
+
+    // 6. Disable always-on mode
+    setIsAlwaysOnMode(false);
+    shouldResumeRecording.current = false;
+
+    // 7. Clear processing states
+    setIsProcessingVoice(false);
+    setIsVoiceMode(false);
+
+    // 8. Exit fullscreen
+    setIsFullscreenVoice(false);
+
+    // 9. Reset abort flag after a short delay (for next session)
+    setTimeout(() => {
+      userAbortedRef.current = false;
+    }, 100);
+
+    console.log('✅ Voice mode ended abruptly');
   };
 
   const activeChat = getCurrentChat();
@@ -1411,22 +1467,16 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
         {/* Header - hidden in fullscreen voice mode for immersive experience */}
         {isFullscreenVoice && !showChat ? (
-          /* Floating exit button in fullscreen voice mode */
+          /* Floating END button in fullscreen voice mode - red, abrupt stop */
           <div className="absolute top-4 right-4 z-30">
             <Button
-              variant="ghost"
+              variant="destructive"
               size="sm"
-              onClick={() => {
-                setIsFullscreenVoice(false);
-                // Also stop recording if active
-                if (isRecording) {
-                  handleVoiceToggle();
-                }
-              }}
-              className="h-9 px-3 rounded-xl glass border border-white/20 bg-black/30 hover:bg-black/50 text-white/80 hover:text-white transition-all backdrop-blur-sm"
+              onClick={abruptEndVoiceMode}
+              className="h-10 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white border-none shadow-lg shadow-red-500/20 transition-all"
             >
-              <X className="w-4 h-4 mr-1.5" />
-              <span className="text-xs font-medium">Exit</span>
+              <PhoneOff className="w-4 h-4 mr-2" />
+              <span className="text-sm font-semibold">End</span>
             </Button>
           </div>
         ) : (

@@ -7,8 +7,8 @@ import time
 import google.generativeai as genai
 from typing import Optional
 
-# Configure Gemini - try both env var names for compatibility
-api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+# Configure Gemini - try both env var names for compatibility (strip whitespace from HF Spaces)
+api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 if api_key:
     genai.configure(api_key=api_key)
 
