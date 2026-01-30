@@ -286,13 +286,42 @@ class ProjectionIntentDetector:
         if analysis and any(key in analysis for key in ['slope', 'direction', 'percentage_change']):
             return True
 
-        # ALSO accept rank/aggregation queries that have dimension values
-        # (User might be asking about projection for top item - we'll guide them)
-        if query_type in ['rank', 'extrema_lookup', 'aggregation_on_subset']:
+        # ALSO accept rank/aggregation/metric queries that have dimension OR value data
+        # (User might be asking about projection for top item - we generate simple projections)
+        if query_type in ['rank', 'extrema_lookup', 'aggregation_on_subset', 'metric']:
             # Check if result_values has any dimension columns (category, state, etc.)
-            dimension_patterns = ['category', 'state', 'branch', 'product', 'region', 'area', 'employee', 'item']
+            dimension_patterns = ['category', 'state', 'branch', 'product', 'region', 'area', 'employee', 'item', 'name']
+            value_patterns = ['sales', 'revenue', 'profit', 'amount', 'total', 'sum', 'count', 'value']
+
+            has_dimension = False
+            has_value = False
+
             for col_name in result_values.keys():
-                if any(pattern in col_name.lower() for pattern in dimension_patterns):
+                col_lower = col_name.lower()
+                if any(pattern in col_lower for pattern in dimension_patterns):
+                    has_dimension = True
+                if any(pattern in col_lower for pattern in value_patterns):
+                    has_value = True
+                # Also check if value is numeric
+                val = result_values.get(col_name)
+                if isinstance(val, (int, float)) and val > 0:
+                    has_value = True
+
+            # Accept if we have either dimension name OR a numeric value
+            if has_dimension or has_value:
+                return True
+
+            # Also check result_data if result_values is sparse
+            result_data = getattr(previous_turn, 'result_data', []) or []
+            if result_data and len(result_data) > 0:
+                first_row = result_data[0] if isinstance(result_data, list) else {}
+                for col_name, val in first_row.items():
+                    col_lower = col_name.lower()
+                    if any(pattern in col_lower for pattern in dimension_patterns):
+                        has_dimension = True
+                    if isinstance(val, (int, float)) and val > 0:
+                        has_value = True
+                if has_dimension or has_value:
                     return True
 
         return False

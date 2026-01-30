@@ -18,7 +18,8 @@
         "aggregation_on_subset",
         "comparison",
         "percentage",
-        "trend"
+        "trend",
+        "projection"
       ]
     },
     "table": {
@@ -185,6 +186,21 @@
         "analysis_type": {
           "type": "string",
           "enum": ["direction", "pattern", "forecast"]
+        }
+      }
+    },
+    "projection": {
+      "type": "object",
+      "description": "For projection query type - forecast future values based on historical data",
+      "properties": {
+        "base_value": { "type": "number", "description": "Current/base value to project from" },
+        "base_label": { "type": "string", "description": "Label for the base value (e.g., category name)" },
+        "projection_periods": { "type": "integer", "description": "Number of periods to forecast" },
+        "growth_rate": { "type": "number", "description": "Estimated growth rate (0.0 = flat, 0.1 = 10% growth)" },
+        "method": {
+          "type": "string",
+          "enum": ["linear", "average", "trend"],
+          "description": "Projection method"
         }
       }
     }
