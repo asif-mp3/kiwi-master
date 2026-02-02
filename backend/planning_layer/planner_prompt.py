@@ -155,6 +155,15 @@ When multiple tables with similar schemas are available in the schema context:
       - Example CORRECT: User asks "Which category has highest profit?" → Using "Profit" or "Net_Profit" column
       - Example CORRECT: User asks "Which category has highest revenue?" → Using "Total_Revenue" or "Gross_Sales" column
       - If table has BOTH "Profit" and "Total_Revenue" columns, you MUST pick the correct one based on user's question!
+    - **CRITICAL - NEVER USE SKU/ID COLUMNS FOR GROUPING OR DISPLAY**:
+      - **NEVER** use columns containing "SKU", "SKU_ID", "Transaction_ID", "Order_ID", "Item_ID", "Product_ID" as the group_by dimension for ranking/aggregation queries
+      - These are internal identifiers that users don't recognize or care about
+      - **INSTEAD**, use human-readable columns like: "Category", "Product_Name", "Item_Name", "Lineitem name", "Brand", "Description", "Branch_Name", "State"
+      - If the table only has SKU columns without descriptive names, group by "Category" instead
+      - Example WRONG: "Top 5 products by revenue" → group_by: ["SKU_ID"] - users don't know what SKU_SAR_003 means!
+      - Example CORRECT: "Top 5 products by revenue" → group_by: ["Category"] or group_by: ["Product_Name"]
+      - Example CORRECT: "Top 5 products by revenue" → group_by: ["Item_Name"] or group_by: ["Lineitem name"]
+      - **Priority order for grouping**: Product_Name > Item_Name > Lineitem name > Category > Brand > Description > (NEVER SKU_ID)
     - **CRITICAL - "Total X" aggregation queries**: When user asks "total payroll", "total salary", "total expenses", "sum of X", "overall budget", etc., ALWAYS use query_type "aggregation_on_subset" with aggregation_function "SUM". NEVER use "list" query type for totals!
         - "Total payroll" / "What is the total payroll?" → aggregation_on_subset with SUM(Salary)
         - "Total expenses" → aggregation_on_subset with SUM(Expense or Amount column)

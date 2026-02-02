@@ -347,6 +347,91 @@ def validate_columns_exist(columns: list, table_name: str):
             )
 
 
+def replace_sku_columns_with_alternatives(plan: dict, table_name: str) -> dict:
+    """
+    Replace SKU/ID columns in group_by with more user-friendly alternatives.
+
+    Users don't want to see SKU_IDs like "SKU_SAR_003" in results - they want
+    readable names like Category, Product_Name, etc.
+
+    This function checks if group_by contains SKU/ID columns and replaces them
+    with better alternatives if available in the table.
+    """
+    group_by = plan.get("group_by", [])
+    if not group_by:
+        return plan
+
+    # Patterns that indicate SKU/ID columns (should be avoided for display)
+    sku_patterns = ['sku', 'sku_id', 'transaction_id', 'order_id', 'item_id',
+                    'product_id', 'customer_id', 'txn_id', 'trans_id']
+
+    # Preferred alternatives in order of priority
+    preferred_columns = [
+        'product_name', 'item_name', 'lineitem name', 'lineitem_name',
+        'category', 'sub_category', 'subcategory', 'brand', 'description',
+        'product', 'item', 'name'
+    ]
+
+    # Get available columns in the table
+    try:
+        table_schema = get_table_schema(table_name)
+        available_columns = list(table_schema.keys())
+        available_lower = {col.lower(): col for col in available_columns}
+    except Exception as e:
+        print(f"  [Validator] Could not get schema for SKU replacement: {e}")
+        return plan
+
+    new_group_by = []
+    replaced_any = False
+
+    for col in group_by:
+        col_lower = col.lower()
+
+        # Check if this is an SKU/ID column
+        is_sku_column = any(pattern in col_lower for pattern in sku_patterns)
+
+        if is_sku_column:
+            # Try to find a better alternative
+            replacement = None
+            for preferred in preferred_columns:
+                if preferred in available_lower:
+                    replacement = available_lower[preferred]
+                    break
+
+            if replacement:
+                print(f"  [Validator] Replacing SKU column '{col}' with '{replacement}' for better readability")
+                new_group_by.append(replacement)
+                replaced_any = True
+            else:
+                # No alternative found, keep the SKU column but warn
+                print(f"  [Validator] WARNING: Using SKU column '{col}' - no readable alternative found")
+                new_group_by.append(col)
+        else:
+            new_group_by.append(col)
+
+    if replaced_any:
+        plan["group_by"] = new_group_by
+
+        # Also update select_columns if they contain the SKU column
+        select_columns = plan.get("select_columns", [])
+        new_select = []
+        for col in select_columns:
+            col_lower = col.lower()
+            is_sku = any(pattern in col_lower for pattern in sku_patterns)
+            if is_sku:
+                # Find replacement
+                for preferred in preferred_columns:
+                    if preferred in available_lower:
+                        new_select.append(available_lower[preferred])
+                        break
+                else:
+                    new_select.append(col)  # Keep if no replacement
+            else:
+                new_select.append(col)
+        plan["select_columns"] = new_select
+
+    return plan
+
 
 def validate_metric_table_mapping(metrics: list, table_name: str, plan: dict = None):
     """
@@ -652,7 +737,11 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     # 6. Validate group_by columns exist
     group_by = plan.get("group_by", [])
     validate_columns_exist(group_by, table)
-    
+
+    # 6b. Replace SKU/ID columns in group_by with better alternatives
+    # Users don't want to see SKU_ID like "SKU_SAR_003" - they want readable names
+    plan = replace_sku_columns_with_alternatives(plan, table)
+
     # 7. Validate order_by columns exist
     order_by = plan.get("order_by", [])
     if order_by:
