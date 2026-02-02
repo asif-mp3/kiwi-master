@@ -167,6 +167,36 @@ function TypingPlaceholderPill({
   );
 }
 
+// Suggested follow-up questions (English and Tamil)
+const FOLLOW_UP_SUGGESTIONS = [
+  "Are sales increasing or decreasing in Chennai?",
+  "சென்னை நகரத்தில் sales உயர்கிறதா குறைகிறதா?",
+  "Which state shows a declining sales trend?",
+  "எந்த state-இல் sales trend குறைந்து வருகிறது?",
+  "Which category shows consistent growth across months?",
+  "எந்த category மாதம் முழுவதும் நிலையான வளர்ச்சியை காட்டுகிறது?",
+  "Are profits stable or volatile over time?",
+  "profit காலப்போக்கில் நிலையானதா அல்லது மாறுபடுகிறதா?",
+  "Which month had an unusual spike in sales?",
+  "எந்த மாதத்தில் sales திடீரென அதிகரித்தது?",
+  "Is revenue seasonally higher in certain months?",
+  "சில மாதங்களில் revenue அதிகமாக இருக்கிறதா?",
+  "Which branch shows declining performance?",
+  "எந்த branch செயல்திறன் குறைந்து வருகிறது?",
+  "Which category is losing revenue month by month?",
+  "எந்த category மாதம் மாதமாக revenue இழக்கிறது?",
+  "Are costs rising faster than revenue?",
+  "revenue-விட cost வேகமாக உயருகிறதா?",
+  "Which quarter performed the worst overall?",
+  "மொத்தமாக எந்த quarter மோசமாக செயல்பட்டது?",
+];
+
+// Get 2 random suggestions
+function getRandomSuggestions(): string[] {
+  const shuffled = [...FOLLOW_UP_SUGGESTIONS].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, 2);
+}
+
 export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   const {
     messages,
@@ -251,6 +281,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
   // Fullscreen call mode - hides header for immersive phone-call experience on mobile
   const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
+
+  // Follow-up suggestions state - refreshed after each assistant response
+  const [followUpSuggestions, setFollowUpSuggestions] = useState<string[]>(() => getRandomSuggestions());
 
   // Helper to detect concluding/farewell phrases
   const isConcludingPhrase = (text: string): boolean => {
@@ -535,6 +568,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         if (response.plan) {
           setExpandedVoiceSection('plan');
         }
+
+        // Refresh follow-up suggestions for the user
+        setFollowUpSuggestions(getRandomSuggestions());
 
         // NOTE: Keep isProcessingQuery=true until TTS is ready to play
         // This prevents "Ready..." gap while fetching TTS audio (2-4 seconds)
@@ -1908,14 +1944,39 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         </div>
                       </div>
                     ) : (
-                      messages.map((msg) => (
-                        <MessageBubble
-                          key={msg.id}
-                          message={{ ...msg, isSpeaking: speakingMessageId === msg.id }}
-                          onPlay={playTextToSpeech}
-                          onStop={stopTextToSpeech}
-                        />
-                      ))
+                      <>
+                        {messages.map((msg) => (
+                          <MessageBubble
+                            key={msg.id}
+                            message={{ ...msg, isSpeaking: speakingMessageId === msg.id }}
+                            onPlay={playTextToSpeech}
+                            onStop={stopTextToSpeech}
+                          />
+                        ))}
+                        {/* Follow-up suggestions after assistant response */}
+                        {messages.length > 0 && messages[messages.length - 1].role === 'assistant' && !isProcessingQuery && !isProcessingVoice && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="mt-4 space-y-2"
+                          >
+                            <p className="text-xs text-muted-foreground uppercase tracking-wider">Try asking</p>
+                            <div className="flex flex-wrap gap-2">
+                              {followUpSuggestions.map((suggestion) => (
+                                <button
+                                  key={suggestion}
+                                  onClick={() => {
+                                    setInputMessage(suggestion);
+                                  }}
+                                  className="px-3 py-1.5 text-xs rounded-full bg-muted hover:bg-accent border border-border hover:border-violet-500/30 transition-all text-left"
+                                >
+                                  {suggestion}
+                                </button>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </>
                     )}
                     {/* Show processing status while waiting for response */}
                     <AnimatePresence>
