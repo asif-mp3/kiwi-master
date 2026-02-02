@@ -559,6 +559,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       } else {
         // Use explanation (user-friendly) with fallback to error message
         const errorMsg = response.explanation || response.error || "Sorry, I encountered an error extracting that information.";
+        toast.error("Query failed", { description: errorMsg });
         addMessage(errorMsg, 'assistant');
       }
 
@@ -605,6 +606,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       // Check if audio blob is valid
       if (!audioBlob || audioBlob.size === 0) {
         console.error('❌ Empty audio blob received');
+        toast.error("Voice response unavailable", { description: "Could not generate audio" });
         setSpeakingMessageId(null);
         return;
       }
@@ -1833,10 +1835,10 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 >
                   <TypingPlaceholderPill
                     suggestions={[
-                      "What were the total sales last month?",
-                      "Compare October vs November revenue",
-                      "Show me top selling products",
-                      "How much profit did we make this week?"
+                      "Which month recorded the highest total profit?",
+                      "Are sales increasing or decreasing in Chennai?",
+                      "Which category shows consistent growth?",
+                      "How many transactions were made using UPI?"
                     ]}
                     onSelect={(suggestion) => {
                       setInputMessage(suggestion);
@@ -1890,7 +1892,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                           <div className="mt-6 space-y-2">
                             <p className="text-xs text-muted-foreground uppercase tracking-wider">Try asking</p>
                             <div className="flex flex-wrap justify-center gap-2">
-                              {["Show me total sales", "What are the top 5 items?", "Compare categories"].map((suggestion) => (
+                              {["How many transactions used UPI?", "Which month had highest profit?", "Show month-over-month growth"].map((suggestion) => (
                                 <button
                                   key={suggestion}
                                   onClick={() => {
