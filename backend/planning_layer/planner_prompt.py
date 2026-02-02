@@ -36,7 +36,8 @@ You must output ONLY valid JSON matching this exact schema:
   "date_column": "string",
   "value_column": "string",
   "aggregation": "SUM",
-  "analysis_type": "direction | pattern"
+  "analysis_type": "direction | pattern",
+  "group_by": "string (optional - dimension to analyze trends separately for each group)"
 }
 }
 
@@ -58,6 +59,10 @@ You must output ONLY valid JSON matching this exact schema:
   - Example: "Show me the sales trend for December" → filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
   - Example: "Trend for Chennai in November" → filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
   - Without these filters, the trend will include ALL dates, not just the requested period!
+  - **GROUPED TREND ANALYSIS**: When the user asks "which X has increasing/decreasing trend", "trend by state/category", "எந்த state-இல் trend", use "group_by" field in trend object:
+    - "Which state has declining sales trend?" → trend.group_by: "State"
+    - "Trend analysis by branch" → trend.group_by: "Branch_Name"
+    - This analyzes trend separately for each group and identifies which groups are increasing/decreasing/stable
 
 ## Table Selection
 
@@ -1044,6 +1049,36 @@ When multiple tables with similar schemas are available in the schema context:
   "value_column": "Revenue",
   "aggregation": "SUM",
   "analysis_type": "direction"
+}
+}
+
+**Question:** "Which state has declining sales trend?" (or "எந்த state-இல் sales trend குறைந்து வருகிறது?")
+**Schema context:** Table "Sales_Transactions_Table1" with columns ["Date", "Sale_Amount", "State", "Branch_Name"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Sales_Transactions_Table1",
+"trend": {
+  "date_column": "Date",
+  "value_column": "Sale_Amount",
+  "aggregation": "SUM",
+  "analysis_type": "direction",
+  "group_by": "State"
+}
+}
+
+**Question:** "Trend analysis by category - which categories are growing?"
+**Schema context:** Table "Product_Sales_Table1" with columns ["Date", "Revenue", "Category"] where Date is datetime64[ns]
+**Output:**
+{
+"query_type": "trend",
+"table": "Product_Sales_Table1",
+"trend": {
+  "date_column": "Date",
+  "value_column": "Revenue",
+  "aggregation": "SUM",
+  "analysis_type": "direction",
+  "group_by": "Category"
 }
 }
 

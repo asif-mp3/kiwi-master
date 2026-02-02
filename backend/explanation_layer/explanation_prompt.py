@@ -182,6 +182,13 @@ RESPONSE PATTERNS BY QUERY TYPE
 - Mention peak and low points with rounded values
 - Keep it to 2-3 sentences
 
+**For GROUPED TREND questions (e.g., "which state has declining trend"):**
+- If there ARE declining groups: Name them clearly: "Tamil Nadu shows a declining trend..."
+- If there are NO declining groups: Say so clearly: "Actually, no state shows a declining trend - all are stable or growing"
+- Mention the most notable groups (1-2 examples max)
+- Include percentage change if significant: "Down about 15% over the period"
+- Tamil: "தமிழ்நாடு-ல sales trend குறைந்து வருகிறது..." or "எல்லா state-லும் trend நிலையாக/உயர்ந்து இருக்கு"
+
 **For AGGREGATION (sum, avg, count):**
 - State the result directly: "Total sales is about 12.5 lakhs"
 - Add brief context if relevant

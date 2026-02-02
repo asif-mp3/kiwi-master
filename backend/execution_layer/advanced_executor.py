@@ -188,6 +188,7 @@ def execute_trend(
     Example question: "How are daily sales trending this month?"
     Handles both date columns and text-based quarter columns (e.g., "Q3 2025").
     Supports filters for specific time periods or locations.
+    Supports group_by to analyze trends separately for each group (e.g., by State).
     """
     trend = plan.get("trend", {})
     table = plan.get("table")
@@ -196,6 +197,11 @@ def execute_trend(
     aggregation = trend.get("aggregation", "SUM")
     analysis_type = trend.get("analysis_type", "direction")
     filters = plan.get("filters", [])
+    group_by = trend.get("group_by")  # Optional: dimension to group trend analysis by
+
+    # If group_by is specified, delegate to grouped trend analysis
+    if group_by:
+        return execute_grouped_trend(plan, conn)
 
     # Get time series data
     quoted_table = f'"{table}"' if ' ' in table or '-' in table or table[0].isdigit() else table
@@ -560,5 +566,153 @@ def _analyze_trend(values: List[float]) -> Dict[str, Any]:
         "normalized_slope": round(normalized_slope, 2),
         "confidence": confidence
     }
+
+
+def execute_grouped_trend(
+    plan: Dict[str, Any],
+    conn: duckdb.DuckDBPyConnection
+) -> Dict[str, Any]:
+    """
+    Execute grouped trend query - analyze trends separately for each group.
+
+    Example question: "Which state has declining sales trend?"
+    Returns trend analysis for each group with direction (increasing/decreasing/stable).
+    """
+    trend = plan.get("trend", {})
+    table = plan.get("table")
+    date_column = trend.get("date_column")
+    value_column = trend.get("value_column")
+    aggregation = trend.get("aggregation", "SUM")
+    group_by = trend.get("group_by")
+    filters = plan.get("filters", [])
+
+    if not group_by:
+        return {"data": [], "analysis": {"error": "group_by is required for grouped trend analysis"}}
+
+    # Quote identifiers
+    quoted_table = f'"{table}"' if table and (' ' in table or '-' in table or table[0].isdigit()) else table
+    quoted_date = f'"{date_column}"' if date_column and (' ' in date_column or '-' in date_column) else date_column
+    quoted_value = f'"{value_column}"' if value_column and (' ' in value_column or '-' in value_column) else value_column
+    quoted_group = f'"{group_by}"' if group_by and (' ' in group_by or '-' in group_by) else group_by
+
+    # Build filter clause
+    filter_conditions = [f"{quoted_date} IS NOT NULL", f"{quoted_value} IS NOT NULL", f"{quoted_group} IS NOT NULL"]
+    for f in filters:
+        col = f.get("column", "")
+        op = f.get("operator", "=")
+        val = f.get("value")
+        quoted_col = f'"{col}"' if col and (' ' in col or '-' in col) else col
+        if val is not None:
+            if isinstance(val, str):
+                filter_conditions.append(f"{quoted_col} {op} '{val}'")
+            else:
+                filter_conditions.append(f"{quoted_col} {op} {val}")
+
+    where_clause = " AND ".join(filter_conditions)
+
+    # First, get all distinct groups
+    groups_sql = f"""
+        SELECT DISTINCT {quoted_group} as group_name
+        FROM {quoted_table}
+        WHERE {quoted_group} IS NOT NULL
+        ORDER BY {quoted_group}
+    """
+
+    try:
+        groups_result = conn.execute(groups_sql).fetchall()
+        if not groups_result:
+            return {"data": [], "analysis": {"error": f"No groups found for {group_by}"}}
+
+        groups = [row[0] for row in groups_result if row[0]]
+        print(f"  📊 Analyzing trend for {len(groups)} {group_by} groups")
+
+        # Analyze trend for each group
+        group_trends = []
+        increasing_groups = []
+        decreasing_groups = []
+        stable_groups = []
+
+        for group_name in groups:
+            # Get time series data for this group
+            # Use TRY_CAST to handle VARCHAR date columns
+            sql = f"""
+                SELECT TRY_CAST({quoted_date} AS DATE) as date, {aggregation}({quoted_value}) as value
+                FROM {quoted_table}
+                WHERE {where_clause} AND {quoted_group} = '{_sanitize_string_value(group_name)}'
+                GROUP BY TRY_CAST({quoted_date} AS DATE)
+                ORDER BY TRY_CAST({quoted_date} AS DATE)
+            """
+
+            result = conn.execute(sql).fetchall()
+            if not result or len(result) < 2:
+                # Not enough data points for this group
+                continue
+
+            # Filter out None values
+            filtered_data = [(row[0], row[1]) for row in result if row[0] is not None and row[1] is not None]
+            if len(filtered_data) < 2:
+                continue
+
+            values = [r[1] for r in filtered_data]
+
+            # Analyze trend for this group
+            trend_analysis = _analyze_trend(values)
+
+            group_info = {
+                "group": group_name,
+                "direction": trend_analysis["direction"],
+                "direction_emoji": trend_analysis["emoji"],
+                "slope": trend_analysis["slope"],
+                "normalized_slope": trend_analysis["normalized_slope"],
+                "confidence": trend_analysis["confidence"],
+                "start_value": values[0],
+                "end_value": values[-1],
+                "data_points": len(values),
+                "percentage_change": ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else 0
+            }
+            group_trends.append(group_info)
+
+            # Categorize by direction
+            if trend_analysis["direction"] == "increasing":
+                increasing_groups.append(group_name)
+            elif trend_analysis["direction"] == "decreasing":
+                decreasing_groups.append(group_name)
+            else:
+                stable_groups.append(group_name)
+
+        if not group_trends:
+            return {"data": [], "analysis": {"error": f"Not enough data to analyze trends by {group_by}"}}
+
+        # Sort groups by slope (most declining first for "which is declining" questions)
+        group_trends.sort(key=lambda x: x["normalized_slope"])
+
+        return {
+            "data": group_trends,
+            "calculation_result": len(decreasing_groups),
+            "analysis": {
+                "group_by": group_by,
+                "total_groups": len(groups),
+                "analyzed_groups": len(group_trends),
+                "increasing_groups": increasing_groups,
+                "decreasing_groups": decreasing_groups,
+                "stable_groups": stable_groups,
+                "increasing_count": len(increasing_groups),
+                "decreasing_count": len(decreasing_groups),
+                "stable_count": len(stable_groups),
+                "most_declining": group_trends[0] if group_trends else None,
+                "most_growing": group_trends[-1] if group_trends else None
+            }
+        }
+
+    except Exception as e:
+        print(f"[GroupedTrend] Error: {e}")
+        return {"data": [], "analysis": {"error": f"Error analyzing grouped trend: {str(e)}"}}
+
+
+def _sanitize_string_value(value: str) -> str:
+    """Sanitize a string value for SQL by escaping single quotes."""
+    if not isinstance(value, str):
+        return str(value)
+    return value.replace("'", "''")
 
 
