@@ -625,7 +625,8 @@ def load_dataset_service(url: str, user_id: str = None, append: bool = False) ->
                 'sheets': [t.get('original_sheet_name', k) for k, tables_list in prefixed_sheets_with_tables.items() for t in tables_list[:1]] or list(prefixed_sheets_with_tables.keys()),
                 'detectedTables': detected_tables,
                 'profiledTables': profile_count,
-                'loadedSpreadsheets': app_state.loaded_spreadsheet_ids
+                'loadedSpreadsheets': app_state.loaded_spreadsheet_ids,
+                'profileErrors': profile_errors if profile_errors else None
             },
             'data_summary': data_summary
         }

@@ -537,9 +537,15 @@ async def process_query(request: QueryRequest, user: dict = Depends(require_auth
     except HTTPException:
         raise  # Re-raise HTTPExceptions as-is
     except Exception as e:
-        print(f"[API] Exception in process_query: {str(e)}")
         import traceback
+        # Log full query context for debugging
+        print(f"[API] ===== QUERY ERROR =====")
+        print(f"[API] Query text: {request.text}")
+        print(f"[API] Conversation ID: {getattr(request, 'conversation_id', 'N/A')}")
+        print(f"[API] Exception: {str(e)}")
+        print(f"[API] Traceback:")
         traceback.print_exc()
+        print(f"[API] =========================")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -86,6 +86,16 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    - If question mentions ANY time period, use the HIGH ROW COUNT table with Date column
    - A Monthly_Category_Summary table shows ALL-TIME data, not filterable by date
 
+6. **CRITICAL: TREND Queries (time-series analysis)**:
+   **RULE #3: For "trend", "over time", "growing", "declining", "pattern", "காலப்போக்கில்" - MUST use tables with ACTUAL Date column**
+   - TREND analysis REQUIRES a table with a Date/DateTime column containing temporal data
+   - Tables like SKU_Performance, Category_Summary do NOT have Date columns - NEVER use for trends
+   - Tables like Daily_Sales_Transactions, Sales_Transactions HAVE Date columns - USE THESE for trends
+   - Example: "Is profit stable over time?" → Use table with Date column (Daily_Transactions, NOT SKU_Performance)
+   - Example: "Which state has declining trend?" → Use table with Date AND State columns
+   - The table MUST have sufficient rows (100+) to show a meaningful trend over time
+   - A SKU_ID or Transaction_ID is NOT a date column - don't confuse them!
+
 6. **Other Rules**:
    - For "how many X" questions: Select the table with MOST rows that has X data
    - For "percentage" questions: Need a table with the breakdown dimension
@@ -364,8 +374,14 @@ def select_table_hybrid(
             if verbose:
                 print(f"⚠️  LLM selected '{selected}' but table not found in profiles")
 
-    # Fallback: return table with most rows
+    # Fallback: use semantic similarity scoring based on question keywords
     if profiles:
+        # Try to find best table using keyword matching
+        best_table, best_score = _semantic_fallback_selection(question, profiles, verbose)
+        if best_table:
+            return (best_table, max(0.4, min(0.6, best_score / 100)), f"Semantic fallback: keyword match")
+
+        # Last resort: return table with most rows
         sorted_tables = sorted(
             profiles.items(),
             key=lambda x: x[1].get('row_count', 0),
@@ -376,3 +392,102 @@ def select_table_hybrid(
         return (sorted_tables[0][0], 0.3, "Fallback: largest table")
 
     return (None, 0.0, "No tables available")
+
+
+def _semantic_fallback_selection(
+    question: str,
+    profiles: Dict[str, Dict],
+    verbose: bool = True
+) -> Tuple[Optional[str], int]:
+    """
+    Semantic similarity fallback when LLM fails.
+    Uses keyword matching between question and table metadata.
+
+    Returns: (table_name, score) or (None, 0)
+    """
+    import re
+
+    question_lower = question.lower()
+
+    # Extract keywords from question (words 3+ chars, not stopwords)
+    stopwords = {'the', 'what', 'which', 'how', 'many', 'much', 'for', 'are', 'has', 'have',
+                 'does', 'did', 'was', 'were', 'been', 'being', 'show', 'tell', 'give', 'can',
+                 'could', 'would', 'should', 'will', 'from', 'into', 'with', 'about', 'above',
+                 'below', 'between', 'during', 'before', 'after', 'and', 'but', 'not', 'all'}
+
+    question_words = set(
+        word for word in re.findall(r'\b[a-z]{3,}\b', question_lower)
+        if word not in stopwords
+    )
+
+    # Check for time-related keywords (important for table selection)
+    time_keywords = {'trend', 'over', 'time', 'growing', 'declining', 'pattern', 'month',
+                     'year', 'week', 'daily', 'monthly', 'yearly', 'history', 'historical'}
+    needs_date_column = bool(question_words & time_keywords)
+
+    # Score each table
+    table_scores = []
+
+    for table_name, profile in profiles.items():
+        score = 0
+        table_lower = table_name.lower().replace('_', ' ')
+
+        # 1. Table name keyword matches (+30 per match)
+        table_words = set(table_lower.split())
+        name_matches = question_words & table_words
+        score += len(name_matches) * 30
+
+        # 2. Column name matches (+15 per match)
+        columns = profile.get('columns', {})
+        column_names_lower = [col.lower() for col in columns.keys()]
+        for q_word in question_words:
+            for col_name in column_names_lower:
+                if q_word in col_name or col_name in q_word:
+                    score += 15
+                    break
+
+        # 3. Check for date column if needed (+40 bonus)
+        if needs_date_column:
+            has_date_col = any(
+                info.get('role') == 'date' or
+                any(d in col.lower() for d in ['date', 'datetime', 'timestamp'])
+                for col, info in columns.items()
+            )
+            if has_date_col:
+                score += 40
+            else:
+                score -= 20  # Penalty for no date column when time analysis needed
+
+        # 4. Row count bonus for aggregate questions
+        row_count = profile.get('row_count', 0)
+        aggregate_keywords = {'total', 'sum', 'count', 'all', 'average', 'mean'}
+        if question_words & aggregate_keywords:
+            if row_count >= 1000:
+                score += 25  # Prefer larger tables for totals
+            elif row_count < 50:
+                score -= 15  # Penalty for small tables on aggregate queries
+
+        # 5. Sample value matches (+20 per match)
+        for col, info in columns.items():
+            unique_values = info.get('unique_values', [])
+            for val in unique_values[:10]:  # Check first 10 values
+                val_lower = str(val).lower()
+                if val_lower in question_lower:
+                    score += 20
+                    break
+
+        if score > 0:
+            table_scores.append((table_name, score))
+
+    if not table_scores:
+        return (None, 0)
+
+    # Sort by score descending
+    table_scores.sort(key=lambda x: x[1], reverse=True)
+
+    if verbose:
+        print(f"📊 Semantic fallback scores:")
+        for t, s in table_scores[:3]:
+            print(f"   • {t}: {s}")
+
+    return table_scores[0]

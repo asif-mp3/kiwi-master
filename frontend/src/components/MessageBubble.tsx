@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Message } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Popover,
   PopoverContent,
@@ -36,7 +36,7 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
   // Check if this message is currently being spoken
   const isSpeaking = message.isSpeaking || false;
 
-  const handlePlayStop = () => {
+  const handlePlayStop = useCallback(() => {
     if (isSpeaking) {
       // Currently speaking - stop it
       onStop?.();
@@ -44,7 +44,7 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
       // Not speaking - start playing (will stop any other playing audio)
       onPlay?.(message.content, message.id);
     }
-  };
+  }, [isSpeaking, onStop, onPlay, message.content, message.id]);
 
   // Check if this message has data to display
   const hasData = message.metadata?.data && Array.isArray(message.metadata.data) && message.metadata.data.length > 0;
@@ -67,11 +67,11 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
     }
   }, [shouldAutoShowData]);
 
-  const handleCopy = () => {
+  const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(message.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
+  }, [message.content]);
 
   if (isSystem) {
     return (

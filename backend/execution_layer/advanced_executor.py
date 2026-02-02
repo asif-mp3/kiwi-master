@@ -74,13 +74,25 @@ def execute_comparison(
 
     # Calculate comparison
     if value_a is None or value_b is None:
+        # Provide specific error about which data is missing
+        missing_info = []
+        if value_a is None:
+            missing_info.append(f"{period_a.get('label', 'Period A')} ({period_a.get('column', 'unknown column')})")
+        if value_b is None:
+            missing_info.append(f"{period_b.get('label', 'Period B')} ({period_b.get('column', 'unknown column')})")
+
+        error_msg = f"Couldn't find data for: {', '.join(missing_info)}. The column might not exist or have NULL values."
+        print(f"[Comparison] {error_msg}")
+
         return {
             "data": [],
             "calculation_result": None,
             "analysis": {
-                "error": "Hmm, I couldn't find data for both periods! Check if the dates or filters are correct?",
+                "error": error_msg,
                 "period_a_value": value_a,
-                "period_b_value": value_b
+                "period_a_column": period_a.get('column'),
+                "period_b_value": value_b,
+                "period_b_column": period_b.get('column')
             }
         }
 
@@ -474,7 +486,9 @@ def _get_aggregated_value(
         result = conn.execute(sql).fetchone()
         return result[0] if result else None
     except Exception as e:
-        print(f"[AdvancedExecutor] Error in aggregation: {e}")
+        # Log detailed error for debugging - likely column doesn't exist
+        print(f"[AdvancedExecutor] Error in aggregation for column '{column}' in table '{table}': {e}")
+        print(f"[AdvancedExecutor] SQL attempted: {sql[:200]}...")
         return None
 
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo, useCallback } from 'react';
 import { VisualizationConfig, VisualizationDataPoint } from '@/lib/types';
 import {
   BarChart,
@@ -27,8 +28,8 @@ interface DataChartProps {
 export function DataChart({ visualization }: DataChartProps) {
   const { type, title, data, colors } = visualization;
 
-  // Format date strings to be shorter and cleaner
-  const formatLabel = (label: string) => {
+  // Memoize formatLabel function to avoid recreation on every render
+  const formatLabel = useCallback((label: string) => {
     if (!label) return '';
 
     // Check if it's a date string (contains date patterns)
@@ -61,18 +62,18 @@ export function DataChart({ visualization }: DataChartProps) {
       return label.substring(0, 10) + '...';
     }
     return label;
-  };
+  }, []);
 
-  // Aggregate data if too many points (for trends)
-  const aggregateData = (rawData: typeof data) => {
-    if (rawData.length <= 12) return rawData;
+  // Memoize aggregated data to avoid recalculation on every render
+  const aggregatedData = useMemo(() => {
+    if (data.length <= 12) return data;
 
     // Group data into buckets (aim for ~8-12 points)
-    const bucketSize = Math.ceil(rawData.length / 10);
+    const bucketSize = Math.ceil(data.length / 10);
     const aggregated: typeof data = [];
 
-    for (let i = 0; i < rawData.length; i += bucketSize) {
-      const bucket = rawData.slice(i, i + bucketSize);
+    for (let i = 0; i < data.length; i += bucketSize) {
+      const bucket = data.slice(i, i + bucketSize);
       const avgValue = bucket.reduce((sum, item) => sum + (item.value || 0), 0) / bucket.length;
       aggregated.push({
         name: bucket[0].name, // Use first item's label
@@ -81,7 +82,7 @@ export function DataChart({ visualization }: DataChartProps) {
     }
 
     return aggregated;
-  };
+  }, [data]);
 
   // Custom tooltip styling with projection support
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -113,13 +114,13 @@ export function DataChart({ visualization }: DataChartProps) {
     return null;
   };
 
-  // Format large numbers for axis (Indian style)
-  const formatAxisValue = (value: number) => {
+  // Memoize formatAxisValue to avoid recreation on every render
+  const formatAxisValue = useCallback((value: number) => {
     if (value >= 10000000) return `${(value / 10000000).toFixed(1)}Cr`;
     if (value >= 100000) return `${(value / 100000).toFixed(1)}L`;
     if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
     return value.toString();
-  };
+  }, []);
 
   // Render bar chart
   const renderBarChart = () => (
@@ -188,8 +189,8 @@ export function DataChart({ visualization }: DataChartProps) {
   // Render line/area chart (cleaner for trends)
   // Supports projection data with dotted lines
   const renderLineChart = () => {
-    // Aggregate data if too many points
-    const chartData = aggregateData(data);
+    // Use pre-aggregated data (memoized)
+    const chartData = aggregatedData;
     const showDots = chartData.length <= 15;
 
     // Check if this chart has projection data

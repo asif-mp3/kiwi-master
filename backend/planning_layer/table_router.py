@@ -363,7 +363,7 @@ class TableRouter:
         if len(candidates) == 1:
             # Only one candidate - base confidence on score
             score = candidates[0][1]
-            return min(1.0, score / 40)  # 40+ score = max confidence (lowered threshold)
+            return min(1.0, score / 60)  # 60+ score = max confidence
 
         # Multiple candidates - check score gap
         best_table, best_score = candidates[0]
@@ -377,20 +377,20 @@ class TableRouter:
         gap_ratio = gap / best_score
 
         # HIGH CONFIDENCE CONDITIONS (no clarification needed):
-        # 1. Strong absolute score (>= 50) with reasonable gap (>= 15%)
-        if best_score >= 50 and gap_ratio >= 0.15:
-            return max(0.7, min(1.0, best_score / 60))
+        # 1. Strong absolute score (>= 60) with reasonable gap (>= 20%)
+        if best_score >= 60 and gap_ratio >= 0.20:
+            return max(0.7, min(1.0, best_score / 80))
 
-        # 2. Very high score (>= 70) regardless of gap - clear keyword match
-        if best_score >= 70:
-            return max(0.75, min(1.0, best_score / 80))
+        # 2. Very high score (>= 80) regardless of gap - clear keyword match
+        if best_score >= 80:
+            return max(0.75, min(1.0, best_score / 100))
 
-        # 3. Large gap (>= 30 points) - clear winner even if scores are moderate
-        if gap >= 30:
-            return max(0.7, min(1.0, gap / 50 + 0.5))
+        # 3. Large gap (>= 35 points) - clear winner even if scores are moderate
+        if gap >= 35:
+            return max(0.7, min(1.0, gap / 60 + 0.4))
 
         # Base confidence from score magnitude
-        magnitude_confidence = min(1.0, best_score / 50)  # 50+ = max
+        magnitude_confidence = min(1.0, best_score / 70)  # 70+ = max
 
         # Gap confidence - penalize very close scores more heavily
         if gap_ratio < 0.1:  # Within 10% - genuinely ambiguous

@@ -8,42 +8,99 @@ from utils.sql_utils import quote_identifier
 
 def normalize_date_format_in_value(value: str) -> str:
     """
-    Convert date values from DD/MM/YYYY to ISO format (YYYY-MM-DD).
+    Convert various date formats to ISO format (YYYY-MM-DD).
     This handles common date format issues from LLM output.
 
-    Examples:
-        "%15/11/2025%" -> "%2025-11-15%"
-        "15/11/2025" -> "2025-11-15"
-        "%01/03/2024%" -> "%2024-03-01%"
+    Supported formats:
+        - DD/MM/YYYY -> YYYY-MM-DD (e.g., "15/11/2025" -> "2025-11-15")
+        - DD-Mon-YYYY -> YYYY-MM-DD (e.g., "15-Nov-2025" -> "2025-11-15")
+        - Mon DD, YYYY -> YYYY-MM-DD (e.g., "Nov 15, 2025" -> "2025-11-15")
+        - DD Mon YYYY -> YYYY-MM-DD (e.g., "15 Nov 2025" -> "2025-11-15")
+
+    Preserves wildcards (%) around the date.
     """
     if not isinstance(value, str):
         return value
 
-    # Pattern to match DD/MM/YYYY or D/M/YYYY format (with optional surrounding wildcards)
-    # Captures the wildcards separately to preserve them
-    pattern = r'(%?)(\d{1,2})/(\d{1,2})/(\d{4})(%?)'
+    # Month name to number mapping
+    month_map = {
+        'jan': '01', 'january': '01',
+        'feb': '02', 'february': '02',
+        'mar': '03', 'march': '03',
+        'apr': '04', 'april': '04',
+        'may': '05',
+        'jun': '06', 'june': '06',
+        'jul': '07', 'july': '07',
+        'aug': '08', 'august': '08',
+        'sep': '09', 'sept': '09', 'september': '09',
+        'oct': '10', 'october': '10',
+        'nov': '11', 'november': '11',
+        'dec': '12', 'december': '12'
+    }
 
-    def replace_date(match):
-        prefix = match.group(1)  # Leading %
-        day = match.group(2).zfill(2)  # DD
-        month = match.group(3).zfill(2)  # MM
-        year = match.group(4)  # YYYY
-        suffix = match.group(5)  # Trailing %
+    # Pattern 1: DD/MM/YYYY or D/M/YYYY format (with optional surrounding wildcards)
+    pattern_slash = r'(%?)(\d{1,2})/(\d{1,2})/(\d{4})(%?)'
 
-        # Validate it's a reasonable date
+    def replace_slash_date(match):
+        prefix = match.group(1)
+        day = match.group(2).zfill(2)
+        month = match.group(3).zfill(2)
+        year = match.group(4)
+        suffix = match.group(5)
         try:
             d = int(day)
             m = int(month)
             if 1 <= d <= 31 and 1 <= m <= 12:
-                # Convert to ISO format: YYYY-MM-DD
                 return f"{prefix}{year}-{month}-{day}{suffix}"
         except ValueError:
             pass
-
-        # Return original if not a valid date
         return match.group(0)
 
-    return re.sub(pattern, replace_date, value)
+    value = re.sub(pattern_slash, replace_slash_date, value)
+
+    # Pattern 2: DD-Mon-YYYY or DD Mon YYYY (e.g., "15-Nov-2025", "15 Nov 2025")
+    pattern_day_mon = r'(%?)(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s](\d{4})(%?)'
+
+    def replace_day_mon_date(match):
+        prefix = match.group(1)
+        day = match.group(2).zfill(2)
+        month_name = match.group(3).lower()
+        year = match.group(4)
+        suffix = match.group(5)
+        month = month_map.get(month_name)
+        if month:
+            try:
+                d = int(day)
+                if 1 <= d <= 31:
+                    return f"{prefix}{year}-{month}-{day}{suffix}"
+            except ValueError:
+                pass
+        return match.group(0)
+
+    value = re.sub(pattern_day_mon, replace_day_mon_date, value)
+
+    # Pattern 3: Mon DD, YYYY (e.g., "Nov 15, 2025")
+    pattern_mon_day = r'(%?)([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})(%?)'
+
+    def replace_mon_day_date(match):
+        prefix = match.group(1)
+        month_name = match.group(2).lower()
+        day = match.group(3).zfill(2)
+        year = match.group(4)
+        suffix = match.group(5)
+        month = month_map.get(month_name)
+        if month:
+            try:
+                d = int(day)
+                if 1 <= d <= 31:
+                    return f"{prefix}{year}-{month}-{day}{suffix}"
+            except ValueError:
+                pass
+        return match.group(0)
+
+    value = re.sub(pattern_mon_day, replace_mon_day_date, value)
+
+    return value
 
 
 def normalize_date_formats_in_plan(plan: dict) -> dict:
