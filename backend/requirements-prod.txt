@@ -25,6 +25,8 @@ google-cloud-translate>=3.0.0
 # Data Processing
 pandas>=2.0.0
 numpy>=1.24.0
+openpyxl>=3.1.0  # Required for Excel file support
+et-xmlfile>=1.1.0  # Required by openpyxl
 
 # Voice & Audio (Production)
 elevenlabs>=1.0.0

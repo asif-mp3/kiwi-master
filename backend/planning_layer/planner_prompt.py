@@ -62,10 +62,18 @@ You must output ONLY valid JSON matching this exact schema:
   - Example: "Show me the sales trend for December" → filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
   - Example: "Trend for Chennai in November" → filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
   - Without these filters, the trend will include ALL dates, not just the requested period!
-  - **GROUPED TREND ANALYSIS**: When the user asks "which X has increasing/decreasing trend", "trend by state/category", "எந்த state-இல் trend", use "group_by" field in trend object:
-    - "Which state has declining sales trend?" → trend.group_by: "State"
-    - "Trend analysis by branch" → trend.group_by: "Branch_Name"
-    - This analyzes trend separately for each group and identifies which groups are increasing/decreasing/stable
+  - **CRITICAL: GROUPED TREND ANALYSIS**: When the user asks about trends BY a dimension (category, state, branch, etc.), you MUST use "group_by" field in trend object!
+    - **KEYWORDS THAT REQUIRE trend.group_by**: "which category", "which state", "which branch", "by category", "by state", "per category", "category-wise trend", "each category", "losing month by month", "growing month by month", "consistent growth", "consistent decline"
+    - **MANDATORY for these patterns**:
+      - "Which category is losing revenue?" → trend.group_by: "Category"
+      - "Which category shows consistent growth?" → trend.group_by: "Category"
+      - "Which state has declining sales trend?" → trend.group_by: "State"
+      - "Which branch has best growth?" → trend.group_by: "Branch_Name" or "Branch"
+      - "Category-wise trend analysis" → trend.group_by: "Category"
+      - "Trend by state" → trend.group_by: "State"
+    - **WITHOUT group_by**: You will only get OVERALL trend (single line), not per-category/state analysis
+    - **WITH group_by**: System analyzes each category/state separately and identifies winners/losers
+    - This is CRITICAL - if user asks "which X" with trend, you MUST set trend.group_by to analyze each X separately!
 
 ## Table Selection
 

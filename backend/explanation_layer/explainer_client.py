@@ -528,17 +528,29 @@ def _fallback_advanced_explanation(context):
         pct_change = analysis.get("percentage_change")
         start_val = analysis.get("start_value", 0)
         end_val = analysis.get("end_value", 0)
+        max_date = analysis.get("max_date")
+        min_date = analysis.get("min_date")
+        max_value = analysis.get("max_value", 0)
+        has_spike = analysis.get("has_unusual_spike", False)
 
         # Use Indian number formatting
         formatted_start = _format_number_indian(start_val)
         formatted_end = _format_number_indian(end_val)
+        formatted_max = _format_number_indian(max_value)
+
+        # Check if this is a spike/anomaly query
+        spike_info = ""
+        if max_date and max_value:
+            spike_info = f" The highest point was in {max_date} at {formatted_max}."
+            if has_spike:
+                spike_info = f" There was an unusual spike in {max_date} reaching {formatted_max}!"
 
         if direction == "increasing":
-            return f"{emoji} Sales are trending upward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change)"
+            return f"{emoji} Sales are trending upward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
         elif direction == "decreasing":
-            return f"{emoji} Sales are trending downward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change)"
+            return f"{emoji} Sales are trending downward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
         else:
-            return f"{emoji} Sales are relatively stable - from {formatted_start} to {formatted_end}"
+            return f"{emoji} Sales are relatively stable - from {formatted_start} to {formatted_end}.{spike_info}"
 
     return "Analysis completed but no specific insights available."
 

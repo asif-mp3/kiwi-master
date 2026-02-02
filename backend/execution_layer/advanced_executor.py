@@ -341,6 +341,20 @@ def execute_trend(
         # Detect time unit from column name for projection support
         time_unit = _detect_time_unit_from_column(date_column)
 
+        # Find spike (max) and dip (min) with their dates
+        max_value = max(values)
+        min_value = min(values)
+        max_idx = values.index(max_value)
+        min_idx = values.index(min_value)
+        max_date = str(dates[max_idx])
+        min_date = str(dates[min_idx])
+
+        # Detect if there's an unusual spike (value significantly above average)
+        avg_value = statistics.mean(values)
+        std_dev = statistics.stdev(values) if len(values) > 1 else 0
+        spike_threshold = avg_value + (1.5 * std_dev)  # 1.5 standard deviations above mean
+        has_spike = max_value > spike_threshold if std_dev > 0 else False
+
         return {
             "data": [{"date": str(d), "value": v} for d, v in result],
             "calculation_result": trend_analysis["slope"],
@@ -350,12 +364,17 @@ def execute_trend(
                 "confidence": trend_analysis["confidence"],
                 "start_value": values[0],
                 "end_value": values[-1],
-                "min_value": min(values),
-                "max_value": max(values),
-                "avg_value": statistics.mean(values),
+                "min_value": min_value,
+                "max_value": max_value,
+                "avg_value": avg_value,
                 "data_points": len(values),
                 "total_change": values[-1] - values[0],
                 "percentage_change": ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else None,
+                # Spike/Peak detection
+                "max_date": max_date,
+                "min_date": min_date,
+                "has_unusual_spike": has_spike,
+                "spike_info": f"Peak in {max_date} at {max_value:,.0f}" if has_spike else None,
                 # Additional fields for projection support
                 "slope": trend_analysis["slope"],
                 "normalized_slope": trend_analysis.get("normalized_slope", 0),
