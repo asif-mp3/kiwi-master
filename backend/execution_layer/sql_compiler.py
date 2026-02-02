@@ -346,18 +346,20 @@ def _compile_rank(plan):
             if date_grouping and col.lower() in ('date', 'datetime', 'timestamp', 'created_at', 'order_date', 'transaction_date'):
                 # Use DATE_TRUNC to extract time period
                 # DuckDB DATE_TRUNC returns a date, we also extract readable format
+                # Use TRY_CAST to handle VARCHAR date columns safely
+                date_expr = f"TRY_CAST({quoted_col} AS DATE)"
                 if date_grouping == "MONTH":
-                    select_parts.append(f"DATE_TRUNC('month', {quoted_col}) AS month")
-                    group_by_parts.append(f"DATE_TRUNC('month', {quoted_col})")
+                    select_parts.append(f"DATE_TRUNC('month', {date_expr}) AS month")
+                    group_by_parts.append(f"DATE_TRUNC('month', {date_expr})")
                 elif date_grouping == "YEAR":
-                    select_parts.append(f"DATE_TRUNC('year', {quoted_col}) AS year")
-                    group_by_parts.append(f"DATE_TRUNC('year', {quoted_col})")
+                    select_parts.append(f"DATE_TRUNC('year', {date_expr}) AS year")
+                    group_by_parts.append(f"DATE_TRUNC('year', {date_expr})")
                 elif date_grouping == "WEEK":
-                    select_parts.append(f"DATE_TRUNC('week', {quoted_col}) AS week")
-                    group_by_parts.append(f"DATE_TRUNC('week', {quoted_col})")
+                    select_parts.append(f"DATE_TRUNC('week', {date_expr}) AS week")
+                    group_by_parts.append(f"DATE_TRUNC('week', {date_expr})")
                 elif date_grouping == "QUARTER":
-                    select_parts.append(f"DATE_TRUNC('quarter', {quoted_col}) AS quarter")
-                    group_by_parts.append(f"DATE_TRUNC('quarter', {quoted_col})")
+                    select_parts.append(f"DATE_TRUNC('quarter', {date_expr}) AS quarter")
+                    group_by_parts.append(f"DATE_TRUNC('quarter', {date_expr})")
                 else:
                     # Default: just use the column as-is
                     select_parts.append(quoted_col)
