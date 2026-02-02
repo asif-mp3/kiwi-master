@@ -211,6 +211,22 @@ def execute_trend(
     filters = plan.get("filters", [])
     group_by = trend.get("group_by")  # Optional: dimension to group trend analysis by
 
+    # VALIDATION: Check if date_column looks like an actual date column (not an ID column)
+    if date_column:
+        date_col_lower = date_column.lower()
+        # ID columns should NOT be used for trend analysis
+        invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
+        if any(pattern in date_col_lower for pattern in invalid_patterns):
+            print(f"  ⚠️ WARNING: '{date_column}' looks like an ID column, not a date column!")
+            return {
+                "data": [],
+                "calculation_result": None,
+                "analysis": {
+                    "error": f"The column '{date_column}' appears to be an ID column, not a date column. Trend analysis requires a Date/DateTime column. Please try a different query or check your data.",
+                    "suggestion": "Try asking about sales trend using a table with actual date data."
+                }
+            }
+
     # If group_by is specified, delegate to grouped trend analysis
     if group_by:
         return execute_grouped_trend(plan, conn)
@@ -602,6 +618,21 @@ def execute_grouped_trend(
 
     if not group_by:
         return {"data": [], "analysis": {"error": "group_by is required for grouped trend analysis"}}
+
+    # VALIDATION: Check if date_column looks like an actual date column (not an ID column)
+    if date_column:
+        date_col_lower = date_column.lower()
+        invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
+        if any(pattern in date_col_lower for pattern in invalid_patterns):
+            print(f"  ⚠️ WARNING: '{date_column}' looks like an ID column, not a date column!")
+            return {
+                "data": [],
+                "calculation_result": None,
+                "analysis": {
+                    "error": f"The column '{date_column}' appears to be an ID column, not a date column. Trend analysis requires a Date/DateTime column.",
+                    "suggestion": "Try asking about trends using a table with actual date data."
+                }
+            }
 
     # Quote identifiers
     quoted_table = f'"{table}"' if table and (' ' in table or '-' in table or table[0].isdigit()) else table

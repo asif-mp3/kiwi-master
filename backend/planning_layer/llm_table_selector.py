@@ -87,21 +87,24 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    - A Monthly_Category_Summary table shows ALL-TIME data, not filterable by date
 
 6. **CRITICAL: TREND Queries (time-series analysis)**:
-   **RULE #3: For "trend", "over time", "growing", "declining", "pattern", "காலப்போக்கில்" - MUST use tables with ACTUAL Date column**
+   **RULE #3: For "trend", "over time", "growing", "declining", "pattern", "stable", "volatile", "consistent growth" - MUST use tables with ACTUAL Date column**
    - TREND analysis REQUIRES a table with a Date/DateTime column containing temporal data
-   - Tables like SKU_Performance, Category_Summary do NOT have Date columns - NEVER use for trends
-   - Tables like Daily_Sales_Transactions, Sales_Transactions HAVE Date columns - USE THESE for trends
-   - Example: "Is profit stable over time?" → Use table with Date column (Daily_Transactions, NOT SKU_Performance)
+   - **LOOK FOR THE MARKERS**: Tables are marked with "✅ HAS DATE COLUMN" or "⚠️ NO DATE COLUMN"
+   - **ONLY use tables marked "✅ HAS DATE COLUMN" for ANY trend/time analysis!**
+   - **NEVER use tables marked "⚠️ NO DATE COLUMN" for trends** - they CANNOT show data over time!
+   - **CRITICAL**: A column named "SKU_ID", "Transaction_ID", "Product_ID", "Item_ID" is an IDENTIFIER, NOT a date! NEVER use ID columns for trend X-axis!
+   - Example: "Is profit stable over time?" → Use table marked "✅ HAS DATE COLUMN"
    - Example: "Which state has declining trend?" → Use table with Date AND State columns
+   - Example: "consistent growth across months?" → MUST use table marked "✅ HAS DATE COLUMN"
    - The table MUST have sufficient rows (100+) to show a meaningful trend over time
-   - A SKU_ID or Transaction_ID is NOT a date column - don't confuse them!
+   - **IF NO TABLE HAS DATE COLUMN**: Return confidence 0.0 and explain that trend analysis is not possible with current data
 
-6. **Other Rules**:
+7. **Other Rules**:
    - For "how many X" questions: Select the table with MOST rows that has X data
    - For "percentage" questions: Need a table with the breakdown dimension
    - For "show all" questions: Need the detailed transaction-level table
 
-7. **Validate Your Choice**:
+8. **Validate Your Choice**:
    - Does this table have the column needed for filtering? (e.g., State column for "Tamil Nadu")
    - Does this table have the metric column? (e.g., Sales, Revenue, Amount)
    - Does this table contain the specific values mentioned? (e.g., "UPI" in Payment_Mode values)
@@ -160,6 +163,7 @@ def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
     """
     Build a rich context string describing all tables for the LLM.
     Includes table names, columns, sample values, and row counts.
+    Also marks which tables have Date columns for trend analysis.
     """
     if not profiles:
         return "No tables available."
@@ -169,6 +173,25 @@ def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
     for table_name, profile in profiles.items():
         row_count = profile.get('row_count', 0)
         table_type = profile.get('table_type', 'unknown')
+        columns = profile.get('columns', {})
+
+        # CRITICAL: Check if table has a Date column (for trend analysis)
+        date_column_name = None
+        has_date_column = False
+        for col_name, col_info in columns.items():
+            col_lower = col_name.lower()
+            col_role = col_info.get('role', '')
+            # Check for actual date columns (not ID columns!)
+            is_date_col = (
+                col_role == 'date' or
+                any(d in col_lower for d in ['date', 'datetime', 'timestamp', 'created_at', 'order_date'])
+            )
+            # Exclude ID columns that might contain "date" in name
+            is_id_col = any(id_pat in col_lower for id_pat in ['_id', 'id_', 'sku_', 'transaction_id', 'order_id'])
+            if is_date_col and not is_id_col:
+                has_date_column = True
+                date_column_name = col_name
+                break
 
         # Check if this is a partial data or aggregated table
         name_lower = table_name.lower()
@@ -176,19 +199,29 @@ def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
         is_aggregated = any(x in name_lower for x in ['summary', 'quarterly', 'monthly', 'yearly', 'performance', 'overview'])
         is_transaction = any(x in name_lower for x in ['transaction', 'daily', 'detail', 'raw', 'order', 'sale'])
 
-        # Add appropriate note
-        if is_partial:
-            note = " [PARTIAL DATA - Top N only, NOT for totals]"
-        elif is_aggregated:
-            note = " [AGGREGATED/SUMMARY - Pre-computed, NOT for raw totals]"
-        elif is_transaction and row_count > 100:
-            note = " [TRANSACTION-LEVEL - Use for totals/counts]"
+        # Build notes list
+        notes = []
+
+        # Date column indicator (CRITICAL for trend queries)
+        if has_date_column:
+            notes.append(f"✅ HAS DATE COLUMN ({date_column_name}) - USE FOR TRENDS")
         else:
-            note = ""
+            notes.append("⚠️ NO DATE COLUMN - CANNOT USE FOR TREND ANALYSIS")
+
+        # Table type indicators
+        if is_partial:
+            notes.append("PARTIAL DATA - Top N only, NOT for totals")
+        elif is_aggregated:
+            notes.append("AGGREGATED/SUMMARY - Pre-computed, NOT for raw totals")
+        elif is_transaction and row_count > 100:
+            notes.append("TRANSACTION-LEVEL - Use for totals/counts")
+
+        note = " [" + " | ".join(notes) + "]" if notes else ""
 
         lines.append(f"## {table_name}{note}")
         lines.append(f"- Rows: {row_count}")
         lines.append(f"- Type: {table_type}")
+        lines.append(f"- Has Date Column: {'YES (' + date_column_name + ')' if has_date_column else 'NO'}")
 
         # Add semantic summary if available
         if profile.get('semantic_summary'):
