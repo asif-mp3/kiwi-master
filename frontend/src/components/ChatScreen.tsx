@@ -167,28 +167,20 @@ function TypingPlaceholderPill({
   );
 }
 
-// Suggested follow-up questions (English and Tamil)
+// Suggested follow-up questions (English only)
 const FOLLOW_UP_SUGGESTIONS = [
-  "Are sales increasing or decreasing in Chennai?",
-  "சென்னை நகரத்தில் sales உயர்கிறதா குறைகிறதா?",
+  "Are sales increasing or decreasing?",
   "Which state shows a declining sales trend?",
-  "எந்த state-இல் sales trend குறைந்து வருகிறது?",
   "Which category shows consistent growth across months?",
-  "எந்த category மாதம் முழுவதும் நிலையான வளர்ச்சியை காட்டுகிறது?",
   "Are profits stable or volatile over time?",
-  "profit காலப்போக்கில் நிலையானதா அல்லது மாறுபடுகிறதா?",
   "Which month had an unusual spike in sales?",
-  "எந்த மாதத்தில் sales திடீரென அதிகரித்தது?",
   "Is revenue seasonally higher in certain months?",
-  "சில மாதங்களில் revenue அதிகமாக இருக்கிறதா?",
   "Which branch shows declining performance?",
-  "எந்த branch செயல்திறன் குறைந்து வருகிறது?",
   "Which category is losing revenue month by month?",
-  "எந்த category மாதம் மாதமாக revenue இழக்கிறது?",
   "Are costs rising faster than revenue?",
-  "revenue-விட cost வேகமாக உயருகிறதா?",
   "Which quarter performed the worst overall?",
-  "மொத்தமாக எந்த quarter மோசமாக செயல்பட்டது?",
+  "What is the total sales this month?",
+  "Show me top 5 products by revenue",
 ];
 
 // Get 2 random suggestions
