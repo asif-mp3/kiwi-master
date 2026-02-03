@@ -3,7 +3,7 @@
 import { motion } from 'framer-motion';
 import { Message } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp } from 'lucide-react';
+import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp, FileSpreadsheet, FileText } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Popover,
@@ -12,6 +12,9 @@ import {
 } from "@/components/ui/popover";
 import { QueryPlanViewer } from './QueryPlanViewer';
 import { DataChart } from './DataChart';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   Table,
   TableBody,
@@ -72,6 +75,49 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }, [message.content]);
+
+  // Export to Excel function
+  const handleExportExcel = useCallback(() => {
+    if (!hasData) return;
+
+    const worksheet = XLSX.utils.json_to_sheet(dataRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Data');
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, `thara_export_${timestamp}.xlsx`);
+  }, [hasData, dataRows]);
+
+  // Export to PDF function
+  const handleExportPDF = useCallback(() => {
+    if (!hasData) return;
+
+    const doc = new jsPDF();
+
+    // Add title
+    doc.setFontSize(16);
+    doc.text('Thara.ai - Data Export', 14, 15);
+
+    // Add timestamp
+    doc.setFontSize(10);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 22);
+
+    // Create table
+    autoTable(doc, {
+      head: [dataColumns],
+      body: dataRows.map(row => dataColumns.map(col =>
+        row[col] !== null && row[col] !== undefined ? String(row[col]) : '-'
+      )),
+      startY: 28,
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [139, 92, 246] }, // Violet color
+    });
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().slice(0, 10);
+    doc.save(`thara_export_${timestamp}.pdf`);
+  }, [hasData, dataRows, dataColumns]);
 
   if (isSystem) {
     return (
@@ -282,6 +328,26 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
                 <span className="text-xs font-semibold text-zinc-400">
                   Data Results ({dataRows.length} rows)
                 </span>
+                <div className="flex items-center gap-2">
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={handleExportExcel}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-all"
+                  >
+                    <FileSpreadsheet className="w-3 h-3" />
+                    Excel
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={handleExportPDF}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all"
+                  >
+                    <FileText className="w-3 h-3" />
+                    PDF
+                  </motion.button>
+                </div>
               </div>
               <div className="max-h-80 overflow-auto">
                 <Table>
