@@ -1,39 +1,103 @@
-# Thara.ai - Intelligent Data Assistant
+# Thara.ai - RAG-Powered Data Assistant
 
-Thara.ai is a voice-enabled AI data assistant that transforms how users interact with their business data. Instead of writing complex SQL queries or navigating through dashboards, users can simply ask questions in natural language (English or Tamil) and receive instant, accurate answers with visualizations.
+Thara.ai is a **Retrieval-Augmented Generation (RAG)** powered voice assistant that lets users query their business data using natural language. Built with a true RAG architecture, it uses **ChromaDB vector embeddings** to semantically understand your data schema, **LLM-based planning** (Gemini) to generate structured query plans, and **DuckDB** for lightning-fast analytical queries.
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [How It Works - The Complete Flow](#how-it-works---the-complete-flow)
-3. [Architecture Deep Dive](#architecture-deep-dive)
-4. [Frontend System](#frontend-system)
-5. [Backend System](#backend-system)
-6. [Data Processing Pipeline](#data-processing-pipeline)
-7. [Query Processing Pipeline](#query-processing-pipeline)
-8. [Intelligence Layers](#intelligence-layers)
-9. [Supported Query Types](#supported-query-types)
-10. [Key Features](#key-features)
-11. [Tech Stack](#tech-stack)
-12. [Setup Guide](#setup-guide)
-13. [Deployment](#deployment)
+2. [RAG Architecture](#rag-architecture)
+3. [How It Works - The Complete Flow](#how-it-works---the-complete-flow)
+4. [Architecture Deep Dive](#architecture-deep-dive)
+5. [Frontend System](#frontend-system)
+6. [Backend System](#backend-system)
+7. [Data Processing Pipeline](#data-processing-pipeline)
+8. [Query Processing Pipeline](#query-processing-pipeline)
+9. [Intelligence Layers](#intelligence-layers)
+10. [Supported Query Types](#supported-query-types)
+11. [Key Features](#key-features)
+12. [Tech Stack](#tech-stack)
+13. [Setup Guide](#setup-guide)
+14. [Deployment](#deployment)
 
 ---
 
 ## Overview
 
-Thara.ai bridges the gap between raw data and actionable insights. It allows non-technical users to query their business data (stored in Google Sheets, Excel files, or Google Drive folders) using conversational language. The system understands context, remembers preferences, handles follow-up questions, and presents results with appropriate visualizations.
+Thara.ai bridges the gap between raw data and actionable insights using a sophisticated RAG pipeline. Unlike traditional chatbots that rely on simple keyword matching, Thara uses **semantic embeddings** to understand the meaning of your data and questions, then retrieves the most relevant tables before generating accurate SQL queries.
+
+**RAG Pipeline:**
+1. **Retrieval**: ChromaDB finds semantically similar tables based on your question
+2. **Augmentation**: LLM receives table schemas, profiles, and context as grounding
+3. **Generation**: Gemini generates structured query plans, not raw SQL hallucinations
 
 **Core Capabilities:**
-- Natural language query understanding (English and Tamil)
-- Voice input and voice output (text-to-speech)
-- Automatic data visualization (charts, tables)
-- Smart table selection from multiple data sources
-- Self-healing query execution
-- Conversation memory and context tracking
-- Data export (PDF and Excel)
+- **True RAG Architecture**: Vector embeddings + LLM grounding prevents hallucination
+- **Semantic Table Routing**: Finds "revenue" even when column is named "Sale_Amount"
+- **Schema-Aware Planning**: LLM sees actual column names, types, and sample values
+- **Self-Healing Execution**: Auto-corrects SQL errors with up to 3 retry attempts
+- **Bilingual Voice Interface**: English and Tamil with ElevenLabs STT/TTS
+- **Smart Visualizations**: Auto-selects chart type based on query semantics
+
+---
+
+## RAG Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         RAG PIPELINE OVERVIEW                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  USER QUERY: "What were Chennai sales last month?"                          │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ STEP 1: RETRIEVAL (ChromaDB)                                         │    │
+│  │ • Query embedding: encode("Chennai sales last month")                │    │
+│  │ • Vector similarity search against table embeddings                  │    │
+│  │ • Returns: Top 5 semantically similar tables with scores             │    │
+│  │ • Example match: "Daily_Transactions" (0.89 similarity)              │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ STEP 2: AUGMENTATION (Context Building)                              │    │
+│  │ • Fetch full schema for retrieved tables                             │    │
+│  │ • Include column types, sample values, statistics                    │    │
+│  │ • Add table profiles (date columns, metrics, dimensions)            │    │
+│  │ • Build rich context prompt for LLM                                  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ STEP 3: GENERATION (Gemini LLM)                                      │    │
+│  │ • LLM sees: question + retrieved schemas + profiles                  │    │
+│  │ • Outputs: Structured JSON query plan (not raw SQL)                  │    │
+│  │ • Plan includes: table, columns, filters, aggregations               │    │
+│  │ • Grounded in actual schema = no hallucinated column names           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                              │                                               │
+│                              ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ STEP 4: EXECUTION (DuckDB)                                           │    │
+│  │ • Plan compiled to SQL by deterministic compiler                     │    │
+│  │ • Executed against in-memory DuckDB                                  │    │
+│  │ • Self-healing: retries with corrections on failure                  │    │
+│  │ • Result: DataFrame with query results                               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why RAG for Data Querying?
+
+| Problem | Traditional LLM | Thara RAG Approach |
+|---------|-----------------|-------------------|
+| **Hallucinated columns** | LLM invents "sales_total" that doesn't exist | Retrieves actual schema, LLM sees real column names |
+| **Wrong table** | Guesses table name | Vector search finds semantically relevant tables |
+| **Stale knowledge** | Limited to training data | Retrieves live schema on every query |
+| **No grounding** | Pure generation | LLM grounded in retrieved context |
 
 ---
 
@@ -604,16 +668,27 @@ User Query: "Show me sales trend by category for last 3 months"
 
 ## Key Features
 
-### Voice Interface
-- **Input**: Speak questions using the microphone
-- **Output**: Hear responses via ElevenLabs TTS
-- **Language**: Supports English and Tamil
+### Voice Interface - Phone-Call Experience
+- **3-Column Layout**: Live captions (left), Voice button (center), Visualization panel (right)
+- **Word-by-Word Animation**: Captions appear like YouTube subtitles, one word at a time
+- **Voice Activity Detection (VAD)**: Automatically detects when you stop speaking
+- **Live Captions**: See what you're saying and Thara's response in real-time
+- **Mobile Optimized**: Tap truncated captions to view full response in chat
+- **TTS Caching**: Instant audio replay for repeated responses
+- **Language Support**: English and Tamil with auto-detection
+
+### Session Personalization
+- **Default Name**: Starts as "Boss" - Thara greets you personally
+- **Name Memory**: Say "Call me Asif" and Thara remembers throughout the session
+- **Personalized Responses**: Your name appears in greetings and explanations
 
 ### Smart Visualizations
-- Automatic chart type selection
-- Responsive design
-- Interactive tooltips
-- Export to image
+- **Automatic Chart Selection**: Bar, Line, Pie, or Metric Card based on data type
+- **Metric Cards**: Single-value results displayed with large, prominent numbers
+- **Indian Number Formatting**: Values shown as ₹ Cr, L, K for easy reading
+- **Trend Indicators**: Shows direction (↑↓), percentage change, and context
+- **Responsive Design**: Charts adapt to screen size
+- **Interactive Tooltips**: Hover for detailed values
 
 ### Data Export
 - **Excel**: Full data with formatting
@@ -723,7 +798,13 @@ cd frontend
 npm install
 ```
 
-Create `frontend/.env.local`:
+**Environment Variables** (optional - auto-detection available):
+
+The frontend auto-detects the backend URL:
+- **Localhost**: Uses `http://localhost:8000` when running on localhost
+- **Production**: Uses `https://asif-mp3-thara-backend-v2.hf.space` automatically
+
+To override, create `frontend/.env.local`:
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
