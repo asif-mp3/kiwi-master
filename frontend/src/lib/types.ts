@@ -46,9 +46,20 @@ export interface FilterCondition {
 // Order by specification - backend uses [column, direction] tuples
 export type OrderBySpec = [string, 'ASC' | 'DESC'];
 
-// Backend-aligned Query Plan Schema (from plan_schema.json)
+// Backend-aligned Query Plan Schema (from plan_schema.json and models.py)
 export interface QueryPlan {
-  query_type: 'metric' | 'lookup' | 'filter' | 'extrema_lookup' | 'rank' | 'list' | 'aggregation_on_subset';
+  query_type:
+    | 'metric'
+    | 'lookup'
+    | 'filter'
+    | 'extrema_lookup'
+    | 'rank'
+    | 'list'
+    | 'aggregation_on_subset'
+    | 'comparison'    // Compare two values (e.g., "sales in Jan vs Feb")
+    | 'percentage'    // Calculate percentages (e.g., "what % of total is X")
+    | 'trend'         // Analyze trends over time (e.g., "sales trend last 6 months")
+    | 'projection';   // Forecast future values (e.g., "project next quarter")
   table: string;
   select_columns?: string[] | null;
   metrics?: string[] | null;
@@ -61,6 +72,28 @@ export interface QueryPlan {
   subset_filters?: FilterCondition[];
   subset_order_by?: OrderBySpec[];
   subset_limit?: number | null;
+  // Advanced query type specific fields
+  comparison?: {
+    column_a?: string;
+    column_b?: string;
+    value_a_filter?: FilterCondition;
+    value_b_filter?: FilterCondition;
+  };
+  percentage?: {
+    numerator_filter?: FilterCondition;
+    denominator_filter?: FilterCondition;
+    of_total?: boolean;
+  };
+  trend?: {
+    date_column?: string;
+    metric_column?: string;
+    periods?: number;
+    direction?: 'increasing' | 'decreasing' | 'stable';
+  };
+  projection?: {
+    periods_ahead?: number;
+    method?: 'linear' | 'average' | 'growth_rate';
+  };
 }
 
 // Backend-aligned Table Detection Schema (from connector.py)
@@ -138,6 +171,8 @@ export interface ProcessQueryResponse {
   entities_extracted?: Record<string, unknown>;
   healing_attempts?: { attempt: number; error: string; fix: string }[];
   visualization?: VisualizationConfig;
+  name_changed?: boolean;
+  new_name?: string;
 }
 
 export interface DatasetStatusResponse {

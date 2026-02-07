@@ -101,13 +101,13 @@ def execute_comparison(
     # Determine direction
     if value_b > value_a:
         direction = "increased"
-        direction_emoji = "📈"
+        direction_emoji = "UP"
     elif value_b < value_a:
         direction = "decreased"
-        direction_emoji = "📉"
+        direction_emoji = "DOWN"
     else:
         direction = "unchanged"
-        direction_emoji = "➡️"
+        direction_emoji = "STABLE"
 
     return {
         "data": [
@@ -217,7 +217,7 @@ def execute_trend(
         # ID columns should NOT be used for trend analysis
         invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
         if any(pattern in date_col_lower for pattern in invalid_patterns):
-            print(f"  ⚠️ WARNING: '{date_column}' looks like an ID column, not a date column!")
+            print(f"  [WARN] WARNING: '{date_column}' looks like an ID column, not a date column!")
             return {
                 "data": [],
                 "calculation_result": None,
@@ -255,7 +255,7 @@ def execute_trend(
     where_clause = " AND ".join(filter_conditions)
 
     if filters:
-        print(f"  📋 Applying {len(filters)} filter(s) to trend query")
+        print(f"  [FILTER] Applying {len(filters)} filter(s) to trend query")
 
     # Check if date_column is a text-based quarter column (e.g., "Q3 2025")
     is_quarter = _is_quarter_column(conn, table, date_column)
@@ -272,7 +272,7 @@ def execute_trend(
                 CAST(REGEXP_EXTRACT({quoted_date}, '(\\d{{4}})', 1) AS INTEGER),
                 CAST(REGEXP_EXTRACT({quoted_date}, 'Q(\\d)', 1) AS INTEGER)
         """
-        print(f"  📅 Quarter column detected - using chronological sort")
+        print(f"  [DATE] Quarter column detected - using chronological sort")
     else:
         sql = f"""
             SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
@@ -315,7 +315,7 @@ def execute_trend(
                 "calculation_result": 0,
                 "analysis": {
                     "direction": "stable",
-                    "direction_emoji": "➡️",
+                    "direction_emoji": "STABLE",
                     "confidence": "high",
                     "start_value": constant_value,
                     "end_value": constant_value,
@@ -424,7 +424,7 @@ def _is_quarter_column(
         return matches >= len(result) * 0.8  # 80% threshold
 
     except Exception as e:
-        print(f"  ⚠️ Error checking quarter column: {e}")
+        print(f"  [WARN] Error checking quarter column: {e}")
         return False
 
 
@@ -597,15 +597,15 @@ def _analyze_trend(values: List[float]) -> Dict[str, Any]:
     # Determine direction and confidence
     if abs(normalized_slope) < 1:  # Less than 1% change per period
         direction = "stable"
-        emoji = "➡️"
+        emoji = "STABLE"
         confidence = "high" if abs(normalized_slope) < 0.5 else "medium"
     elif normalized_slope > 0:
         direction = "increasing"
-        emoji = "📈"
+        emoji = "UP"
         confidence = "high" if normalized_slope > 5 else "medium" if normalized_slope > 2 else "low"
     else:
         direction = "decreasing"
-        emoji = "📉"
+        emoji = "DOWN"
         confidence = "high" if normalized_slope < -5 else "medium" if normalized_slope < -2 else "low"
 
     return {
@@ -643,7 +643,7 @@ def execute_grouped_trend(
         date_col_lower = date_column.lower()
         invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
         if any(pattern in date_col_lower for pattern in invalid_patterns):
-            print(f"  ⚠️ WARNING: '{date_column}' looks like an ID column, not a date column!")
+            print(f"  [WARN] WARNING: '{date_column}' looks like an ID column, not a date column!")
             return {
                 "data": [],
                 "calculation_result": None,
@@ -688,7 +688,7 @@ def execute_grouped_trend(
             return {"data": [], "analysis": {"error": f"No groups found for {group_by}"}}
 
         groups = [row[0] for row in groups_result if row[0]]
-        print(f"  📊 Analyzing trend for {len(groups)} {group_by} groups")
+        print(f"  [DATA] Analyzing trend for {len(groups)} {group_by} groups")
 
         # Analyze trend for each group
         group_trends = []

@@ -3,7 +3,7 @@
 # chromadb + sentence-transformers are REQUIRED for schema intelligence
 
 # Core Dependencies
-google-generativeai>=0.3.0
+google-generativeai>=0.8.0
 pyyaml>=6.0
 jsonschema>=4.0.0
 python-dotenv>=1.0.0

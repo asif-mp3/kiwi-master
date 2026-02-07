@@ -33,26 +33,26 @@ TRIGGER memory detection when user:
 - Gives permanent instructions about preferences or identity
 
 Examples that MUST trigger:
-- "Call me Boss" → address_as: "Boss" (MOST COMMON PATTERN - just name!)
-- "Call me madam" → address_as: "madam"
-- "Hereafter call me Boss" → address_as: "Boss"
-- "From now on call me boss" → address_as: "boss"
-- "You can call me Raj" → address_as: "Raj"
-- "Just call me sir" → address_as: "sir"
+- "Call me Boss" -> address_as: "Boss" (MOST COMMON PATTERN - just name!)
+- "Call me madam" -> address_as: "madam"
+- "Hereafter call me Boss" -> address_as: "Boss"
+- "From now on call me boss" -> address_as: "boss"
+- "You can call me Raj" -> address_as: "Raj"
+- "Just call me sir" -> address_as: "sir"
 - "Your name is Thara"
 - "From now on, address me as sir"
-- "My name is Boss" → address_as: "Boss"
-- "I am Priya" → address_as: "Priya"
-- "I'm John" → address_as: "John"
-- "என் பேரு Boss" (Tamil: "My name is Boss") → address_as: "Boss"
-- "Enna Boss nu koopdu" (Tamil: "Call me Boss") → address_as: "Boss"
+- "My name is Boss" -> address_as: "Boss"
+- "I am Priya" -> address_as: "Priya"
+- "I'm John" -> address_as: "John"
+- "என் பேரு Boss" (Tamil: "My name is Boss") -> address_as: "Boss"
+- "Enna Boss nu koopdu" (Tamil: "Call me Boss") -> address_as: "Boss"
 - "Inime enna madam nu dhan koopduva, nyabagam vechiko" (Tamil)
 - "Yaad rakhna, mujhe sir bulana" (Hindi)
-- "Mera naam Rahul hai" (Hindi: "My name is Rahul") → address_as: "Rahul"
+- "Mera naam Rahul hai" (Hindi: "My name is Rahul") -> address_as: "Rahul"
 
 DO NOT trigger on (CRITICAL - these are NOT memory intents):
 - DATE CONTEXT: "Today is November 14th", "Remember today is December", "The date is January 1st"
-  → These are providing temporal context for queries, NOT asking you to remember a name!
+  -> These are providing temporal context for queries, NOT asking you to remember a name!
 - Questions: "What is madam?"
 - Casual mentions: "Tell me about Thara fruit"
 - Temporary context: "For this query, use..."
@@ -81,17 +81,17 @@ If NO memory intent:
 
 ## Normalization Rules
 
-- "Call me Boss" → category: "user_preferences", key: "address_as", value: "Boss"
-- "Call me madam" → category: "user_preferences", key: "address_as", value: "madam"
-- "Hereafter call me sir" → category: "user_preferences", key: "address_as", value: "sir"
-- "You can call me boss" → category: "user_preferences", key: "address_as", value: "boss"
-- "Your name is Thara" → category: "bot_identity", key: "name", value: "Thara"
-- "Address me as sir" → category: "user_preferences", key: "address_as", value: "sir"
-- "My name is Boss" → category: "user_preferences", key: "address_as", value: "Boss"
-- "I am Priya" → category: "user_preferences", key: "address_as", value: "Priya"
-- "I'm John" → category: "user_preferences", key: "address_as", value: "John"
-- "என் பேரு Boss" → category: "user_preferences", key: "address_as", value: "Boss"
-- "Enna Boss nu koopdu" → category: "user_preferences", key: "address_as", value: "Boss"
+- "Call me Boss" -> category: "user_preferences", key: "address_as", value: "Boss"
+- "Call me madam" -> category: "user_preferences", key: "address_as", value: "madam"
+- "Hereafter call me sir" -> category: "user_preferences", key: "address_as", value: "sir"
+- "You can call me boss" -> category: "user_preferences", key: "address_as", value: "boss"
+- "Your name is Thara" -> category: "bot_identity", key: "name", value: "Thara"
+- "Address me as sir" -> category: "user_preferences", key: "address_as", value: "sir"
+- "My name is Boss" -> category: "user_preferences", key: "address_as", value: "Boss"
+- "I am Priya" -> category: "user_preferences", key: "address_as", value: "Priya"
+- "I'm John" -> category: "user_preferences", key: "address_as", value: "John"
+- "என் பேரு Boss" -> category: "user_preferences", key: "address_as", value: "Boss"
+- "Enna Boss nu koopdu" -> category: "user_preferences", key: "address_as", value: "Boss"
 
 Extract ONLY the name/value, not the full sentence. Preserve the original name (including Tamil/non-Latin names).
 
@@ -127,7 +127,7 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
 
         # Create model with JSON output (no system_instruction for compatibility with 0.3.x)
         model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",  # Fast model for detection
+            model_name="gemini-2.0-flash",  # Fast model for detection
             generation_config={
                 "temperature": 0.0,
                 "response_mime_type": "application/json"

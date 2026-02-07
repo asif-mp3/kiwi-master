@@ -8,7 +8,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
 export default function Home() {
-  const { auth, login, logout, isInitializing } = useAppState();
+  const { auth, login, logout, sessionName, setSessionName, isInitializing } = useAppState();
 
   if (isInitializing) {
     return (
@@ -41,7 +41,7 @@ export default function Home() {
               transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
               className="h-full w-full"
             >
-              <ChatScreen onLogout={logout} username={auth.username || 'User'} />
+              <ChatScreen onLogout={logout} username={sessionName} />
             </motion.div>
           )}
         </AnimatePresence>

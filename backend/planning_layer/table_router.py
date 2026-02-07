@@ -104,7 +104,7 @@ class TableRouter:
                 # Validate that previous table still exists
                 actual_tables = _get_actual_duckdb_tables()
                 if not actual_tables or prev_table in actual_tables:
-                    print(f"[TableRouter] ✓ PROJECTION QUERY - using previous table: {prev_table}")
+                    print(f"[TableRouter] [OK] PROJECTION QUERY - using previous table: {prev_table}")
                     self._last_routing_debug = {
                         'method': 'projection_followup',
                         'table': prev_table,
@@ -198,6 +198,36 @@ class TableRouter:
                                 )
             except Exception as e:
                 print(f"[TableRouter] LLM selection failed, falling back to scoring: {e}")
+
+        # NEW: Try RAG-based semantic search as secondary method
+        try:
+            from schema_intelligence.chromadb_client import SchemaVectorStore
+            vector_store = SchemaVectorStore()
+            rag_tables = vector_store.get_relevant_tables(question, top_k=3)
+
+            if rag_tables and rag_tables[0][1] > 0.3:  # Confidence threshold
+                rag_best_table, rag_score = rag_tables[0]
+                actual_tables = _get_actual_duckdb_tables()
+
+                # Validate table exists
+                if not actual_tables or rag_best_table in actual_tables:
+                    # Use RAG result if confidence is good
+                    if rag_score > 0.5:
+                        print(f"[TableRouter] RAG semantic search found: {rag_best_table} (score: {rag_score:.2f})")
+                        self._last_routing_debug = {
+                            'method': 'rag_semantic_search',
+                            'table': rag_best_table,
+                            'confidence': rag_score,
+                            'rag_results': rag_tables[:3]
+                        }
+                        return RoutingResult(
+                            table=rag_best_table,
+                            entities=entities,
+                            confidence=rag_score,
+                            alternatives=[(t, int(s * 100)) for t, s in rag_tables[:3]]
+                        )
+        except Exception as e:
+            print(f"[TableRouter] RAG search skipped: {e}")
 
         # FALLBACK: Get candidate tables with rule-based scoring
         candidates = self.profile_store.find_best_table_for_query(entities)
@@ -306,6 +336,19 @@ class TableRouter:
         Handles partial matches and case insensitivity.
         """
         table_ref_lower = table_ref.lower().strip()
+
+        # Skip common words that shouldn't be treated as table names
+        skip_words = {'or', 'and', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
+                      'this', 'that', 'it', 'they', 'we', 'you', 'all', 'any', 'some',
+                      'no', 'not', 'of', 'in', 'on', 'at', 'to', 'for', 'by', 'from',
+                      'over', 'time', 'data', 'stable', 'volatile', 'profit', 'sales'}
+        if table_ref_lower in skip_words:
+            return None
+
+        # Require minimum 3 characters for partial matching
+        if len(table_ref_lower) < 3:
+            return None
+
         all_tables = self.profile_store.get_table_names()
 
         # First: Try exact match (case insensitive)
@@ -313,27 +356,32 @@ class TableRouter:
             if table.lower() == table_ref_lower:
                 return table
 
-        # Second: Try contains match
-        matches = []
-        for table in all_tables:
-            if table_ref_lower in table.lower():
-                matches.append(table)
+        # Second: Try contains match (only for refs with 4+ chars to avoid false matches)
+        if len(table_ref_lower) >= 4:
+            matches = []
+            for table in all_tables:
+                if table_ref_lower in table.lower():
+                    matches.append(table)
 
-        if len(matches) == 1:
-            return matches[0]
-        elif len(matches) > 1:
-            # Multiple matches - try to find best one
-            # Prefer shorter names (more specific match)
-            matches.sort(key=lambda x: len(x))
-            return matches[0]
+            if len(matches) == 1:
+                return matches[0]
+            elif len(matches) > 1:
+                # Multiple matches - try to find best one
+                # Prefer shorter names (more specific match)
+                matches.sort(key=lambda x: len(x))
+                return matches[0]
 
         # Third: Try word-based partial match
         ref_words = set(table_ref_lower.split())
+        # Skip if all words are in skip list
+        if ref_words.issubset(skip_words):
+            return None
+
         best_match = None
         best_word_overlap = 0
 
         for table in all_tables:
-            table_words = set(table.lower().replace('-', ' ').replace('–', ' ').split())
+            table_words = set(table.lower().replace('-', ' ').replace('_', ' ').split())
             overlap = len(ref_words & table_words)
             if overlap > best_word_overlap:
                 best_word_overlap = overlap
@@ -577,12 +625,12 @@ class TableRouter:
 
             # Show clarification status
             if result.needs_clarification:
-                lines.append("⚠️  NEEDS CLARIFICATION - multiple similar-scoring tables")
+                lines.append("[WARN]  NEEDS CLARIFICATION - multiple similar-scoring tables")
                 lines.append(f"   Options: {result.get_clarification_options()}")
             elif result.is_confident:
-                lines.append("✓ HIGH CONFIDENCE - clear winner")
+                lines.append("[OK] HIGH CONFIDENCE - clear winner")
             else:
-                lines.append("⚡ MEDIUM CONFIDENCE - using best match")
+                lines.append("[FAST] MEDIUM CONFIDENCE - using best match")
 
             # Show why
             if debug.get('method') == 'explicit_reference':
@@ -590,7 +638,7 @@ class TableRouter:
             elif debug.get('candidates'):
                 lines.append("Top candidates:")
                 for t, score in debug['candidates'][:3]:
-                    marker = "→" if t == table else " "
+                    marker = "->" if t == table else " "
                     lines.append(f"  {marker} {t}: {score} points")
 
                 # Explain scoring

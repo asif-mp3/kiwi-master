@@ -101,20 +101,20 @@ def calculate_projection(
         avg_value = sum(all_values) / len(all_values) if all_values else base_value
         projected_value = avg_value
         growth_rate = 0.0
-        explanation = f"Based on the average performance, {base_label} is expected to generate approximately ₹{_format_indian(projected_value)} next month."
+        explanation = f"Based on the average performance, {base_label} is expected to generate approximately Rs.{_format_indian(projected_value)} next month."
 
     elif method == 'trend':
         # Calculate trend from data if multiple time points available
         # For now, use slight growth assumption
         growth_rate = 0.05  # 5% growth assumption
         projected_value = base_value * (1 + growth_rate)
-        explanation = f"If {base_label} continues at a 5% growth rate, expected sales next month would be approximately ₹{_format_indian(projected_value)}."
+        explanation = f"If {base_label} continues at a 5% growth rate, expected sales next month would be approximately Rs.{_format_indian(projected_value)} next month."
 
     else:  # linear (default)
         # Assume flat continuation (same as current)
         growth_rate = 0.0
         projected_value = base_value
-        explanation = f"If {base_label} continues this pattern, expected sales next month would be approximately ₹{_format_indian(projected_value)}."
+        explanation = f"If {base_label} continues this pattern, expected sales next month would be approximately Rs.{_format_indian(projected_value)}."
 
     # Build projection data for chart
     # Show last 3 months of "actual" data plus projection
@@ -275,9 +275,9 @@ def build_projection_response(
     # Enhanced explanation
     if not explanation:
         explanation = (
-            f"Based on the current data, {base_label} has sales of ₹{_format_indian(base_value)}. "
+            f"Based on the current data, {base_label} has sales of Rs.{_format_indian(base_value)}. "
             f"If this pattern continues, the projected sales for next month would be approximately "
-            f"₹{_format_indian(projected_value)}."
+            f"Rs.{_format_indian(projected_value)}."
         )
 
     # Build visualization config
@@ -301,11 +301,11 @@ def build_projection_response(
         },
         {
             'Metric': 'Current Sales',
-            'Value': f"₹{_format_indian(base_value)}"
+            'Value': f"Rs.{_format_indian(base_value)}"
         },
         {
             'Metric': 'Projected Sales (Next Month)',
-            'Value': f"₹{_format_indian(projected_value)}"
+            'Value': f"Rs.{_format_indian(projected_value)}"
         },
         {
             'Metric': 'Growth Assumption',

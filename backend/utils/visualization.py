@@ -2,16 +2,58 @@
 Visualization Helper - Determines chart type and formats data for frontend charts.
 
 Maps query types to appropriate visualizations:
-- comparison → bar chart
-- trend → line chart
-- percentage → pie/donut chart
-- rank → horizontal bar chart
-- projection → line chart with dotted forecast line
-- metric (single value) → no chart (just number)
-- list/filter/lookup → table (no chart)
+- comparison -> bar chart
+- trend -> line chart
+- percentage -> pie/donut chart
+- rank -> horizontal bar chart
+- projection -> line chart with dotted forecast line
+- metric (single value) -> no chart (just number)
+- list/filter/lookup -> table (no chart)
 """
 
 from typing import Dict, Any, List, Optional
+
+
+def _humanize_column_name(col_name: str) -> str:
+    """Convert column name to human-readable title."""
+    # Remove common prefixes/suffixes
+    name = col_name.replace('_', ' ').replace('-', ' ')
+    # Capitalize words
+    name = ' '.join(word.capitalize() for word in name.split())
+    # Handle common abbreviations
+    abbreviations = {
+        'Amt': 'Amount',
+        'Qty': 'Quantity',
+        'Pct': 'Percentage',
+        'Avg': 'Average',
+        'Tot': 'Total',
+    }
+    for abbrev, full in abbreviations.items():
+        name = name.replace(abbrev, full)
+    return name
+
+
+def _build_supporting_text(row: dict, primary_col: str) -> str:
+    """Build supporting context text for metric card."""
+    parts = []
+
+    # Add row count context
+    if 'row_count' in row:
+        count = row['row_count']
+        if count > 0:
+            parts.append(f"from {count:,} records")
+
+    # Add range context
+    if 'min_value' in row and 'max_value' in row:
+        try:
+            min_val = float(row['min_value'])
+            max_val = float(row['max_value'])
+            parts.append(f"range: {min_val:,.0f} - {max_val:,.0f}")
+        except (ValueError, TypeError):
+            pass
+
+    return " | ".join(parts) if parts else ""
+
 
 # Keywords that indicate a projection/forecast query
 PROJECTION_KEYWORDS = [
@@ -67,8 +109,35 @@ def determine_visualization(
     if query_type in table_only_types:
         return None
 
-    # Single row results - no chart needed (just show the number)
+    # Single row results - use metric card for aggregation queries
     if len(result_data) == 1:
+        # These query types benefit from a metric card display
+        metric_card_types = {'metric', 'aggregation_on_subset', 'extrema_lookup', 'percentage'}
+
+        if query_type in metric_card_types:
+            row = result_data[0]
+            # Find the primary value column (exclude supporting columns)
+            exclude_cols = {'row_count', 'min_value', 'max_value', 'count', 'numerator', 'denominator'}
+            metric_cols = [c for c in row.keys() if c.lower() not in exclude_cols]
+
+            if metric_cols:
+                value_col = metric_cols[0]
+                value = row.get(value_col, 0)
+
+                # Determine if this is a percentage
+                is_percentage = query_type == 'percentage' or 'percent' in value_col.lower()
+
+                print(f"[Viz] Metric card: {value_col} = {value}, is_percentage={is_percentage}")
+
+                return {
+                    'type': 'metric_card',
+                    'title': _humanize_column_name(value_col),
+                    'data': {
+                        'value': value,
+                        'is_percentage': is_percentage,
+                        'supporting_text': _build_supporting_text(row, value_col)
+                    }
+                }
         return None
 
     # Need at least 2 data points for meaningful visualization

@@ -54,23 +54,23 @@ You must output ONLY valid JSON matching this exact schema:
   - **CRITICAL: Use EXACT column names from schema context** - Don't guess column names like "Cost_Amount" or "Revenue". Look at the schema context and use the EXACT column names (e.g., "Cost", "Sale_Amount", "Total_Revenue"). If a column doesn't exist, the comparison will fail!
 - **percentage**: Calculate percentage contribution. Use for questions like "What percentage comes from X?", "What % of total is Y?". Requires "percentage" object with numerator and denominator.
   - **CRITICAL for time-bounded percentages**: If the question mentions a specific time period (e.g., "August sales", "this month", "last week"), BOTH numerator AND denominator MUST have the same time filter! Otherwise you'll divide by ALL-TIME totals and get wrong percentages.
-  - Example: "What % of August sales is from UPI?" → numerator filters: [UPI + August dates], denominator filters: [August dates only]
+  - Example: "What % of August sales is from UPI?" -> numerator filters: [UPI + August dates], denominator filters: [August dates only]
 - **trend**: Analyze trends over time. Use for questions like "How are sales trending?", "Are sales going up?", "What's the pattern?". Requires "trend" object with date_column, value_column, and analysis_type.
   - **CRITICAL: date_column MUST be an actual DATE/DATETIME column** - Look for columns with dtype datetime64, or names like "Date", "Order_Date", "Transaction_Date", "Created_At". NEVER use ID columns (SKU_ID, Transaction_ID) or text columns as date_column!
   - **CRITICAL: For trend queries, use tables with Date columns** - Tables like SKU_Performance or Category_Summary typically don't have Date columns. Use transaction-level tables (Daily_Sales_Transactions, Sales_Transactions) that have actual Date columns.
   - **CRITICAL for time-filtered trends**: If the question mentions a specific month or time period (e.g., "December trend", "trend for November", "how did sales trend last month"), you MUST add date filters to the "filters" array!
-  - Example: "Show me the sales trend for December" → filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
-  - Example: "Trend for Chennai in November" → filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
+  - Example: "Show me the sales trend for December" -> filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
+  - Example: "Trend for Chennai in November" -> filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
   - Without these filters, the trend will include ALL dates, not just the requested period!
   - **CRITICAL: GROUPED TREND ANALYSIS**: When the user asks about trends BY a dimension (category, state, branch, etc.), you MUST use "group_by" field in trend object!
     - **KEYWORDS THAT REQUIRE trend.group_by**: "which category", "which state", "which branch", "by category", "by state", "per category", "category-wise trend", "each category", "losing month by month", "growing month by month", "consistent growth", "consistent decline"
     - **MANDATORY for these patterns**:
-      - "Which category is losing revenue?" → trend.group_by: "Category"
-      - "Which category shows consistent growth?" → trend.group_by: "Category"
-      - "Which state has declining sales trend?" → trend.group_by: "State"
-      - "Which branch has best growth?" → trend.group_by: "Branch_Name" or "Branch"
-      - "Category-wise trend analysis" → trend.group_by: "Category"
-      - "Trend by state" → trend.group_by: "State"
+      - "Which category is losing revenue?" -> trend.group_by: "Category"
+      - "Which category shows consistent growth?" -> trend.group_by: "Category"
+      - "Which state has declining sales trend?" -> trend.group_by: "State"
+      - "Which branch has best growth?" -> trend.group_by: "Branch_Name" or "Branch"
+      - "Category-wise trend analysis" -> trend.group_by: "Category"
+      - "Trend by state" -> trend.group_by: "State"
     - **WITHOUT group_by**: You will only get OVERALL trend (single line), not per-category/state analysis
     - **WITH group_by**: System analyzes each category/state separately and identifies winners/losers
     - This is CRITICAL - if user asks "which X" with trend, you MUST set trend.group_by to analyze each X separately!
@@ -81,8 +81,8 @@ When multiple tables with similar schemas are available in the schema context:
 
 1. **HIGHEST PRIORITY: User-specified sheet/table**
     - If the user explicitly mentions a sheet or table name in their question, use ONLY that table
-    - Example: "check from Sales sheet" → use "Sales" table, ignore all others
-    - Example: "look in pincode sales" → use "Pincode sales" table
+    - Example: "check from Sales sheet" -> use "Sales" table, ignore all others
+    - Example: "look in pincode sales" -> use "Pincode sales" table
 2. **For metric queries**: ALWAYS use the table specified in the metric's "Base table" field
     - Example: If metric says "Base table: sales", you MUST use table "sales"
     - NEVER use a different table even if it has similar columns
@@ -93,14 +93,14 @@ When multiple tables with similar schemas are available in the schema context:
 7. **Month-Specific Tables**: If a table name contains a specific month (e.g., "August Detailed Breakdown"), **NEVER** use it for queries about a different month (e.g., November). Look for the correct month's table.
 8. **CRITICAL - Multi-Month Comparisons**: When the user asks to COMPARE two or more months (e.g., "compare September vs October", "September and October sales"), **DO NOT use month-specific tables** like "September_Detailed_Breakdown". Instead, use a table that has columns for ALL months being compared (e.g., a table with "September-Value", "October-Value" columns). Tables with "pincode" or "area" in the name often have multi-month pivoted data.
 9. **Tables with Area/Location Data**: If the user's question mentions geographic dimensions (area, pincode, zone, region, location, city, branch, zip), **PRIORITIZE tables with these columns** over category tables.
-   - "areas with highest sales" → Use table with "Area Name" or "Area" column
-   - "sales by pincode" → Use table with "Pincode" or "Shipping Zip" column
-   - "which zone performed best" → Use table with "Zone" column
+   - "areas with highest sales" -> Use table with "Area Name" or "Area" column
+   - "sales by pincode" -> Use table with "Pincode" or "Shipping Zip" column
+   - "which zone performed best" -> Use table with "Zone" column
    - **DO NOT** use a category table (e.g., "By_Category") for area/location/pincode questions!
    - Look for tables with "pincode", "area", "zone", or "location" in the name
    - **CRITICAL - CITY vs STATE Column Selection**:
-     - **CITIES** (Chennai, Bangalore, Mumbai, Delhi, Hyderabad, etc.) → Filter on "Branch", "Branch_Name", "City", "Area Name", "Area", or "Location" column - NEVER use "State" column for cities!
-     - **STATES** (Tamil Nadu, Karnataka, Maharashtra, Kerala, etc.) → Filter on "State" column
+     - **CITIES** (Chennai, Bangalore, Mumbai, Delhi, Hyderabad, etc.) -> Filter on "Branch", "Branch_Name", "City", "Area Name", "Area", or "Location" column - NEVER use "State" column for cities!
+     - **STATES** (Tamil Nadu, Karnataka, Maharashtra, Kerala, etc.) -> Filter on "State" column
      - Example WRONG: {"column": "State", "operator": "LIKE", "value": "%Chennai%"} - Chennai is a CITY, not a state!
      - Example CORRECT: {"column": "Branch", "operator": "LIKE", "value": "%Chennai%"} - Use Branch/City column for cities
      - Example CORRECT: {"column": "State", "operator": "LIKE", "value": "%Tamil Nadu%"} - Use State column for states
@@ -108,7 +108,7 @@ When multiple tables with similar schemas are available in the schema context:
      - Use a table with BOTH "Branch" and "State" columns
      - Apply a FILTER on the State column (e.g., State LIKE '%Tamil Nadu%')
      - Return the branch with the highest/lowest metric
-     - Example: "Which branch in Tamil Nadu has highest profit?" → Filter State='Tamil Nadu', ORDER BY profit DESC, LIMIT 1
+     - Example: "Which branch in Tamil Nadu has highest profit?" -> Filter State='Tamil Nadu', ORDER BY profit DESC, LIMIT 1
 10. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw data tables (e.g., "Freshggies – Shopify Sales on Fulfillments").
 
 ## Strict Rules
@@ -136,16 +136,16 @@ When multiple tables with similar schemas are available in the schema context:
     - **CRITICAL**: Date columns store data in ISO format (YYYY-MM-DD). ALWAYS use ISO format in filter values!
     - When user says "15-Nov-2025" or "15/11/2025", convert to ISO: "2025-11-15"
     - **Parse user dates as DD/MM/YYYY** (day first, then month), then convert to ISO for filtering:
-        - "1/11/2025" = November 1, 2025 → filter value: "2025-11-01"
-        - "15/3/2024" = March 15, 2024 → filter value: "2024-03-15"
-        - "15-Nov-2025" = November 15, 2025 → filter value: "2025-11-15"
+        - "1/11/2025" = November 1, 2025 -> filter value: "2025-11-01"
+        - "15/3/2024" = March 15, 2024 -> filter value: "2024-03-15"
+        - "15-Nov-2025" = November 15, 2025 -> filter value: "2025-11-15"
     - **For datetime columns (dtype: datetime64)**: ALWAYS use >= and < operators for date filtering, NEVER use LIKE!
     - **For specific date match**: Use TWO filters with >= and < to bracket the date:
-        - "November 15th" → [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}]
-        - "December 1st" → [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2025-12-02"}]
+        - "November 15th" -> [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}]
+        - "December 1st" -> [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2025-12-02"}]
     - **For month-based ranges (Aug 2025, December 2025)**: Use >= and < operators:
-        - "August 2025" → {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}
-        - "December 2025" → {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}
+        - "August 2025" -> {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}
+        - "December 2025" -> {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}
     - **CRITICAL for comparison queries**: When comparing two months, ALWAYS use >= and < operators for date filtering, NEVER use LIKE
     - **NEVER** use DD/MM/YYYY format in filter values - always convert to ISO (YYYY-MM-DD)
     - **NEVER use LIKE for datetime columns** - LIKE is only for text columns like names, categories, etc.
@@ -153,33 +153,33 @@ When multiple tables with similar schemas are available in the schema context:
 10. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
 11. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
     - **CRITICAL - "Sales" is NOT a category filter!**: When users say "total sales", "show me sales", "what are the sales", they are asking for the METRIC (revenue/gross sales), NOT filtering by a category called "Sales". DO NOT add a filter like {"column": "Category", "operator": "LIKE", "value": "%Sales%"} for these queries. Instead, aggregate on a sales/revenue column.
-    - **"Sales" as a metric**: "Total sales", "Show me sales", "What are the sales" → Aggregate on "Gross sales", "Net sales", "Revenue", or "Sale Amount" column
+    - **"Sales" as a metric**: "Total sales", "Show me sales", "What are the sales" -> Aggregate on "Gross sales", "Net sales", "Revenue", or "Sale Amount" column
     - **"Sales" as a category**: ONLY filter on Category if user says "Sales category", "products in Sales", "items under Sales category"
     - **CRITICAL - Date-specific sales queries**: When user asks "What is the sales on [date]?", "[date] enna sales?", "Total sales for [date]", use query_type "aggregation_on_subset" with SUM, NOT "filter"!
     - **CRITICAL - PROFIT vs REVENUE Column Selection**:
-      - **PROFIT keywords**: "profit", "லாபம்", "இலாபம்", "margin", "net profit", "net income", "earnings" → Select columns containing "Profit", "Net_Profit", "Net_Income", "Margin", "Earnings". NEVER use "Revenue" or "Total_Revenue" columns for profit queries!
-      - **REVENUE keywords**: "revenue", "sales", "விற்பனை", "gross sales", "total sales", "turnover" → Select columns containing "Revenue", "Total_Revenue", "Gross_Sales", "Sale_Amount", "Sales"
-      - Example WRONG: User asks "Which category has highest profit?" → Using "Total_Revenue" column (WRONG! Revenue ≠ Profit)
-      - Example CORRECT: User asks "Which category has highest profit?" → Using "Profit" or "Net_Profit" column
-      - Example CORRECT: User asks "Which category has highest revenue?" → Using "Total_Revenue" or "Gross_Sales" column
+      - **PROFIT keywords**: "profit", "லாபம்", "இலாபம்", "margin", "net profit", "net income", "earnings" -> Select columns containing "Profit", "Net_Profit", "Net_Income", "Margin", "Earnings". NEVER use "Revenue" or "Total_Revenue" columns for profit queries!
+      - **REVENUE keywords**: "revenue", "sales", "விற்பனை", "gross sales", "total sales", "turnover" -> Select columns containing "Revenue", "Total_Revenue", "Gross_Sales", "Sale_Amount", "Sales"
+      - Example WRONG: User asks "Which category has highest profit?" -> Using "Total_Revenue" column (WRONG! Revenue ≠ Profit)
+      - Example CORRECT: User asks "Which category has highest profit?" -> Using "Profit" or "Net_Profit" column
+      - Example CORRECT: User asks "Which category has highest revenue?" -> Using "Total_Revenue" or "Gross_Sales" column
       - If table has BOTH "Profit" and "Total_Revenue" columns, you MUST pick the correct one based on user's question!
     - **CRITICAL - NEVER USE SKU/ID COLUMNS FOR GROUPING OR DISPLAY**:
       - **NEVER** use columns containing "SKU", "SKU_ID", "Transaction_ID", "Order_ID", "Item_ID", "Product_ID" as the group_by dimension for ranking/aggregation queries
       - These are internal identifiers that users don't recognize or care about
       - **INSTEAD**, use human-readable columns like: "Category", "Product_Name", "Item_Name", "Lineitem name", "Brand", "Description", "Branch_Name", "State"
       - If the table only has SKU columns without descriptive names, group by "Category" instead
-      - Example WRONG: "Top 5 products by revenue" → group_by: ["SKU_ID"] - users don't know what SKU_SAR_003 means!
-      - Example CORRECT: "Top 5 products by revenue" → group_by: ["Category"] or group_by: ["Product_Name"]
-      - Example CORRECT: "Top 5 products by revenue" → group_by: ["Item_Name"] or group_by: ["Lineitem name"]
+      - Example WRONG: "Top 5 products by revenue" -> group_by: ["SKU_ID"] - users don't know what SKU_SAR_003 means!
+      - Example CORRECT: "Top 5 products by revenue" -> group_by: ["Category"] or group_by: ["Product_Name"]
+      - Example CORRECT: "Top 5 products by revenue" -> group_by: ["Item_Name"] or group_by: ["Lineitem name"]
       - **Priority order for grouping**: Product_Name > Item_Name > Lineitem name > Category > Brand > Description > (NEVER SKU_ID)
     - **CRITICAL - "Total X" aggregation queries**: When user asks "total payroll", "total salary", "total expenses", "sum of X", "overall budget", etc., ALWAYS use query_type "aggregation_on_subset" with aggregation_function "SUM". NEVER use "list" query type for totals!
-        - "Total payroll" / "What is the total payroll?" → aggregation_on_subset with SUM(Salary)
-        - "Total expenses" → aggregation_on_subset with SUM(Expense or Amount column)
-        - "Sum of all salaries" → aggregation_on_subset with SUM(Salary)
-        - "Overall budget" → aggregation_on_subset with SUM(Budget column)
+        - "Total payroll" / "What is the total payroll?" -> aggregation_on_subset with SUM(Salary)
+        - "Total expenses" -> aggregation_on_subset with SUM(Expense or Amount column)
+        - "Sum of all salaries" -> aggregation_on_subset with SUM(Salary)
+        - "Overall budget" -> aggregation_on_subset with SUM(Budget column)
         - Using "list" with limit:100 gives WRONG results by only summing first 100 rows!
-        - "November 15th enna sales?" → aggregation_on_subset with SUM(Sale_Amount), date filters
-        - "What was the total sales on Dec 1st?" → aggregation_on_subset with SUM(Sale_Amount), date filters
+        - "November 15th enna sales?" -> aggregation_on_subset with SUM(Sale_Amount), date filters
+        - "What was the total sales on Dec 1st?" -> aggregation_on_subset with SUM(Sale_Amount), date filters
         - Use "filter" query type ONLY when user explicitly asks to LIST/SHOW transactions (e.g., "Show me transactions on Nov 15")
 12. **Pivoted Date Columns**: If the table has columns formatted like 'Metric-Date' (e.g., "Gross sales-01/11/2025"), and the user asks for a specific date (e.g., "Nov 1st"), you MUST select the exact column name that matches the date (e.g., "Gross sales-01/11/2025"). Do not look for a generic "Date" column in these tables.
 13. **GRAND TOTAL Columns**: If a pivoted table has columns ending with '-GRAND TOTAL' (e.g., "Gross sales-GRAND TOTAL", "Orders-GRAND TOTAL"), and the user asks for "total", "overall", or "entire month" aggregation, you MUST use the GRAND TOTAL column. Do NOT try to use a generic column name like "Gross sales" - use the exact column name with "-GRAND TOTAL" suffix.
@@ -192,35 +192,35 @@ When multiple tables with similar schemas are available in the schema context:
     - DO NOT use group_by - the goal is to return actual person's details, not aggregated groups
     - **CRITICAL**: If user says "top 5", "best 3", "highest 10", etc., use "rank" NOT "extrema_lookup"
     - Examples:
-      - "Who is the highest-paid employee?" → extrema_lookup with order_by Salary DESC, limit 1
-      - "Top 5 employees by salary" → rank with order_by Salary DESC, limit 5
-      - "Which employee has the most sales?" → extrema_lookup with order_by Sales DESC, limit 1
-      - "Top 10 performers" → rank with order_by Performance DESC, limit 10
+      - "Who is the highest-paid employee?" -> extrema_lookup with order_by Salary DESC, limit 1
+      - "Top 5 employees by salary" -> rank with order_by Salary DESC, limit 5
+      - "Which employee has the most sales?" -> extrema_lookup with order_by Sales DESC, limit 1
+      - "Top 10 performers" -> rank with order_by Performance DESC, limit 10
 15. **Complex Comparative Queries (above/below average, percentile, etc.)**: When the user asks for comparisons against computed values like "above average", "below median", "top 10%":
     - These require subqueries which are NOT supported
     - Use query_type "list" to show all relevant data with the comparison column
     - Include the columns needed for manual comparison (e.g., Salary, Department)
     - The explanation layer will note this limitation
-    - Example: "Employees whose salary is above department average" → list query with Salary, Department columns
+    - Example: "Employees whose salary is above department average" -> list query with Salary, Department columns
 16. **"How many..." / Count Queries**: When the user asks "How many...", "Count of...", "Total number of...":
     - Use query_type "aggregation_on_subset" with aggregation_function "COUNT"
     - Use aggregation_column as any column (e.g., the ID column or "*")
-    - Apply subset_filters if the question specifies a condition (e.g., "active employees" → filter Status = Active)
+    - Apply subset_filters if the question specifies a condition (e.g., "active employees" -> filter Status = Active)
     - DO NOT use query_type "list" - that would limit results and give wrong count
-    - Example: "How many active employees?" → aggregation_on_subset with COUNT, filter on Status
+    - Example: "How many active employees?" -> aggregation_on_subset with COUNT, filter on Status
 18. **"Highest/Most count" / Count-based Rankings**: When the user asks about "highest count", "most transactions", "maximum orders", "top by count":
     - **CRITICAL**: Use aggregation_function "COUNT", NOT "SUM"!
     - The word "count" means COUNT(*), not SUM of any column
     - "Transaction count" = COUNT(*) of transactions, NOT SUM(Transaction_ID)
     - "Order count" = COUNT(*) of orders, NOT SUM(Order_ID)
     - Use query_type "rank" or "extrema_lookup" with group_by on the dimension
-    - Example: "Which payment mode has highest transaction count?" → rank query with group_by Payment_Mode, aggregation COUNT(*), order_by count DESC
-    - Example: "Top 5 areas by order count" → rank query with group_by Area, aggregation COUNT(*), limit 5
+    - Example: "Which payment mode has highest transaction count?" -> rank query with group_by Payment_Mode, aggregation COUNT(*), order_by count DESC
+    - Example: "Top 5 areas by order count" -> rank query with group_by Area, aggregation COUNT(*), limit 5
 19. **"Each X" / "By X" / "Per X" Breakdown Queries**: When the user asks for breakdown "by X", "each X", "per X", "for every X":
     - **CRITICAL**: This ALWAYS requires group_by on X!
-    - "How many branches in each state" → group_by: ["State"], aggregation COUNT
-    - "Sales by category" → group_by: ["Category"], aggregation SUM
-    - "Average salary per department" → group_by: ["Department"], aggregation AVG
+    - "How many branches in each state" -> group_by: ["State"], aggregation COUNT
+    - "Sales by category" -> group_by: ["Category"], aggregation SUM
+    - "Average salary per department" -> group_by: ["Department"], aggregation AVG
     - The words "each", "by", "per", "every" indicate a GROUP BY is needed
 20. **Counting UNIQUE items (branches, employees, customers)**: When counting unique entities that may appear multiple times in transaction data:
     - **CRITICAL**: Use COUNT(DISTINCT column) pattern, not COUNT(*)!
@@ -232,22 +232,22 @@ When multiple tables with similar schemas are available in the schema context:
       - group_by: the dimension to break down by (e.g., ["State"])
       - metrics: the column to count distinct values of (e.g., ["Branch_ID"])
       - aggregation_function: "COUNT_DISTINCT"
-    - Example: "How many branches in each state?" → rank query with group_by ["State"], metrics ["Branch_ID"], aggregation_function "COUNT_DISTINCT"
+    - Example: "How many branches in each state?" -> rank query with group_by ["State"], metrics ["Branch_ID"], aggregation_function "COUNT_DISTINCT"
 17. **"What X are used/available" / Distinct Value Queries**: When the user asks "What X are used?", "What types of X?", "List all X options", "Show available X":
     - Use query_type "list" to show all distinct values of that dimension
     - Select the relevant dimension column (e.g., Payment_Mode, Category, Department)
     - No filters unless user specifies a condition
-    - Example: "What payment modes are used?" → list query selecting Payment_Mode column
-    - Example: "What categories are available?" → list query selecting Category column
+    - Example: "What payment modes are used?" -> list query selecting Payment_Mode column
+    - Example: "What categories are available?" -> list query selecting Category column
 21. **"Which month/year/week" Time Period Grouping**: When the user asks about aggregations "by month", "which month", "per year", "each week":
     - **CRITICAL**: Use "date_grouping" field to specify the time period extraction!
-    - "Which month has highest sales?" → date_grouping: "MONTH", group_by: ["Date"]
-    - "Sales by year" → date_grouping: "YEAR", group_by: ["Date"]
-    - "Transactions per week" → date_grouping: "WEEK", group_by: ["Date"]
+    - "Which month has highest sales?" -> date_grouping: "MONTH", group_by: ["Date"]
+    - "Sales by year" -> date_grouping: "YEAR", group_by: ["Date"]
+    - "Transactions per week" -> date_grouping: "WEEK", group_by: ["Date"]
     - Valid date_grouping values: "MONTH", "YEAR", "WEEK", "DAY", "QUARTER"
     - The date_grouping field tells the system to extract that time period from the Date column
     - Without date_grouping, grouping by Date gives per-day results (not what user wants for "which month")
-    - Example: "Which month has the highest number of transactions?" → rank query with date_grouping "MONTH", group_by ["Date"], aggregation COUNT
+    - Example: "Which month has the highest number of transactions?" -> rank query with date_grouping "MONTH", group_by ["Date"], aggregation COUNT
 
 ### YOU MUST NOT:
 
@@ -565,7 +565,7 @@ When multiple tables with similar schemas are available in the schema context:
 
 **Question:** "சென்னை sales data இருபத்தி நான்காம் தேதி நவம்பர் மாதம்" (Tamil: Chennai sales data on 24th November)
 **Schema context:** Table "Daily_Sales" with columns ["Date", "Branch_Name", "Sale_Amount"] where Date is datetime64[ns]
-**Extracted Entities:** Location = Chennai, SPECIFIC DATE: November 24 → filter Date >= '2025-11-24' AND Date < '2025-11-25'
+**Extracted Entities:** Location = Chennai, SPECIFIC DATE: November 24 -> filter Date >= '2025-11-24' AND Date < '2025-11-25'
 **Output:**
 {
 "query_type": "aggregation_on_subset",

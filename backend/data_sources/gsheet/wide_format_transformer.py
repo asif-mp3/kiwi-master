@@ -86,7 +86,7 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     is_wide, date_columns = detect_wide_format(df)
     
     if not is_wide:
-        print(f"   ⚠️  {table_name}: Not in wide format, skipping unpivot")
+        print(f"   [WARN]  {table_name}: Not in wide format, skipping unpivot")
         return None
     
     # Check if date columns contain numeric data (hours/attendance)
@@ -100,7 +100,7 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     # If most values are strings, skip unpivoting
     string_count = sum(1 for v in sample_values if isinstance(v, str))
     if string_count > len(sample_values) * 0.5:
-        print(f"   ⚠️  {table_name}: Date columns contain strings, skipping unpivot")
+        print(f"   [WARN]  {table_name}: Date columns contain strings, skipping unpivot")
         return None
     
     # Identify metadata columns (non-date columns)
@@ -146,12 +146,12 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
             records.append(record)
     
     if not records:
-        print(f"   ⚠️  {table_name}: No valid records after unpivoting, skipping")
+        print(f"   [WARN]  {table_name}: No valid records after unpivoting, skipping")
         return None
     
     long_df = pd.DataFrame(records)
     
-    print(f"   ✓ Unpivoted {table_name}: {len(df)} rows → {len(long_df)} rows")
+    print(f"   [OK] Unpivoted {table_name}: {len(df)} rows -> {len(long_df)} rows")
     print(f"     Metadata columns: {metadata_columns}")
     print(f"     Date range: {min(date_columns)} to {max(date_columns)}")
     

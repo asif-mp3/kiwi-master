@@ -109,7 +109,7 @@ def initialize_gemini_client(config):
     
     genai.configure(api_key=api_key)
     
-    model_name = config.get("model", "gemini-2.5-pro")
+    model_name = config.get("model", "gemini-2.0-flash")
     temperature = config.get("temperature", 0.0)
     
     # Output tokens for query plans - comparison queries need more tokens
@@ -139,7 +139,7 @@ def initialize_gemini_client(config):
 # ============================================
 # ADAPTIVE MODEL SELECTION FOR LATENCY
 # Simple queries: gemini-2.0-flash (2-3x faster)
-# Complex queries: gemini-2.5-pro (more accurate)
+# Complex queries: gemini-2.0-flash (more accurate)
 # ============================================
 
 def estimate_query_complexity(question: str, entities: dict = None) -> str:
@@ -202,7 +202,7 @@ def get_model_for_complexity(complexity: str, config: dict):
         max_tokens = 1000
     else:
         # Powerful model for complex queries
-        model_name = config.get("model", "gemini-2.5-pro")
+        model_name = config.get("model", "gemini-2.0-flash")
         max_tokens = config.get("planner_max_tokens", 1500)
 
     generation_config = {
@@ -382,7 +382,7 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
     # ADAPTIVE MODEL SELECTION: Use faster model for simple queries
     complexity = estimate_query_complexity(question, entities)
     model, model_name = get_model_for_complexity(complexity, config)
-    print(f"  [Planner] Query complexity: {complexity} → using {model_name}")
+    print(f"  [Planner] Query complexity: {complexity} -> using {model_name}")
 
     # Format schema context
     schema_text = format_schema_context(schema_context)
@@ -444,13 +444,13 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
                     date_str = date_obj.strftime('%Y-%m-%d')
                     next_date_str = next_date_obj.strftime('%Y-%m-%d')
                     month_name = date_obj.strftime('%B')  # Full month name
-                    hint_parts.append(f"- **SPECIFIC DATE**: {month_name} {day} → MUST filter: Date >= '{date_str}' AND Date < '{next_date_str}'")
+                    hint_parts.append(f"- **SPECIFIC DATE**: {month_name} {day} -> MUST filter: Date >= '{date_str}' AND Date < '{next_date_str}'")
                 except ValueError:
                     # Invalid date (e.g., Feb 30), skip date hint
                     pass
             elif day:
                 # Only day specified, use with month context
-                hint_parts.append(f"- **SPECIFIC DAY**: Day {day} of the month → Apply date filter for day {day}")
+                hint_parts.append(f"- **SPECIFIC DAY**: Day {day} of the month -> Apply date filter for day {day}")
         if hint_parts:
             entity_hints = "\n**Extracted Entities (use these for filters):**\n" + "\n".join(hint_parts) + "\n"
 
@@ -510,7 +510,7 @@ Output the query plan as JSON:"""
                     raise ValueError(f"order_by must be a list, got: {type(plan.get('order_by'))}")
 
             elapsed = (time.time() - _start) * 1000
-            print(f"✅ LLM Planning generated [{elapsed:.0f}ms]")
+            print(f"[YES] LLM Planning generated [{elapsed:.0f}ms]")
             return plan
 
         except TimeoutError as e:

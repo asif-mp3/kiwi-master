@@ -12,7 +12,7 @@ class MetricRegistry:
                         self.metrics = config["metrics"]
         except Exception as e:
             # Gracefully handle missing or invalid metric files
-            print(f"⚠️  Could not load metrics: {e}")
+            print(f"[WARN]  Could not load metrics: {e}")
             self.metrics = {}
 
     def is_valid_metric(self, metric_name: str) -> bool:

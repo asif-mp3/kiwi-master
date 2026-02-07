@@ -3,7 +3,7 @@ Pydantic models for API request/response validation.
 These models match the TypeScript types in the frontend (src/lib/types.ts).
 """
 
-from typing import List, Optional, Any, Literal
+from typing import List, Optional, Any, Literal, Union
 from pydantic import BaseModel, Field
 
 
@@ -97,6 +97,7 @@ class QueryRequest(BaseModel):
     """Request to process a user query"""
     text: str = Field(..., description="User question text")
     conversation_id: Optional[str] = None  # For follow-up context tracking
+    user_name: Optional[str] = None  # Session-based name for "Call me X" feature
 
 
 class SchemaContext(BaseModel):
@@ -106,9 +107,11 @@ class SchemaContext(BaseModel):
 
 class VisualizationConfig(BaseModel):
     """Chart visualization configuration for frontend rendering"""
-    type: Literal['bar', 'line', 'pie', 'horizontal_bar']
+    type: Literal['bar', 'line', 'pie', 'horizontal_bar', 'metric_card']
     title: str
-    data: List[dict]  # Formatted for Recharts - each item has {name, value, projected?}
+    # For charts: List[dict] with {name, value, projected?}
+    # For metric_card: dict with {value, is_percentage, supporting_text}
+    data: Union[List[dict], dict]
     xKey: Optional[str] = None  # X-axis data key (for bar/line)
     yKey: Optional[str] = None  # Y-axis data key (for bar/line)
     colors: List[str] = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6']
@@ -134,6 +137,9 @@ class ProcessQueryResponse(BaseModel):
     healing_attempts: Optional[List[dict]] = None  # Self-healing attempt history
     # Data visualization
     visualization: Optional[VisualizationConfig] = None  # Chart config for visual analytics
+    # Debug fields
+    debug_server: Optional[str] = None
+    debug_data_count: Optional[int] = None
 
 
 class TranscribeResponse(BaseModel):

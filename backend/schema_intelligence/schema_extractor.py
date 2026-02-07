@@ -104,7 +104,7 @@ def extract_schema(
             with open(metadata_file, 'r') as f:
                 table_metadata = json.load(f)
         except Exception as e:
-            print(f"⚠️  Could not load table metadata: {e}")
+            print(f"[WARN]  Could not load table metadata: {e}")
 
     # Load metric definitions (optional)
     metrics = {}

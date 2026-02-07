@@ -5,6 +5,7 @@
 .env.local
 .env.*
 *.env
+backend/.env
 
 # ============================================
 # CREDENTIALS & TOKENS

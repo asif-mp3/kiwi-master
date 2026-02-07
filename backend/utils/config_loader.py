@@ -51,7 +51,7 @@ class LLMConfig:
     """LLM (Gemini) configuration."""
     api_key_env: str = "GEMINI_API_KEY"
     max_retries: int = 3
-    model: str = "gemini-2.5-pro"
+    model: str = "gemini-2.0-flash"
     provider: str = "gemini"
     temperature: float = 0.0
     request_timeout_seconds: int = 60
@@ -177,7 +177,7 @@ def _parse_config(raw: dict) -> Config:
         llm=LLMConfig(
             api_key_env=raw.get("llm", {}).get("api_key_env", "GEMINI_API_KEY"),
             max_retries=raw.get("llm", {}).get("max_retries", 3),
-            model=raw.get("llm", {}).get("model", "gemini-2.5-pro"),
+            model=raw.get("llm", {}).get("model", "gemini-2.0-flash"),
             provider=raw.get("llm", {}).get("provider", "gemini"),
             temperature=raw.get("llm", {}).get("temperature", 0.0),
             request_timeout_seconds=raw.get("llm", {}).get("request_timeout_seconds", 60),
@@ -332,20 +332,20 @@ def validate_config() -> List[str]:
     api_keys = validate_api_keys(raise_on_missing=False)
     for key, present in api_keys.items():
         if not present:
-            warnings.append(f"⚠️  {key} not set - related features will not work")
+            warnings.append(f"[WARN]  {key} not set - related features will not work")
 
     # Check credentials file
     creds_path = Path(config.google_sheets.credentials_path)
     if not creds_path.exists():
-        warnings.append(f"⚠️  Google credentials not found at {creds_path}")
+        warnings.append(f"[WARN]  Google credentials not found at {creds_path}")
 
     # Check config file exists
     if not _config_path.exists():
-        warnings.append("⚠️  config/settings.yaml not found - using defaults")
+        warnings.append("[WARN]  config/settings.yaml not found - using defaults")
 
     # Check voice config
     if not config.voice.default_voice_id:
-        warnings.append("⚠️  voice.default_voice_id not configured")
+        warnings.append("[WARN]  voice.default_voice_id not configured")
 
     return warnings
 
@@ -359,4 +359,4 @@ def print_startup_validation() -> None:
         for warning in warnings:
             print(f"    {warning}")
     else:
-        print("  Configuration: ✓ All validated")
+        print("  Configuration: [OK] All validated")

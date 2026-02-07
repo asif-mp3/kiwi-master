@@ -213,11 +213,11 @@ if __name__ == "__main__":
             )
             
             if sheet_hash == sheet_hash2:
-                print(f"  ✓ Hash is stable (deterministic)")
+                print(f"  [OK] Hash is stable (deterministic)")
             else:
-                print(f"  ✗ Hash is NOT stable (non-deterministic!)")
+                print(f"  [FAIL] Hash is NOT stable (non-deterministic!)")
                 
         except Exception as e:
-            print(f"  ✗ Error: {e}")
+            print(f"  [FAIL] Error: {e}")
     
     print("\n" + "=" * 60)

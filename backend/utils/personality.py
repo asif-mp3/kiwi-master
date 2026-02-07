@@ -155,6 +155,46 @@ class TharaPersonality:
         "Seri, paakuren..."
     ]
 
+    # Conversational/Warm openings - Natural, human-like flow
+    CONVERSATIONAL_OPENINGS = [
+        "Ohh okay {name}, so...",
+        "Hmm let me see... {name},",
+        "Ah right, so {name}...",
+        "Yeah so {name},",
+        "Okay {name}, looking at this...",
+        "So {name}, here's what I see...",
+        "Alright {name}, checking...",
+        "Hmm {name}, interesting..."
+    ]
+
+    # Tamil Conversational openings - Warm and natural
+    TAMIL_CONVERSATIONAL_OPENINGS = [
+        "Seri {name}, paakalam...",
+        "Ah okay {name}...",
+        "Hmm seri {name}...",
+        "Okay {name}, idho parunga...",
+        "Seri seri {name}...",
+        "Hmm {name}, paakuren...",
+        "Okay {name}, checking..."
+    ]
+
+    # Name confirmation responses - Warm and friendly
+    NAME_CONFIRMATIONS = [
+        "Got it {name}! So what would you like to explore?",
+        "Ohh okay {name}! What can I help you with?",
+        "Alright {name}! Ready when you are.",
+        "Sure thing {name}! What do you want to know?",
+        "{name} it is! What can I do for you?"
+    ]
+
+    # Tamil name confirmations
+    TAMIL_NAME_CONFIRMATIONS = [
+        "Seri {name}! Enna paakanum?",
+        "Okay {name}! Enna help venum?",
+        "Alright {name}! Sollunga enna venum.",
+        "{name}, noted! Enna explore pannalam?"
+    ]
+
     def __init__(self, user_name: Optional[str] = None, language: str = 'en'):
         # Don't use placeholder names like "there" - just use empty if not set
         self.user_name = user_name if user_name and user_name.lower() != "there" else ""
@@ -231,7 +271,7 @@ class TharaPersonality:
             )
 
     def format_response(self, result: str, sentiment: str = 'neutral',
-                       add_followup: bool = True) -> str:
+                       add_followup: bool = True, conversational: bool = False) -> str:
         """
         Format response with personality.
 
@@ -239,13 +279,23 @@ class TharaPersonality:
             result: The actual data/answer content
             sentiment: 'positive', 'negative', 'concern', or 'neutral'
             add_followup: Whether to add a follow-up suggestion
+            conversational: Force conversational/warm opening style
         """
         name = self.user_name
         self._response_count += 1
         self._last_sentiment = sentiment
 
-        # Select opening based on sentiment AND language
-        if self.language == 'ta':
+        # 40% chance to use conversational opening for natural flow (when name is set)
+        use_conversational = conversational or (name and random.random() < 0.4)
+
+        # Select opening based on style, sentiment AND language
+        if use_conversational:
+            # Use warm, conversational openings
+            if self.language == 'ta':
+                opening = random.choice(self.TAMIL_CONVERSATIONAL_OPENINGS)
+            else:
+                opening = random.choice(self.CONVERSATIONAL_OPENINGS)
+        elif self.language == 'ta':
             # Use Tamil/Tanglish openings
             if sentiment == 'positive':
                 opening = random.choice(self.TAMIL_POSITIVE_OPENINGS)
@@ -411,13 +461,13 @@ class TharaPersonality:
     def _format_indian_currency(self, value: float) -> str:
         """Format value in Indian currency style"""
         if abs(value) >= 10000000:  # 1 crore
-            return f"₹{value/10000000:.2f} Cr"
+            return f"Rs.{value/10000000:.2f} Cr"
         elif abs(value) >= 100000:  # 1 lakh
-            return f"₹{value/100000:.2f} L"
+            return f"Rs.{value/100000:.2f} L"
         elif abs(value) >= 1000:
-            return f"₹{value:,.0f}"
+            return f"Rs.{value:,.0f}"
         else:
-            return f"₹{value:,.2f}"
+            return f"Rs.{value:,.2f}"
 
     def get_insight(self, current: float, previous: float = None,
                    metric_name: str = None) -> str:

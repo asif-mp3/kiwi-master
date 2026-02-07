@@ -403,13 +403,13 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                     # Debug: confirm successful date parsing
                     valid_count = df[col].notna().sum()
                     sample_dates = df[col].dropna().head(2).tolist()
-                    print(f"      ✓ [DATE SUCCESS] Column '{col}': {valid_count}/{len(df)} valid dates. Samples: {sample_dates}")
+                    print(f"      [OK] [DATE SUCCESS] Column '{col}': {valid_count}/{len(df)} valid dates. Samples: {sample_dates}")
                     continue
             except (ValueError, TypeError, OverflowError):
                 pass  # Date conversion failed, keep original type
         except Exception as e:
             # If any error occurs for this column, skip it and continue with next column
-            print(f"      ⚠️  Warning: Could not infer type for column '{col}': {e}")
+            print(f"      [WARN]  Warning: Could not infer type for column '{col}': {e}")
             continue
     
     return df
@@ -553,10 +553,10 @@ def combine_date_time_columns(df):
             # Normalize Date column to ISO format (YYYY-MM-DD) for consistency
             df['Date'] = parsed_dates.dt.strftime('%d/%m/%Y')
             
-            print(f"      → Combined Date + Time into timestamp column (detected {date_format} format)")
+            print(f"      -> Combined Date + Time into timestamp column (detected {date_format} format)")
     except Exception as e:
         # If combination fails, keep original columns
-        print(f"      ⚠️  Warning: Could not combine Date + Time columns: {e}")
+        print(f"      [WARN]  Warning: Could not combine Date + Time columns: {e}")
         pass
     
     return df
@@ -580,7 +580,7 @@ def fetch_sheets():
     sheets_data = {}
     total_sheets = len(spreadsheet.worksheets())
     
-    print(f"📊 Loading {total_sheets} sheets from Google Sheets...")
+    print(f"[DATA] Loading {total_sheets} sheets from Google Sheets...")
 
     for idx, worksheet in enumerate(spreadsheet.worksheets(), 1):
         try:
@@ -638,13 +638,13 @@ def fetch_sheets():
             df = combine_date_time_columns(df)
             
             sheets_data[worksheet.title] = df
-            print(f"✓ {len(df):,} rows, {len(df.columns)} cols")
+            print(f"[OK] {len(df):,} rows, {len(df.columns)} cols")
             
         except Exception as e:
-            print(f"⚠️  Error: {e}")
+            print(f"[WARN]  Error: {e}")
             continue
 
-    print(f"\n✓ Loaded {len(sheets_data)} sheets successfully")
+    print(f"\n[OK] Loaded {len(sheets_data)} sheets successfully")
 
     if not sheets_data:
         raise RuntimeError("No data found in Google Sheets")
@@ -695,7 +695,7 @@ def fetch_sheets_with_tables(spreadsheet_id: str = None) -> Dict[str, List[Dict[
     sheets_with_tables = {}
     total_sheets = len(spreadsheet.worksheets())
     
-    print(f"📊 Loading {total_sheets} sheets from Google Sheets...")
+    print(f"[DATA] Loading {total_sheets} sheets from Google Sheets...")
 
     for idx, worksheet in enumerate(spreadsheet.worksheets(), 1):
         try:
@@ -732,7 +732,7 @@ def fetch_sheets_with_tables(spreadsheet_id: str = None) -> Dict[str, List[Dict[
                 continue
             
             # STEP 2: Detect tables in this sheet using RAW data
-            print(f"✓ {len(raw_df):,} rows, detecting tables...", end=" ")
+            print(f"[OK] {len(raw_df):,} rows, detecting tables...", end=" ")
             detected_tables = detect_and_clean_tables(raw_df, sheet_name)
             
             # STEP 3: Add source_id and sheet_hash to each detected table
@@ -754,18 +754,18 @@ def fetch_sheets_with_tables(spreadsheet_id: str = None) -> Dict[str, List[Dict[
                 table['dataframe'] = table_df
             
             sheets_with_tables[worksheet.title] = detected_tables
-            print(f"✓ Found {len(detected_tables)} table(s) [hash: {sheet_hash[:8]}...]")
+            print(f"[OK] Found {len(detected_tables)} table(s) [hash: {sheet_hash[:8]}...]")
             
         except Exception as e:
             import traceback
-            print(f"⚠️  Error processing '{sheet_name}': {e}")
+            print(f"[WARN]  Error processing '{sheet_name}': {e}")
             print(f"    Traceback:")
             traceback.print_exc()
-            print(f"    → Skipping this sheet")
+            print(f"    -> Skipping this sheet")
             continue
 
-    print(f"\n✓ Loaded {len(sheets_with_tables)} sheets successfully")
-    print(f"✓ Detected {sum(len(tables) for tables in sheets_with_tables.values())} total tables across {len(sheets_with_tables)} sheets\n")
+    print(f"\n[OK] Loaded {len(sheets_with_tables)} sheets successfully")
+    print(f"[OK] Detected {sum(len(tables) for tables in sheets_with_tables.values())} total tables across {len(sheets_with_tables)} sheets\n")
 
     if not sheets_with_tables:
         raise RuntimeError("No data found in Google Sheets")

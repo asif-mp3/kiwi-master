@@ -107,7 +107,7 @@ def initialize_gemini_client(config):
 
     genai.configure(api_key=api_key)
 
-    model_name = config.get("model", "gemini-2.0-flash-exp")
+    model_name = config.get("model", "gemini-2.0-flash")
     temperature = config.get("temperature", 0.0)
 
     # Limit output tokens for faster response (explanations are short)
@@ -234,7 +234,7 @@ def _is_simple_aggregation(result_df, query_plan):
     return False
 
 
-def explain_results(result_df, query_plan=None, original_question=None, raw_user_message=None):
+def explain_results(result_df, query_plan=None, original_question=None, raw_user_message=None, user_name=None):
     """
     Generate a natural language explanation of query results using LLM.
 
@@ -243,6 +243,7 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
         query_plan: Optional dict containing the query plan (for context)
         original_question: Optional string containing the processed/translated question
         raw_user_message: Optional string - the user's ORIGINAL message (preserves emotional tone)
+        user_name: Optional string - session name from "Call me X" for personalized responses
 
     Returns:
         str: Natural language explanation of the results
@@ -332,28 +333,41 @@ Context:
     if raw_user_message:
         prompt += f"\n**User's Original Message (check for emotions!):** {raw_user_message}\n"
 
+    # Build name instruction for personalization
+    name_instruction = ""
+    if user_name:
+        name_instruction = f"""
+4. **CRITICAL - Use the user's name "{user_name}"**: Start warmly with their name like:
+   - "Okay {user_name}, so..."
+   - "Alright {user_name}, looking at this..."
+   - "Hmm {user_name}, here's what I see..."
+   - "So {user_name},"
+   - "Yeah {user_name}, the data shows..."
+   Make it feel like you're talking to a friend. ALWAYS include their name in the opener!
+"""
+
     prompt += f"""
 Instructions:
 1. **Respond in {question_language} language**
 2. **USE INDIAN NUMBER SYSTEM** (CRITICAL for TTS):
-   - 1,25,00,000 (1.25 crores) → "about 1.25 crores"
-   - 62,89,508 → "about 63 lakhs"
-   - 11,00,000 → "about 11 lakhs"
-   - 5,70,000 → "about 5.7 lakhs"
-   - 45,000 → "around 45 thousand"
-   - 12.47% → "about 12 percent"
+   - 1,25,00,000 (1.25 crores) -> "about 1.25 crores"
+   - 62,89,508 -> "about 63 lakhs"
+   - 11,00,000 -> "about 11 lakhs"
+   - 5,70,000 -> "about 5.7 lakhs"
+   - 45,000 -> "around 45 thousand"
+   - 12.47% -> "about 12 percent"
    - Round to 1-2 significant digits. Nobody says exact decimals in conversation.
 3. **Be casual & crispy**: Start with "So...", "Looking at this...", "Alright..."
-4. **2-3 sentences MAX**: One key insight + one supporting detail
-5. **Sound human**: Use contractions (it's, that's), natural pauses, confident endings
+{name_instruction}5. **2-3 sentences MAX**: One key insight + one supporting detail
+6. **Sound human**: Use contractions (it's, that's), natural pauses, confident endings
 
 **INDIAN NUMBER SYSTEM RULES:**
 - 1 Crore = 1,00,00,000 (10 million)
 - 1 Lakh = 1,00,000 (100 thousand)
-- Crores: round to 1-2 decimals → 1,25,00,000 = "about 1.25 crores"
-- Lakhs: round to 1 decimal → 62,89,508 = "about 63 lakhs"
-- Thousands: round to nearest thousand → 45,678 = "around 46 thousand"
-- Percentages: round to whole number → 12.47% = "about 12 percent"
+- Crores: round to 1-2 decimals -> 1,25,00,000 = "about 1.25 crores"
+- Lakhs: round to 1 decimal -> 62,89,508 = "about 63 lakhs"
+- Thousands: round to nearest thousand -> 45,678 = "around 46 thousand"
+- Percentages: round to whole number -> 12.47% = "about 12 percent"
 
 BAD (robotic): "six million two hundred eighty nine thousand five hundred eight"
 GOOD (natural): "about 63 lakhs"
@@ -401,13 +415,13 @@ Generate a crispy, TTS-friendly response:"""
         explanation = response.text.strip()
 
         elapsed = (time.time() - _start) * 1000
-        print(f"✅ LLM Explanation generated [{elapsed:.0f}ms]")
+        print(f"[YES] LLM Explanation generated [{elapsed:.0f}ms]")
         return explanation
 
     except Exception as e:
         # Fallback to simple explanation if LLM fails
         elapsed = (time.time() - _start) * 1000
-        print(f"⚠️ LLM explanation failed ({e}), using fallback [{elapsed:.0f}ms]")
+        print(f"[WARN] LLM explanation failed ({e}), using fallback [{elapsed:.0f}ms]")
         return _fallback_explanation(result_df, context)
 
 
@@ -635,13 +649,13 @@ Generate a natural, conversational response:"""
         result = response.text.strip()
 
         elapsed = (time.time() - _start) * 1000
-        print(f"✅ Off-topic LLM response generated [{elapsed:.0f}ms]")
+        print(f"[YES] Off-topic LLM response generated [{elapsed:.0f}ms]")
         return result
 
     except Exception as e:
         # Fallback to simple response if LLM fails
         elapsed = (time.time() - _start) * 1000
-        print(f"⚠️ Off-topic LLM failed ({e}), using fallback [{elapsed:.0f}ms]")
+        print(f"[WARN] Off-topic LLM failed ({e}), using fallback [{elapsed:.0f}ms]")
 
         if is_tamil:
             return "Haha interesting! Naan data expert - sales, trends pathi kelu! Enna paakanum?"

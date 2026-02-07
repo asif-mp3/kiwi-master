@@ -68,7 +68,7 @@ def load_table_metadata() -> Dict[str, Dict[str, Any]]:
         with open(TABLE_METADATA_FILE, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠️  Could not load table metadata: {e}")
+        print(f"[WARN]  Could not load table metadata: {e}")
         return {}
 
 
@@ -79,7 +79,7 @@ def save_table_metadata(metadata: Dict[str, Dict[str, Any]]):
         with open(TABLE_METADATA_FILE, 'w') as f:
             json.dump(metadata, f, indent=2)
     except Exception as e:
-        print(f"⚠️  Could not save table metadata: {e}")
+        print(f"[WARN]  Could not save table metadata: {e}")
 
 
 def delete_tables_by_source_id(source_id: str, conn=None):
@@ -120,7 +120,7 @@ def delete_tables_by_source_id(source_id: str, conn=None):
                 # Remove from metadata
                 del metadata[table_name]
             except Exception as e:
-                print(f"   ⚠️  Error deleting table {table_name}: {e}")
+                print(f"   [WARN]  Error deleting table {table_name}: {e}")
         
         # Save updated metadata
         if tables_to_delete:
@@ -148,7 +148,7 @@ def drop_all_tables(conn):
         
         return len(tables)
     except Exception as e:
-        print(f"⚠️  Error dropping tables: {e}")
+        print(f"[WARN]  Error dropping tables: {e}")
         return 0
 
 
@@ -171,7 +171,7 @@ def reset_duckdb_snapshot():
         save_table_metadata({})
         
     except Exception as e:
-        print(f"⚠️  Error resetting DuckDB: {e}")
+        print(f"[WARN]  Error resetting DuckDB: {e}")
 
 
 def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None):
@@ -204,7 +204,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
 
     try:
         if full_reset:
-            print("🔄 Performing FULL RESET...")
+            print("[SYNC] Performing FULL RESET...")
 
             # Drop all tables and recreate DB file
             reset_duckdb_snapshot()
@@ -217,7 +217,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
             sheets_to_rebuild = sorted(sheets_with_tables.keys())
 
         elif changed_sheets:
-            print(f"🔄 Performing INCREMENTAL REBUILD for {len(changed_sheets)} sheet(s)...")
+            print(f"[SYNC] Performing INCREMENTAL REBUILD for {len(changed_sheets)} sheet(s)...")
 
             # Connect to existing database
             conn = duckdb.connect(DB_PATH)
@@ -237,7 +237,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
 
         else:
             # Legacy incremental refresh (rebuild all)
-            print("🔄 Performing LEGACY INCREMENTAL REFRESH...")
+            print("[SYNC] Performing LEGACY INCREMENTAL REFRESH...")
             conn = duckdb.connect(DB_PATH)
             sheets_to_rebuild = sorted(sheets_with_tables.keys())
 
@@ -304,14 +304,14 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
     save_table_metadata(table_metadata)
 
     if full_reset:
-        print("✓ Full reset complete")
+        print("[OK] Full reset complete")
     elif changed_sheets:
-        print(f"✓ Incremental rebuild complete ({len(changed_sheets)} sheet(s) rebuilt)")
+        print(f"[OK] Incremental rebuild complete ({len(changed_sheets)} sheet(s) rebuilt)")
     else:
-        print("✓ Legacy incremental refresh complete")
+        print("[OK] Legacy incremental refresh complete")
 
     # Log table statistics (use context manager for auto-cleanup)
-    print("\n📊 Table Statistics:")
+    print("\n[DATA] Table Statistics:")
 
     try:
         conn = duckdb.connect(DB_PATH)
@@ -345,7 +345,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
                     print(f"      Source: {sheet_name} rows {r_start}-{r_end}")
 
                 except Exception as e:
-                    print(f"      ⚠️  Error reading stats for {final_name}: {e}")
+                    print(f"      [WARN]  Error reading stats for {final_name}: {e}")
     finally:
         # Always close the stats connection
         if conn is not None:

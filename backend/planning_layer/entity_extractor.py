@@ -225,7 +225,7 @@ class EntityExtractor:
                             self._learned_custom_entities[entity_key].add(val.lower().strip())
 
         self._profiles_loaded = True
-        print(f"  ✓ Learned entities from profiles:")
+        print(f"  [OK] Learned entities from profiles:")
         print(f"    - {len(self._learned_locations)} locations")
         print(f"    - {len(self._learned_categories)} categories")
         print(f"    - {len(self._learned_products)} products")
@@ -528,10 +528,10 @@ class EntityExtractor:
         This helps route to tables with multi-month columns instead of month-specific tables.
 
         Examples:
-        - "Compare September and October sales" → True
-        - "September vs October" → True
-        - "How did sales change from September to October?" → True
-        - "What were September sales?" → False (only one month)
+        - "Compare September and October sales" -> True
+        - "September vs October" -> True
+        - "How did sales change from September to October?" -> True
+        - "What were September sales?" -> False (only one month)
         """
         months_found = self._extract_all_months(text)
         if len(months_found) >= 2:
@@ -623,6 +623,14 @@ class EntityExtractor:
         Check if user explicitly mentions a table or sheet name.
         Patterns like "from X sheet" or "in X table" or "check X"
         """
+        # Common words that should NOT be treated as table names
+        skip_words = {'or', 'and', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
+                      'this', 'that', 'these', 'those', 'it', 'they', 'we', 'you',
+                      'my', 'your', 'our', 'their', 'his', 'her', 'its',
+                      'what', 'which', 'who', 'where', 'when', 'why', 'how',
+                      'all', 'any', 'some', 'no', 'not', 'more', 'less',
+                      'stable', 'volatile', 'over', 'time', 'data'}
+
         patterns = [
             r'from\s+["\']?([^"\']+?)["\']?\s+(?:sheet|table)',
             r'(?:sheet|table)\s+["\']?([^"\']+?)["\']?(?:\s|$|,|\?)',
@@ -634,6 +642,10 @@ class EntityExtractor:
         for pattern in patterns:
             match = re.search(pattern, question, re.IGNORECASE)
             if match:
+                table_name = match.group(1).strip().lower()
+                # Skip common words
+                if table_name in skip_words:
+                    continue
                 return match.group(1).strip()
 
         return None

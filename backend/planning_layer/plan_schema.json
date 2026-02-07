@@ -121,7 +121,7 @@
       ]
     },
     "comparison": {
-      "type": "object",
+      "type": ["object", "null"],
       "description": "For comparison query type - compare two periods or values",
       "properties": {
         "period_a": {
@@ -151,7 +151,7 @@
       }
     },
     "percentage": {
-      "type": "object",
+      "type": ["object", "null"],
       "description": "For percentage query type - calculate percentage contribution",
       "properties": {
         "numerator": {
@@ -173,7 +173,7 @@
       }
     },
     "trend": {
-      "type": "object",
+      "type": ["object", "null"],
       "description": "For trend query type - analyze patterns over time",
       "properties": {
         "date_column": { "type": "string" },
@@ -190,7 +190,7 @@
       }
     },
     "projection": {
-      "type": "object",
+      "type": ["object", "null"],
       "description": "For projection query type - forecast future values based on historical data",
       "properties": {
         "base_value": { "type": "number", "description": "Current/base value to project from" },

@@ -147,7 +147,7 @@ class SchemaVectorStore:
             return len(ids_to_delete)
             
         except Exception as e:
-            print(f"   ⚠️  Error deleting ChromaDB documents for source_id {source_id}: {e}")
+            print(f"   [WARN]  Error deleting ChromaDB documents for source_id {source_id}: {e}")
             return 0
 
     def rebuild(self, source_ids=None):
@@ -242,3 +242,114 @@ class SchemaVectorStore:
             embedding_function=self.embedding_function  # EXPLICIT: No ONNX fallback
         )
         return collection.count()
+
+    def query(self, question: str, top_k: int = 5) -> List[dict]:
+        """
+        Query the vector store for relevant schema documents.
+
+        This is the CORE RAG retrieval method that finds semantically similar
+        schema information based on the user's question.
+
+        Args:
+            question: User's natural language question
+            top_k: Number of results to return (default: 5)
+
+        Returns:
+            List of dicts with:
+            - document: The schema text
+            - metadata: Dict with table, type, metric info
+            - distance: Similarity distance (lower = more similar)
+        """
+        try:
+            # Get collection
+            try:
+                collection = self.client.get_collection(
+                    name=self.collection_name,
+                    embedding_function=self.embedding_function
+                )
+            except Exception:
+                print("[RAG] No ChromaDB collection found - returning empty results")
+                return []
+
+            # Query for similar documents
+            results = collection.query(
+                query_texts=[question],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"]
+            )
+
+            # Format results
+            formatted_results = []
+            if results and results['documents'] and results['documents'][0]:
+                for i in range(len(results['documents'][0])):
+                    formatted_results.append({
+                        'document': results['documents'][0][i],
+                        'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
+                        'distance': results['distances'][0][i] if results['distances'] else 0.0
+                    })
+
+            return formatted_results
+
+        except Exception as e:
+            print(f"[RAG] Query error: {e}")
+            return []
+
+    def get_relevant_tables(self, question: str, top_k: int = 3) -> List[tuple]:
+        """
+        Get the most relevant table names for a question.
+
+        This method uses semantic search to find tables that are most likely
+        to contain the answer to the user's question.
+
+        Args:
+            question: User's natural language question
+            top_k: Number of tables to return
+
+        Returns:
+            List of (table_name, relevance_score) tuples, sorted by relevance
+        """
+        results = self.query(question, top_k=top_k * 2)  # Get more results to dedupe tables
+
+        # Aggregate scores by table
+        table_scores = {}
+        for result in results:
+            table_name = result['metadata'].get('table')
+            if table_name:
+                # Convert distance to similarity (lower distance = higher similarity)
+                similarity = 1.0 / (1.0 + result['distance'])
+                if table_name in table_scores:
+                    table_scores[table_name] = max(table_scores[table_name], similarity)
+                else:
+                    table_scores[table_name] = similarity
+
+        # Sort by score and return top_k
+        sorted_tables = sorted(table_scores.items(), key=lambda x: x[1], reverse=True)
+        return sorted_tables[:top_k]
+
+    def get_schema_context(self, question: str, top_k: int = 5) -> str:
+        """
+        Get formatted schema context for LLM prompt.
+
+        This method retrieves relevant schema information and formats it
+        for inclusion in the LLM context/prompt.
+
+        Args:
+            question: User's natural language question
+            top_k: Number of schema documents to include
+
+        Returns:
+            Formatted string with relevant schema information
+        """
+        results = self.query(question, top_k=top_k)
+
+        if not results:
+            return "No relevant schema information found."
+
+        context_parts = []
+        for i, result in enumerate(results, 1):
+            meta = result['metadata']
+            table = meta.get('table', 'Unknown')
+            doc_type = meta.get('type', 'schema')
+            context_parts.append(f"{i}. [{table}] ({doc_type}): {result['document']}")
+
+        return "\n".join(context_parts)

@@ -10,7 +10,58 @@ New Architecture:
 5. Thara Personality
 """
 
+# CRITICAL: Force UTF-8 encoding for stdout/stderr
+# This prevents UnicodeEncodeError when printing non-ASCII characters (emojis, Tamil, etc.)
 import sys
+import io
+import os
+import builtins
+
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONLEGACYWINDOWSSTDIO'] = '0'
+
+# Create a safe print function if not already defined
+if not hasattr(builtins, '_original_print'):
+    builtins._original_print = builtins.print
+    def _safe_print(*args, **kwargs):
+        """Print function that handles Unicode encoding errors gracefully."""
+        try:
+            safe_args = []
+            for arg in args:
+                if isinstance(arg, str):
+                    safe_args.append(arg.encode('utf-8', errors='replace').decode('utf-8'))
+                else:
+                    safe_args.append(arg)
+            builtins._original_print(*safe_args, **kwargs)
+        except UnicodeEncodeError:
+            try:
+                safe_args = [str(arg).encode('ascii', errors='replace').decode('ascii') for arg in args]
+                builtins._original_print(*safe_args, **kwargs)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    builtins.print = _safe_print
+
+def _setup_utf8_output():
+    """Wrap stdout/stderr with UTF-8 encoding."""
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+
+_setup_utf8_output()
+
 from pathlib import Path
 import re
 from typing import Dict, Any, Optional, List
@@ -58,9 +109,9 @@ def _resolve_top_references(question: str, previous_turn) -> str:
     Resolve "top X" references in question using previous query's result_values.
 
     Examples:
-    - "top category" → "Sarees" (if Sarees was top in previous rank query)
-    - "best performing state" → "West Bengal" (if WB was top)
-    - "highest selling product" → "Product ABC" (if ABC was top)
+    - "top category" -> "Sarees" (if Sarees was top in previous rank query)
+    - "best performing state" -> "West Bengal" (if WB was top)
+    - "highest selling product" -> "Product ABC" (if ABC was top)
 
     This prevents the LLM from misinterpreting what "top" refers to.
     """
@@ -97,7 +148,7 @@ def _resolve_top_references(question: str, previous_turn) -> str:
                         if col_value and isinstance(col_value, str):
                             # Replace pattern with actual value in original question
                             new_question = question[:match.start()] + col_value + question[match.end():]
-                            print(f"    [Top Reference Resolved] '{matched_text}' → '{col_value}'")
+                            print(f"    [Top Reference Resolved] '{matched_text}' -> '{col_value}'")
                             return new_question
 
     return question
@@ -116,7 +167,7 @@ def _extract_result_values(result, plan: Dict[str, Any]) -> Dict[str, Any]:
     - Extracted: {"State": "West Bengal", "Revenue": 1780000}
 
     Next query: "In that state, which branch..."
-    → "that state" resolves to "West Bengal"
+    -> "that state" resolves to "West Bengal"
     """
     if result is None or not hasattr(result, '__len__') or len(result) == 0:
         return {}
@@ -281,7 +332,7 @@ class AppState:
             # Only mark as loaded if BOTH exist
             if has_duckdb_data and has_profiles:
                 self.data_loaded = True
-                print(f"  ✓ Found existing data (DuckDB + profiles) - no reload needed")
+                print(f"  [OK] Found existing data (DuckDB + profiles) - no reload needed")
         except Exception as e:
             # Silently fail - will load data normally
             pass
@@ -299,9 +350,9 @@ class AppState:
             if user_prefs.get("address_as"):
                 name = user_prefs["address_as"]
                 self.personality.set_name(name)
-                print(f"  ✓ Loaded user preference: address_as = '{name}'")
+                print(f"  [OK] Loaded user preference: address_as = '{name}'")
         except Exception as e:
-            print(f"  ⚠ Could not load user preferences: {e}")
+            print(f"  [WARN] Could not load user preferences: {e}")
 
     @property
     def vector_store(self) -> SchemaVectorStore:
@@ -972,7 +1023,7 @@ def check_and_refresh_data() -> bool:
         # FAST PATH: If data already loaded in session, skip entirely
         # This ensures data loads ONCE after sync, never again until explicit re-sync
         if app_state.data_loaded:
-            print("  ✓ Data already loaded in session - skipping refresh check")
+            print("  [OK] Data already loaded in session - skipping refresh check")
             return False
 
         from data_sources.gsheet.connector import get_sheet_cache
@@ -999,7 +1050,7 @@ def check_and_refresh_data() -> bool:
         if not spreadsheet_id:
             print("  [Cache] WARNING: No spreadsheet_id set, cannot use cache")
         elif cache.is_valid(spreadsheet_id):
-            print("  ✓ Sheet cache valid, skipping download")
+            print("  [OK] Sheet cache valid, skipping download")
             return False  # No refresh needed, cache is fresh
         else:
             print("  [Cache] Cache miss or expired, will fetch sheets")
@@ -1172,8 +1223,8 @@ def _handle_projection(
 
         # If we found the top item from a rank query, create a simple projection
         if query_type in ['rank', 'extrema_lookup', 'aggregation_on_subset', 'metric'] and item_name and item_value:
-            print(f"      → Previous was rank query with top item: {item_name} = {item_value}")
-            print(f"      → Creating simple projection from rank data")
+            print(f"      -> Previous was rank query with top item: {item_name} = {item_value}")
+            print(f"      -> Creating simple projection from rank data")
 
             # Create a simple projection (assume flat continuation)
             from analytics_engine.projection_calculator import TrendContext, ProjectionResult, ConfidenceLevel, ProjectionMethod
@@ -1198,10 +1249,10 @@ def _handle_projection(
 
             # Format values for display
             def format_indian(v):
-                if v >= 10000000: return f"₹{v/10000000:.2f} Cr"
-                elif v >= 100000: return f"₹{v/100000:.2f} L"
-                elif v >= 1000: return f"₹{v/1000:.1f}K"
-                else: return f"₹{v:.0f}"
+                if v >= 10000000: return f"Rs.{v/10000000:.2f} Cr"
+                elif v >= 100000: return f"Rs.{v/100000:.2f} L"
+                elif v >= 1000: return f"Rs.{v/1000:.1f}K"
+                else: return f"Rs.{v:.0f}"
 
             if is_tamil:
                 explanation = (
@@ -1551,7 +1602,7 @@ def _handle_table_correction(
             all_tables = profile_store.get_table_names() or []
             for table in all_tables:
                 if explicit_table.lower() in table.lower():
-                    print(f"      → Fuzzy match: {table}")
+                    print(f"      -> Fuzzy match: {table}")
                     return _re_execute_with_table(
                         previous_turn=previous_turn,
                         forced_table=table,
@@ -1949,7 +2000,7 @@ def _execute_with_modified_plan(
         query_type = modified_plan.get('query_type')
 
         if query_type in ADVANCED_QUERY_TYPES:
-            print(f"    → Advanced query type: {query_type}")
+            print(f"    -> Advanced query type: {query_type}")
             result = execute_plan(modified_plan)
             final_sql = f"[Advanced {query_type} query - see analysis]"
             # Handle analysis from advanced queries
@@ -1960,10 +2011,10 @@ def _execute_with_modified_plan(
                 modified_plan['analysis'] = result.get('analysis', {})
         else:
             sql = compile_sql(modified_plan)
-            print(f"    → SQL: {sql[:150]}...")
+            print(f"    -> SQL: {sql[:150]}...")
             result, final_sql = app_state.query_healer.execute_with_healing(sql, modified_plan)
 
-        print(f"    ✓ Query executed ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Query executed ({time.time() - step_start:.2f}s)")
 
         # Check for empty results
         no_results = False
@@ -1972,7 +2023,7 @@ def _execute_with_modified_plan(
             no_results = True
             print(f"    ! Query returned 0 rows")
         else:
-            print(f"    ✓ Query returned {row_count} rows")
+            print(f"    [OK] Query returned {row_count} rows")
 
         # Step 2: Generate explanation
         print("  [Step 2/2] Generating explanation (LLM call)...")
@@ -1982,9 +2033,10 @@ def _execute_with_modified_plan(
             result,
             query_plan=modified_plan,
             original_question=original_question,
-            raw_user_message=emotional_message
+            raw_user_message=emotional_message,
+            user_name=app_state.personality.user_name
         )
-        print(f"    ✓ Explanation generated ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Explanation generated ({time.time() - step_start:.2f}s)")
 
         # NOTE: explain_results() already handles empty results - no double response needed
 
@@ -1996,7 +2048,7 @@ def _execute_with_modified_plan(
         # Extract result values for context
         result_values = _extract_result_values(result, modified_plan) if result is not None else {}
         if result_values:
-            print(f"  ✓ Extracted result values for context: {result_values}")
+            print(f"  [OK] Extracted result values for context: {result_values}")
 
         # Update entities by removing date-related ones
         corrected_entities = original_entities.copy()
@@ -2640,7 +2692,7 @@ def _execute_with_forced_table(
         # Step 1: Get schema
         print("  [Step 1/5] Getting table schema...")
         schema_context = app_state.table_router.get_table_schema(forced_table)
-        print(f"    ✓ Schema retrieved ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Schema retrieved ({time.time() - step_start:.2f}s)")
 
         # Step 2: Generate plan
         print("  [Step 2/5] Generating query plan (LLM call)...")
@@ -2651,25 +2703,25 @@ def _execute_with_forced_table(
         from execution_layer.executor import execute_plan, ADVANCED_QUERY_TYPES
 
         plan = generate_plan(processing_query, schema_context, entities=entities)
-        print(f"    ✓ Plan generated ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Plan generated ({time.time() - step_start:.2f}s)")
 
         # Step 3: Validate plan
         print("  [Step 3/5] Validating plan...")
         step_start = time.time()
         validate_plan(plan)
-        print(f"    ✓ Plan validated ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Plan validated ({time.time() - step_start:.2f}s)")
 
         # Override table in plan if needed
         plan['table'] = forced_table
 
-        print(f"  ✓ Plan generated for table: {plan.get('table')}")
+        print(f"  [OK] Plan generated for table: {plan.get('table')}")
 
         # Step 4: Execute SQL
         print("  [Step 4/5] Executing query...")
         step_start = time.time()
         query_type = plan.get('query_type')
         if query_type in ADVANCED_QUERY_TYPES:
-            print(f"    → Advanced query type: {query_type}")
+            print(f"    -> Advanced query type: {query_type}")
             result = execute_plan(plan)
             final_sql = f"[Advanced {query_type} query - see analysis]"
             # CRITICAL: Store analysis in plan for projection support
@@ -2678,14 +2730,14 @@ def _execute_with_forced_table(
                 analysis = result.attrs['analysis']
                 plan['analysis'] = analysis if isinstance(analysis, dict) else {}
                 if plan['analysis']:
-                    print(f"    → Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
+                    print(f"    -> Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
             elif isinstance(result, dict) and 'analysis' in result:
                 plan['analysis'] = result.get('analysis', {})
         else:
             sql = compile_sql(plan)
-            print(f"    → SQL: {sql[:100]}...")
+            print(f"    -> SQL: {sql[:100]}...")
             result, final_sql = app_state.query_healer.execute_with_healing(sql, plan)
-        print(f"    ✓ Query executed ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Query executed ({time.time() - step_start:.2f}s)")
 
         # Check for empty results
         no_results = False
@@ -2694,7 +2746,7 @@ def _execute_with_forced_table(
             no_results = True
             print(f"    ! Query returned 0 rows")
         else:
-            print(f"    ✓ Query returned {row_count} rows")
+            print(f"    [OK] Query returned {row_count} rows")
 
         # Step 5: Generate explanation
         print("  [Step 5/5] Generating explanation (LLM call)...")
@@ -2707,9 +2759,10 @@ def _execute_with_forced_table(
             result,
             query_plan=plan,
             original_question=processing_query,
-            raw_user_message=emotional_message  # Correction message or original for emotion
+            raw_user_message=emotional_message,  # Correction message or original for emotion
+            user_name=app_state.personality.user_name
         )
-        print(f"    ✓ Explanation generated ({time.time() - step_start:.2f}s)")
+        print(f"    [OK] Explanation generated ({time.time() - step_start:.2f}s)")
 
         # NOTE: explain_results() already handles empty results - no double response needed
 
@@ -2724,14 +2777,14 @@ def _execute_with_forced_table(
         # Extract key result values for pronoun resolution
         result_values = _extract_result_values(result, plan) if result is not None else {}
         if result_values:
-            print(f"  ✓ Extracted result values for context: {result_values}")
+            print(f"  [OK] Extracted result values for context: {result_values}")
 
         # Make a deep copy of plan to preserve analysis for projection follow-ups
         stored_plan = copy.deepcopy(plan)
 
         # Debug: Verify analysis is in stored_plan
         if stored_plan.get('analysis'):
-            print(f"  ✓ Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
+            print(f"  [OK] Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
 
         turn = QueryTurn(
             question=original_question,
@@ -2860,7 +2913,7 @@ Say the number."""
     return message
 
 
-def process_query_service(question: str, conversation_id: str = None) -> Dict[str, Any]:
+def process_query_service(question: str, conversation_id: str = None, user_name: str = None) -> Dict[str, Any]:
     """
     Process a user query with intelligent routing and healing.
 
@@ -2875,6 +2928,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
     7. Planning with focused schema
     8. Self-healing execution
     9. Personality-enhanced explanation
+
+    Args:
+        question: User query text
+        conversation_id: Optional conversation ID for context tracking
+        user_name: Session-based name for "Call me X" feature (passed from frontend)
     """
     import time as _time
     _query_start = _time.time()
@@ -2885,7 +2943,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         elapsed = (_time.time() - step_start) * 1000
         cumulative = (_time.time() - _query_start) * 1000
         _timings[step_name] = elapsed
-        print(f"  ⏱️  {step_name}: {elapsed:.0f}ms (total: {cumulative:.0f}ms)")
+        print(f"  [TIME]  {step_name}: {elapsed:.0f}ms (total: {cumulative:.0f}ms)")
 
     try:
         # === FLOW LOGGING START ===
@@ -2897,12 +2955,18 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         _step_start = _time.time()
         print("\n[STEP 0/8] INITIALIZING...")
         app_state.initialize()
-        print("  ✓ App state initialized")
+        print("  [OK] App state initialized")
         _log_timing("initialization", _step_start)
 
         # Get conversation context FIRST (needed for clarification check)
         ctx = app_state.conversation_manager.get_context(conversation_id)
-        print(f"  ✓ Context loaded (conversation: {conversation_id or 'default'})")
+        print(f"  [OK] Context loaded (conversation: {conversation_id or 'default'})")
+
+        # Apply session-based name if provided from frontend
+        if user_name:
+            app_state.personality.set_name(user_name)
+            ctx.set_user_name(user_name)
+            print(f"  [OK] Session name applied: {user_name}")
 
         # === VALIDATE INPUT ===
         # Reject empty, too short, or obvious noise (transcription artifacts)
@@ -2911,7 +2975,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         has_pending = ctx.has_pending_clarification()
 
         if not question_clean:
-            print("  ✗ Empty input detected")
+            print("  [FAIL] Empty input detected")
             print("=" * 60 + "\n")
             return {
                 'success': False,
@@ -2926,7 +2990,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         is_short_greeting = question_clean.lower() in short_greetings
 
         if len(question_clean) < 3 and not has_pending and not is_short_greeting:
-            print("  ✗ Input too short (no pending clarification)")
+            print("  [FAIL] Input too short (no pending clarification)")
             print("=" * 60 + "\n")
             return {
                 'success': False,
@@ -2935,11 +2999,12 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'error_type': 'invalid_input'
             }
 
-        # Detect transcription noise patterns
+        # Detect transcription noise patterns (ElevenLabs Scribe returns these for non-speech audio)
         noise_patterns = ['[mouse clicking]', '[inaudible]', '[silence]', '[background noise]',
-                         '[music]', '[noise]', '[click]', '[static]']
+                         '[music]', '[noise]', '[click]', '[static]', '[pause]', '[applause]',
+                         '[laughter]', '...']
         if any(noise in question_clean.lower() for noise in noise_patterns):
-            print(f"  ✗ Transcription noise detected: {question_clean[:50]}")
+            print(f"  [FAIL] Transcription noise detected: {question_clean[:50]}")
             print("=" * 60 + "\n")
             return {
                 'success': False,
@@ -2952,7 +3017,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # Clear any stale pending clarification from before this change
         if ctx.has_pending_clarification():
             ctx.clear_pending_clarification()
-            print("  ✓ Cleared stale pending clarification (feature disabled)")
+            print("  [OK] Cleared stale pending clarification (feature disabled)")
 
         # NOTE: Removed hardcoded "Freshggies" STT correction
         # The system should work with any business name via ProfileStore dynamic learning
@@ -2975,7 +3040,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             else:
                 # Couldn't match response, clear and continue as normal query
                 ctx.clear_pending_correction_state()
-                print("  ✗ Could not match correction response, treating as new query")
+                print("  [FAIL] Could not match correction response, treating as new query")
 
         # === CHECK FOR CORRECTION INTENT ===
         # Only check if there's previous context to correct
@@ -2986,7 +3051,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             correction_intent = app_state.correction_detector.detect(question, previous_turn)
 
             if correction_intent:
-                print(f"  ✓ Correction detected: {correction_intent.correction_type.value}")
+                print(f"  [OK] Correction detected: {correction_intent.correction_type.value}")
                 print(f"    Confidence: {correction_intent.confidence:.0%}")
                 _log_timing("correction_detection", _step_start)
 
@@ -3005,7 +3070,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 if correction_result:
                     return correction_result
             else:
-                print("  ✗ No correction intent detected")
+                print("  [FAIL] No correction intent detected")
             _log_timing("correction_detection", _step_start)
 
         # === RESOLVE TOP REFERENCES (NEW STEP 0.65) ===
@@ -3015,7 +3080,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             resolved_question = _resolve_top_references(question, previous_turn)
             if resolved_question != question:
                 print(f"\n[STEP 0.65/9] TOP REFERENCE RESOLUTION...")
-                print(f"  ✓ Resolved: '{question[:50]}...' → '{resolved_question[:50]}...'")
+                print(f"  [OK] Resolved: '{question[:50]}...' -> '{resolved_question[:50]}...'")
                 question = resolved_question  # Use resolved question for rest of pipeline
 
         # === CHECK FOR PROJECTION INTENT (NEW STEP 0.7) ===
@@ -3028,7 +3093,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             projection_intent = detect_projection_intent(question, previous_turn)
 
             if projection_intent:
-                print(f"  ✓ Projection intent detected: {projection_intent.projection_type.value}")
+                print(f"  [OK] Projection intent detected: {projection_intent.projection_type.value}")
                 print(f"    Target period: {projection_intent.target_period}")
                 print(f"    Confidence: {projection_intent.confidence:.0%}")
                 _log_timing("projection_detection", _step_start)
@@ -3047,14 +3112,14 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 )
                 if projection_result:
                     _total_time = (_time.time() - _query_start) * 1000
-                    print(f"\n  ⏱️  TIMING SUMMARY (PROJECTION):")
+                    print(f"\n  [TIME]  TIMING SUMMARY (PROJECTION):")
                     for step, ms in _timings.items():
                         print(f"      {step}: {ms:.0f}ms")
                     print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
                     print("=" * 60 + "\n")
                     return projection_result
             else:
-                print("  ✗ No projection intent detected")
+                print("  [FAIL] No projection intent detected")
             _log_timing("projection_detection", _step_start)
 
         # === FAST PATH: Greetings & Conversational ===
@@ -3065,15 +3130,15 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         if is_greeting(question) or is_non_query_conversational(question):
             greeting_type = "greeting" if is_greeting(question) else "conversational"
-            print(f"  ✓ {greeting_type.title()} detected - generating LLM response")
+            print(f"  [OK] {greeting_type.title()} detected - generating LLM response")
 
             # Use LLM for ALL conversational responses (natural, not hardcoded)
             response = generate_off_topic_response(question, is_tamil=is_tamil_text)
 
             _log_timing("conversational_detection", _step_start)
             _total_time = (_time.time() - _query_start) * 1000
-            print("  → Returning LLM-generated conversational response")
-            print(f"\n  ⏱️  TIMING SUMMARY (CONVERSATIONAL PATH):")
+            print("  -> Returning LLM-generated conversational response")
+            print(f"\n  [TIME]  TIMING SUMMARY (CONVERSATIONAL PATH):")
             for step, ms in _timings.items():
                 print(f"      {step}: {ms:.0f}ms")
             print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
@@ -3088,7 +3153,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'is_greeting': True,
                 'is_conversational': True
             }
-        print("  ✗ Not conversational (likely a data query)")
+        print("  [FAIL] Not conversational (likely a data query)")
         _log_timing("conversational_detection", _step_start)
 
         # === FAST PATH: Date Context Detection (BEFORE Memory) ===
@@ -3096,14 +3161,14 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print("\n[STEP 1.8/8] DATE CONTEXT DETECTION...")
         is_date_ctx, date_info = is_date_context_statement(question)
         if is_date_ctx:
-            print(f"  ✓ Date context detected: {date_info}")
+            print(f"  [OK] Date context detected: {date_info}")
             # Store date context in conversation for subsequent queries
             if date_info:
                 ctx.set_date_context(date_info)
             is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
             response = get_date_context_response(date_info, is_tamil=is_tamil)
             _log_timing("date_context", _step_start)
-            print("  → Returning date context acknowledgment")
+            print("  -> Returning date context acknowledgment")
             print("=" * 60 + "\n")
             return {
                 'success': True,
@@ -3115,7 +3180,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'is_date_context': True,
                 'date_info': date_info
             }
-        print("  ✗ Not a date context statement")
+        print("  [FAIL] Not a date context statement")
         _log_timing("date_context", _step_start)
 
         # === FAST PATH: Memory Intent ===
@@ -3123,39 +3188,57 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print("\n[STEP 2/8] MEMORY INTENT DETECTION...")
         memory_result = detect_memory_intent(question)
         if memory_result and memory_result.get("has_memory_intent"):
-            print(f"  ✓ Memory intent detected!")
+            print(f"  [OK] Memory intent detected!")
             category = memory_result["category"]
             key = memory_result["key"]
             value = memory_result["value"]
             print(f"    Category: {category}, Key: {key}, Value: {value}")
 
-            # Update personality if storing name
+            # Handle "Call me X" - SESSION BASED (not permanent storage)
             if key == "address_as":
                 app_state.personality.set_name(value)
                 ctx.set_user_name(value)
-                print(f"  ✓ User name set to: {value}")
+                print(f"  [OK] Session name set to: {value} (not saved permanently)")
 
-            success = update_memory(category, key, value)
-
-            if success:
-                print("  ✓ Memory saved successfully")
-
-                # CRITICAL: Invalidate cached LLM models so they pick up the new memory
-                # The planner and explainer cache system prompts with user name
+                # CRITICAL: Invalidate cached LLM models so they pick up the new name
                 from planning_layer.planner_client import invalidate_planner_model
                 from explanation_layer.explainer_client import invalidate_explainer_model
                 invalidate_planner_model()
                 invalidate_explainer_model()
-                print("  ✓ LLM model caches invalidated (will reload with new name)")
-                print("  → Returning memory confirmation")
+                print("  [OK] LLM model caches invalidated")
+                print("  -> Returning name confirmation (frontend will store in session)")
                 print("=" * 60 + "\n")
 
-                # Generate SHORT response - user doesn't want verbose info
-                if key == "address_as":
-                    explanation = f"Got it, {value}! What can I help you with?"
-                else:
-                    explanation = "Got it! I'll remember that."
+                # Warm, conversational confirmations
+                import random
+                confirmations = [
+                    f"Got it {value}! So what would you like to explore?",
+                    f"Ohh okay {value}! What can I help you with?",
+                    f"Alright {value}! Ready when you are.",
+                    f"Sure thing {value}! What do you want to know?"
+                ]
+                explanation = random.choice(confirmations)
 
+                return {
+                    'success': True,
+                    'explanation': explanation,
+                    'data': None,
+                    'plan': None,
+                    'schema_context': [],
+                    'data_refreshed': False,
+                    'is_memory_storage': True,
+                    'name_changed': True,  # Tell frontend to store in session
+                    'new_name': value
+                }
+
+            # Handle other memory intents (bot identity, etc.) - keep permanent storage
+            success = update_memory(category, key, value)
+            if success:
+                print("  [OK] Memory saved successfully")
+                print("  -> Returning memory confirmation")
+                print("=" * 60 + "\n")
+
+                explanation = "Got it! I'll remember that."
                 return {
                     'success': True,
                     'explanation': explanation,
@@ -3166,7 +3249,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     'is_memory_storage': True
                 }
         else:
-            print("  ✗ No memory intent")
+            print("  [FAIL] No memory intent")
         _log_timing("memory_detection", _step_start)
 
         # === FAST PATH: Schema Inquiry ===
@@ -3176,7 +3259,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print("\n[STEP 3/8] SCHEMA INQUIRY DETECTION...")
         schema_intent = detect_schema_inquiry(question)
         if schema_intent:
-            print(f"  ✓ Schema inquiry detected: {schema_intent}")
+            print(f"  [OK] Schema inquiry detected: {schema_intent}")
             table_ref = schema_intent.get('table')
             is_detailed = schema_intent.get('detailed', False)
 
@@ -3209,7 +3292,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 else:
                     response = f"{user_name}, here's what I found:\n\n{response}"
 
-            print("  → Returning schema info response")
+            print("  -> Returning schema info response")
             _log_timing("schema_inquiry", _step_start)
             print("=" * 60 + "\n")
             return {
@@ -3222,7 +3305,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 'is_schema_inquiry': True
             }
         else:
-            print("  ✗ Not a schema inquiry")
+            print("  [FAIL] Not a schema inquiry")
         _log_timing("schema_inquiry", _step_start)
 
         # === EARLY CACHE CHECK (BEFORE TRANSLATION - SAVES 300-600ms) ===
@@ -3247,7 +3330,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             early_cache_checked = True
 
             if cache_hit and cached_result and isinstance(cached_result, dict):
-                print(f"  ⚡ EARLY CACHE HIT - skipping translation/entity extraction")
+                print(f"  [FAST] EARLY CACHE HIT - skipping translation/entity extraction")
                 _log_timing("early_cache_check", _step_start)
 
                 # Translate cached explanation if Tamil input
@@ -3257,7 +3340,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     cached_explanation = translate_to_tamil(cached_explanation)
 
                 _total_time = (_time.time() - _query_start) * 1000
-                print(f"\n  ⏱️  TIMING SUMMARY (EARLY CACHE HIT):")
+                print(f"\n  [TIME]  TIMING SUMMARY (EARLY CACHE HIT):")
                 print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
                 print("=" * 60 + "\n")
 
@@ -3276,9 +3359,9 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     'visualization': cached_result.get('visualization')
                 }
             else:
-                print("  ✗ Cache miss - continuing with full pipeline")
+                print("  [FAIL] Cache miss - continuing with full pipeline")
         else:
-            print("  ✗ No spreadsheet_id - skipping cache check")
+            print("  [FAIL] No spreadsheet_id - skipping cache check")
         _log_timing("early_cache_check", _step_start)
 
         # === PARALLEL: TRANSLATION + ENTITY EXTRACTION (SAVES 200-400ms) ===
@@ -3290,7 +3373,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         entities = {}
 
         if is_tamil:
-            print(f"  ✓ Tamil detected - running translation + entity extraction in parallel")
+            print(f"  [OK] Tamil detected - running translation + entity extraction in parallel")
             print(f"    Original: {question[:50]}...")
             ctx.set_language('ta')
 
@@ -3322,20 +3405,20 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     if value and (not entities.get(key) or key in ['time_period', 'locations', 'categories']):
                         entities[key] = value
         else:
-            print("  ✗ No translation needed (English) - extracting entities")
+            print("  [FAIL] No translation needed (English) - extracting entities")
             entities = app_state.entity_extractor.extract(processing_query)
 
         entity_summary = app_state.entity_extractor.get_entities_summary(entities)
-        print(f"  ✓ Entities extracted: {entity_summary}")
+        print(f"  [OK] Entities extracted: {entity_summary}")
 
         # Check for follow-up
         is_followup = ctx.is_followup(processing_query)
         if is_followup:
-            print(f"  ✓ Follow-up question detected")
+            print(f"  [OK] Follow-up question detected")
             entities = ctx.merge_entities(entities)
-            print(f"  ✓ Merged with context: {app_state.entity_extractor.get_entities_summary(entities)}")
+            print(f"  [OK] Merged with context: {app_state.entity_extractor.get_entities_summary(entities)}")
         else:
-            print("  ✗ Not a follow-up (new query)")
+            print("  [FAIL] Not a follow-up (new query)")
 
         _log_timing("parallel_translation_entities", _step_start)
 
@@ -3364,7 +3447,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
 
             if cache_hit and cached_result and isinstance(cached_result, dict):
-                print(f"  ✓ CACHE HIT - returning cached result")
+                print(f"  [OK] CACHE HIT - returning cached result")
                 print("=" * 60 + "\n")
                 cached_explanation = cached_result.get('explanation', '')
                 if is_tamil:
@@ -3384,14 +3467,14 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     'no_results': cached_result.get('no_results', False)
                 }
             else:
-                print("  ✗ Cache miss - proceeding with full query")
+                print("  [FAIL] Cache miss - proceeding with full query")
         else:
-            print("  ✓ Early cache check already performed - skipping")
+            print("  [OK] Early cache check already performed - skipping")
         _log_timing("cache_check", _step_start)
 
         # === CHECK DATA LOADED ===
         profiles = app_state.profile_store.get_all_profiles() if app_state.profile_store else {}
-        print(f"  ✓ {len(profiles)} table profiles loaded")
+        print(f"  [OK] {len(profiles)} table profiles loaded")
         if not profiles:
             return {
                 'success': False,
@@ -3417,7 +3500,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         routing_entities = routing_result.entities
         confidence = routing_result.confidence
 
-        print(f"  ✓ Router result: {best_table} (confidence: {confidence:.0%})")
+        print(f"  [OK] Router result: {best_table} (confidence: {confidence:.0%})")
         _log_timing("table_routing", _step_start)
 
         # === CRITICAL: CHECK FOR LOW-CONFIDENCE NON-DATA QUERIES ===
@@ -3444,8 +3527,8 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                 response = generate_off_topic_response(question, is_tamil=is_tamil_text)
 
                 _total_time = (_time.time() - _query_start) * 1000
-                print("  → Returning conversational LLM response (low confidence path)")
-                print(f"\n  ⏱️  TIMING SUMMARY (LOW CONFIDENCE CONVERSATIONAL):")
+                print("  -> Returning conversational LLM response (low confidence path)")
+                print(f"\n  [TIME]  TIMING SUMMARY (LOW CONFIDENCE CONVERSATIONAL):")
                 for step, ms in _timings.items():
                     print(f"      {step}: {ms:.0f}ms")
                 print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
@@ -3469,13 +3552,13 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             candidates = routing_result.get_clarification_options()
             if candidates:
                 best_table = candidates[0]  # Pick first (best scored) candidate
-                print(f"  → Auto-selected table: {best_table}")
+                print(f"  -> Auto-selected table: {best_table}")
 
         # === SCHEMA CONTEXT GENERATION ===
         if best_table and routing_result.is_confident:
             # High confidence - use single table schema
             schema_context = app_state.table_router.get_table_schema(best_table)
-            print(f"  ✓ Using focused schema for: {best_table}")
+            print(f"  [OK] Using focused schema for: {best_table}")
         elif routing_result.should_fallback:
             # Very low confidence - use top 5 candidate tables
             schema_context = app_state.table_router.get_fallback_schema(processing_query, top_k=5)
@@ -3483,7 +3566,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         else:
             # Medium confidence - use the best match
             schema_context = app_state.table_router.get_table_schema(best_table)
-            print(f"  ✓ Using best match schema for: {best_table} (medium confidence)")
+            print(f"  [OK] Using best match schema for: {best_table} (medium confidence)")
 
         # Add previous context to schema if follow-up
         if is_followup:
@@ -3493,11 +3576,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         # === PLANNING ===
         _step_start = _time.time()
-        print("  → Generating query plan via LLM...")
+        print("  -> Generating query plan via LLM...")
         plan = generate_plan(processing_query, schema_context, entities=entities)
         validate_plan(plan)
         _log_timing("llm_planning", _step_start)
-        print(f"  ✓ Plan generated:")
+        print(f"  [OK] Plan generated:")
         print(f"    Query type: {plan.get('query_type', 'unknown')}")
         print(f"    Table: {plan.get('table', 'unknown')}")
         print(f"    Metrics: {plan.get('metrics', [])}")
@@ -3514,11 +3597,11 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             
             # Route advanced query types to specialized executor (comparison, percentage, trend)
             if query_type in ADVANCED_QUERY_TYPES:
-                print(f"  → Executing advanced query type: {query_type}")
+                print(f"  -> Executing advanced query type: {query_type}")
                 from execution_layer.executor import execute_plan
                 result = execute_plan(plan)
                 final_sql = f"[Advanced {query_type} query - see analysis]"
-                print(f"  ✓ Advanced query completed")
+                print(f"  [OK] Advanced query completed")
 
                 # CRITICAL: For projection support, merge analysis from result back into plan
                 # Advanced queries return DataFrames with analysis in attrs
@@ -3527,19 +3610,19 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
                     analysis = result.attrs['analysis']
                     plan['analysis'] = analysis if isinstance(analysis, dict) else {}
                     if plan['analysis']:
-                        print(f"    → Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
+                        print(f"    -> Stored analysis in plan for projection: {list(plan['analysis'].keys())}")
                     else:
                         print(f"    ! Analysis was empty or invalid")
                 elif isinstance(result, dict) and 'analysis' in result:
                     plan['analysis'] = result.get('analysis', {})
-                    print(f"    → Stored analysis in plan for projection support: {list(plan['analysis'].keys())}")
+                    print(f"    -> Stored analysis in plan for projection support: {list(plan['analysis'].keys())}")
                 else:
                     print(f"    ! No analysis found in result (type: {type(result).__name__})")
             else:
                 # Standard query execution with healing
                 sql = compile_sql(plan)
-                print(f"  ✓ SQL compiled: {sql[:100]}{'...' if len(sql) > 100 else ''}")
-                print("  → Executing with self-healing...")
+                print(f"  [OK] SQL compiled: {sql[:100]}{'...' if len(sql) > 100 else ''}")
+                print("  -> Executing with self-healing...")
                 result, final_sql = app_state.query_healer.execute_with_healing(sql, plan)
 
             # Add healing info to debug
@@ -3549,7 +3632,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         except QueryExecutionError as e:
             # All healing attempts failed
-            print(f"  ✗ EXECUTION FAILED after all healing attempts")
+            print(f"  [FAIL] EXECUTION FAILED after all healing attempts")
             print(f"    Error: {str(e)[:100]}")
             print("=" * 60 + "\n")
             error_msg = app_state.personality.handle_error('general', str(e))
@@ -3573,7 +3656,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             no_results = True
             print(f"  ! Query returned 0 rows")
         else:
-            print(f"  ✓ Query returned {row_count} rows")
+            print(f"  [OK] Query returned {row_count} rows")
         _log_timing("sql_execution", _step_start)
 
         # === EXPLANATION WITH PERSONALITY ===
@@ -3583,7 +3666,8 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             result,
             query_plan=plan,
             original_question=processing_query,
-            raw_user_message=question  # Original message with emotional tone
+            raw_user_message=question,  # Original message with emotional tone
+            user_name=app_state.personality.user_name
         )
 
         # NOTE: explain_results() already handles empty results with friendly messages
@@ -3605,19 +3689,19 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         # === TRANSLATION (POST-PROCESS) ===
         _step_start = _time.time()
         if is_tamil:
-            print("  → Translating response to Tamil...")
+            print("  -> Translating response to Tamil...")
             explanation = translate_to_tamil(explanation)
-            print("  ✓ Response translated")
+            print("  [OK] Response translated")
             _log_timing("translation_response", _step_start)
         else:
             _log_timing("translation_response", _step_start)
 
         # === UPDATE CONTEXT ===
         # Extract key result values for pronoun resolution in follow-ups
-        # e.g., "that state" → "West Bengal" from previous query result
+        # e.g., "that state" -> "West Bengal" from previous query result
         result_values = _extract_result_values(result, plan)
         if result_values:
-            print(f"  ✓ Extracted result values for context: {result_values}")
+            print(f"  [OK] Extracted result values for context: {result_values}")
 
         # Make a deep copy of plan to preserve analysis for projection follow-ups
         # (reference passing could cause issues if plan is modified elsewhere)
@@ -3626,7 +3710,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
 
         # Debug: Verify analysis is in stored_plan
         if stored_plan.get('analysis'):
-            print(f"  ✓ Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
+            print(f"  [OK] Plan analysis preserved for projection: {list(stored_plan['analysis'].keys())}")
 
         turn = QueryTurn(
             question=question,
@@ -3651,7 +3735,7 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
         print(f"  Table: {plan.get('table', best_table)}")
         print(f"  Rows: {row_count}")
         print(f"  Confidence: {confidence:.0%}")
-        print(f"\n  ⏱️  TIMING SUMMARY:")
+        print(f"\n  [TIME]  TIMING SUMMARY:")
         for step, ms in _timings.items():
             print(f"      {step}: {ms:.0f}ms")
         print(f"      ────────────────────")
@@ -3664,8 +3748,9 @@ def process_query_service(question: str, conversation_id: str = None) -> Dict[st
             data_list = _sanitize_for_json(result.to_dict('records'))
 
         # Determine visualization type based on query type and data
+        # NOTE: Removed len(data_list) > 1 gate to allow metric cards for single-value results
         visualization = None
-        if data_list and len(data_list) > 1:
+        if data_list:
             try:
                 visualization = determine_visualization(plan, data_list, entities)
             except Exception as viz_err:
@@ -3874,9 +3959,23 @@ def get_table_profiles_service() -> Dict[str, Any]:
 
 def clear_context_service(conversation_id: str = None) -> Dict[str, Any]:
     """
-    Clear conversation context.
+    Clear conversation context and all cached data.
+    Called when user clears chat.
     """
+    # Clear conversation context
     app_state.conversation_manager.clear_context(conversation_id)
-    return {'success': True, 'message': 'Context cleared'}
+
+    # Clear query cache
+    cache = get_query_cache()
+    cache_stats = cache.get_stats()
+    cache.clear()
+
+    print(f"[CACHE] Cleared {cache_stats['current_size']} cached queries")
+
+    return {
+        'success': True,
+        'message': 'Context and cache cleared',
+        'cleared_queries': cache_stats['current_size']
+    }
 
 

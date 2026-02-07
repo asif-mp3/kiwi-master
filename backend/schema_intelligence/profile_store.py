@@ -316,7 +316,7 @@ class ProfileStore:
                     expected_granularity = time_period_keywords[keyword]
                     if granularity == expected_granularity:
                         score += 100  # Strong boost for matching granularity
-                        match_reasons.append(f"granularity_match:{keyword}→{granularity}")
+                        match_reasons.append(f"granularity_match:{keyword}->{granularity}")
                     # Also check if table name contains the time period
                     if keyword in table_name_lower or expected_granularity in table_name_lower:
                         score += 50
@@ -865,9 +865,9 @@ class ProfileStore:
 
             return (
                 f"**{name}**{date_info} - {rows:,} வரிசைகள் உள்ளன.\n\n"
-                f"📊 **முக்கிய metrics:** {metrics_str}\n"
-                f"📅 **Date column:** {date_col}\n"
-                f"📁 **Dimensions:** {dims_str}\n\n"
+                f"[Metrics] **முக்கிய metrics:** {metrics_str}\n"
+                f"[Date] **Date column:** {date_col}\n"
+                f"[Dims] **Dimensions:** {dims_str}\n\n"
                 f"மேலும் விவரம் வேண்டுமா? 'show all columns' அல்லது 'describe {name} in detail' என்று கேளுங்கள்."
             )
 
@@ -877,9 +877,9 @@ class ProfileStore:
 
         return (
             f"**{name}**{date_info} is a {table_type} table with {rows:,} rows.\n\n"
-            f"📊 **Key metrics:** {metrics_str}\n"
-            f"📅 **Date column:** {date_col}\n"
-            f"📁 **Dimensions:** {dims_str}\n\n"
+            f"[Metrics] **Key metrics:** {metrics_str}\n"
+            f"[Date] **Date column:** {date_col}\n"
+            f"[Dims] **Dimensions:** {dims_str}\n\n"
             f"Want more details? Ask 'show all columns' or 'describe {name} in detail'."
         )
 
@@ -927,7 +927,7 @@ class ProfileStore:
         Find profile by flexible reference (sheet 1, sales table, etc.).
         Supports:
         - Direct name match
-        - Sheet number reference (sheet 1 → first table)
+        - Sheet number reference (sheet 1 -> first table)
         - Scored partial/substring match (best match, not first)
         - Word-based match with coverage scoring
         - Fuzzy matching for typos (80% threshold)
@@ -949,7 +949,7 @@ class ProfileStore:
             if name.lower() == ref_lower:
                 return self.get_profile(name)
 
-        # 2. Sheet number reference (sheet 1 → first table)
+        # 2. Sheet number reference (sheet 1 -> first table)
         # Use word boundaries to avoid matching "sheet123sales"
         sheet_match = re.search(r'\bsheet\s*[_]?\s*(\d+)\b', ref_lower)
         if sheet_match:
@@ -1066,14 +1066,14 @@ class ProfileStore:
             ]
 
         if metrics:
-            lines.append(f"**📊 Metrics ({len(metrics)}):** {', '.join(metrics)}")
+            lines.append(f"**[Metrics] Metrics ({len(metrics)}):** {', '.join(metrics)}")
         if dates:
-            lines.append(f"**📅 Date columns ({len(dates)}):** {', '.join(dates)}")
+            lines.append(f"**[Date] Date columns ({len(dates)}):** {', '.join(dates)}")
         if dimensions:
-            lines.append(f"**📁 Dimensions ({len(dimensions)}):** {', '.join(dimensions)}")
+            lines.append(f"**[Dims] Dimensions ({len(dimensions)}):** {', '.join(dimensions)}")
         if identifiers:
-            lines.append(f"**🔑 Identifiers ({len(identifiers)}):** {', '.join(identifiers)}")
+            lines.append(f"**[Key] Identifiers ({len(identifiers)}):** {', '.join(identifiers)}")
         if others:
-            lines.append(f"**📄 Other ({len(others)}):** {', '.join(others)}")
+            lines.append(f"**[Other] Other ({len(others)}):** {', '.join(others)}")
 
         return "\n".join(lines)

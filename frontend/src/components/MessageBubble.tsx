@@ -3,8 +3,8 @@
 import { motion } from 'framer-motion';
 import { Message } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp, FileSpreadsheet, FileText } from 'lucide-react';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { Square, Copy, Check, Volume2, Database, TableIcon, ChevronDown, ChevronUp, FileSpreadsheet, FileText, RefreshCw, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Popover,
   PopoverContent,
@@ -28,9 +28,106 @@ interface MessageBubbleProps {
   message: Message;
   onPlay?: (text: string, messageId: string) => void;
   onStop?: () => void;
+  onRetry?: (originalQuery: string) => void;
 }
 
-export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
+const ROWS_PER_PAGE = 20;
+
+/**
+ * Format raw column names from DuckDB into human-readable labels.
+ * Examples:
+ *   - "Total_Sales" → "Total Sales"
+ *   - "customer_name" → "Customer Name"
+ *   - "SUM(sales)" → "Total Sales"
+ *   - "AVG(amount)" → "Average Amount"
+ *   - "COUNT(*)" → "Count"
+ *   - "payment_mode" → "Payment Mode"
+ */
+function formatColumnName(colName: string): string {
+  if (!colName) return '';
+
+  let formatted = colName;
+
+  // Handle SQL aggregation functions
+  const aggPatterns: [RegExp, string][] = [
+    [/^SUM\((\w+)\)$/i, 'Total $1'],
+    [/^AVG\((\w+)\)$/i, 'Average $1'],
+    [/^COUNT\(\*\)$/i, 'Count'],
+    [/^COUNT\((\w+)\)$/i, 'Count of $1'],
+    [/^MAX\((\w+)\)$/i, 'Maximum $1'],
+    [/^MIN\((\w+)\)$/i, 'Minimum $1'],
+    [/^ROUND\((.+),\s*\d+\)$/i, '$1'], // ROUND(x, 2) → x
+  ];
+
+  for (const [pattern, replacement] of aggPatterns) {
+    if (pattern.test(formatted)) {
+      formatted = formatted.replace(pattern, replacement);
+      break;
+    }
+  }
+
+  // Replace underscores with spaces
+  formatted = formatted.replace(/_/g, ' ');
+
+  // Convert to Title Case
+  formatted = formatted
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+
+  // Common abbreviation fixes
+  const fixes: Record<string, string> = {
+    'Id': 'ID',
+    'Qty': 'Quantity',
+    'Amt': 'Amount',
+    'Num': 'Number',
+    'Pct': 'Percentage',
+    'Avg': 'Average',
+  };
+
+  for (const [abbr, full] of Object.entries(fixes)) {
+    formatted = formatted.replace(new RegExp(`\\b${abbr}\\b`, 'g'), full);
+  }
+
+  return formatted.trim();
+}
+
+/**
+ * Format cell values for display (currency, large numbers, percentages)
+ */
+function formatCellValue(value: unknown, colName: string): string {
+  if (value === null || value === undefined) return '-';
+
+  // Check if it's a number
+  if (typeof value === 'number') {
+    const lowerCol = colName.toLowerCase();
+
+    // Percentage columns
+    if (lowerCol.includes('percent') || lowerCol.includes('pct') || lowerCol.includes('rate')) {
+      return `${value.toFixed(2)}%`;
+    }
+
+    // Currency/amount columns - format with Indian numbering
+    if (lowerCol.includes('sales') || lowerCol.includes('amount') ||
+        lowerCol.includes('revenue') || lowerCol.includes('profit') ||
+        lowerCol.includes('price') || lowerCol.includes('cost') ||
+        lowerCol.includes('total') || lowerCol.includes('sum')) {
+      return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    }
+
+    // Large numbers
+    if (Math.abs(value) >= 1000) {
+      return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    }
+
+    // Regular numbers
+    return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  }
+
+  return String(value);
+}
+
+export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbleProps) {
   const isAssistant = message.role === 'assistant';
   const isSystem = message.role === 'system';
   const [copied, setCopied] = useState(false);
@@ -62,6 +159,24 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
   const [showDataTable, setShowDataTable] = useState(false);
   const hasAutoShown = useRef(false);
 
+  // Pagination state
+  const [visibleRows, setVisibleRows] = useState(ROWS_PER_PAGE);
+  const hasMoreRows = dataRows.length > visibleRows;
+  const displayedRows = dataRows.slice(0, visibleRows);
+
+  // Error detection - check if message indicates an error
+  const metadata = message.metadata as Record<string, unknown> | undefined;
+  const isError = metadata?.error ||
+    (message.content.toLowerCase().includes("sorry") && message.content.toLowerCase().includes("error")) ||
+    message.content.toLowerCase().includes("couldn't process") ||
+    message.content.toLowerCase().includes("failed to");
+  const originalQuery = metadata?.originalQuery as string | undefined;
+
+  // Load more rows handler
+  const handleLoadMore = useCallback(() => {
+    setVisibleRows(prev => prev + ROWS_PER_PAGE);
+  }, []);
+
   // Auto-expand data table for list queries (only once when message renders with data)
   useEffect(() => {
     if (shouldAutoShowData && !hasAutoShown.current) {
@@ -76,20 +191,46 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
     setTimeout(() => setCopied(false), 2000);
   }, [message.content]);
 
-  // Export to Excel function
+  // Format columns for display and export
+  const formattedColumns = useMemo(() =>
+    dataColumns.map(col => ({
+      raw: col,
+      display: formatColumnName(col)
+    })),
+    [dataColumns]
+  );
+
+  // Export to Excel function with formatted headers and values
   const handleExportExcel = useCallback(() => {
     if (!hasData) return;
 
-    const worksheet = XLSX.utils.json_to_sheet(dataRows);
+    // Create formatted data with human-readable column names
+    const formattedData = dataRows.map(row => {
+      const formattedRow: Record<string, string> = {};
+      for (const col of dataColumns) {
+        const displayName = formatColumnName(col);
+        formattedRow[displayName] = formatCellValue(row[col], col);
+      }
+      return formattedRow;
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(formattedData);
+
+    // Auto-size columns based on content
+    const colWidths = formattedColumns.map(col => ({
+      wch: Math.max(col.display.length, 12)
+    }));
+    worksheet['!cols'] = colWidths;
+
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Data');
 
     // Generate filename with timestamp
     const timestamp = new Date().toISOString().slice(0, 10);
     XLSX.writeFile(workbook, `thara_export_${timestamp}.xlsx`);
-  }, [hasData, dataRows]);
+  }, [hasData, dataRows, dataColumns, formattedColumns]);
 
-  // Export to PDF function
+  // Export to PDF function with formatted headers and values
   const handleExportPDF = useCallback(() => {
     if (!hasData) return;
 
@@ -103,21 +244,30 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
     doc.setFontSize(10);
     doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 22);
 
-    // Create table
+    // Use formatted column headers
+    const formattedHeaders = formattedColumns.map(col => col.display);
+
+    // Create table with formatted headers and values
     autoTable(doc, {
-      head: [dataColumns],
+      head: [formattedHeaders],
       body: dataRows.map(row => dataColumns.map(col =>
-        row[col] !== null && row[col] !== undefined ? String(row[col]) : '-'
+        formatCellValue(row[col], col)
       )),
       startY: 28,
       styles: { fontSize: 8 },
-      headStyles: { fillColor: [139, 92, 246] }, // Violet color
+      headStyles: {
+        fillColor: [139, 92, 246], // Violet color
+        fontStyle: 'bold'
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 250]
+      }
     });
 
     // Generate filename with timestamp
     const timestamp = new Date().toISOString().slice(0, 10);
     doc.save(`thara_export_${timestamp}.pdf`);
-  }, [hasData, dataRows, dataColumns]);
+  }, [hasData, dataRows, dataColumns, formattedColumns]);
 
   if (isSystem) {
     return (
@@ -299,11 +449,58 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
                 {showDataTable ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
               </motion.button>
             )}
+
+            {/* Retry Button - Show when message is an error */}
+            {isError && onRetry && originalQuery && (
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => onRetry(originalQuery)}
+                aria-label="Retry query"
+                className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md sm:rounded-lg text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider transition-all bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span className="hidden sm:inline">Retry</span>
+              </motion.button>
+            )}
           </motion.div>
         )}
 
-        {/* Data Visualization Chart */}
-        {isAssistant && message.metadata?.visualization && (
+        {/* Data Visualization - Metric Card for single values */}
+        {isAssistant && message.metadata?.visualization?.type === 'metric_card' && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.1 }}
+            className="mt-3 w-full"
+          >
+            <div className="bg-gradient-to-br from-violet-500/10 to-purple-500/10 dark:from-violet-950/30 dark:to-purple-950/30 border border-violet-500/20 rounded-xl p-6 text-center">
+              <div className="text-sm text-muted-foreground mb-2">
+                {message.metadata.visualization.title}
+              </div>
+              <div className="text-4xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
+                {message.metadata.visualization.data?.is_percentage
+                  ? `${Number(message.metadata.visualization.data?.value || 0).toFixed(1)}%`
+                  : (() => {
+                      const val = Number(message.metadata.visualization.data?.value || 0);
+                      if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)} Cr`;
+                      if (val >= 100000) return `₹${(val / 100000).toFixed(2)} L`;
+                      if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
+                      return `₹${val.toLocaleString('en-IN')}`;
+                    })()
+                }
+              </div>
+              {message.metadata.visualization.data?.supporting_text && (
+                <div className="text-xs text-muted-foreground mt-2">
+                  {message.metadata.visualization.data.supporting_text}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Data Visualization Chart (for multi-row data) */}
+        {isAssistant && message.metadata?.visualization && message.metadata.visualization.type !== 'metric_card' && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -353,33 +550,48 @@ export function MessageBubble({ message, onPlay, onStop }: MessageBubbleProps) {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent border-zinc-800">
-                      {dataColumns.map((col, i) => (
+                      {formattedColumns.map((col, i) => (
                         <TableHead
                           key={i}
                           className="text-xs font-semibold text-zinc-300 bg-zinc-800/50"
                         >
-                          {col}
+                          {col.display}
                         </TableHead>
                       ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {dataRows.map((row: Record<string, unknown>, rowIdx: number) => (
+                    {displayedRows.map((row: Record<string, unknown>, rowIdx: number) => (
                       <TableRow key={rowIdx} className="border-zinc-800 hover:bg-zinc-800/30">
-                        {dataColumns.map((col, colIdx) => (
+                        {formattedColumns.map((col, colIdx) => (
                           <TableCell
                             key={colIdx}
                             className="text-xs text-zinc-300 py-2"
                           >
-                            {row[col] !== null && row[col] !== undefined
-                              ? String(row[col])
-                              : '-'}
+                            {formatCellValue(row[col.raw], col.raw)}
                           </TableCell>
                         ))}
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+              </div>
+              {/* Pagination Footer */}
+              <div className="px-4 py-2 border-t border-zinc-800 flex items-center justify-between">
+                <span className="text-[10px] text-zinc-500">
+                  Showing {displayedRows.length} of {dataRows.length} rows
+                </span>
+                {hasMoreRows && (
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleLoadMore}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-semibold bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 transition-all"
+                  >
+                    <ChevronDown className="w-3 h-3" />
+                    Load More ({Math.min(ROWS_PER_PAGE, dataRows.length - visibleRows)})
+                  </motion.button>
+                )}
               </div>
             </div>
           </motion.div>

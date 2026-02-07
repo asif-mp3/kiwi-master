@@ -47,7 +47,7 @@ def main():
             folder_path=current_dir,
             repo_id=SPACE_ID,
             repo_type="space",
-            ignore_patterns=["*.pyc", "__pycache__", ".git", "*.egg-info", "deploy_to_hf.py", ".env", "*.db"]
+            ignore_patterns=["*.pyc", "__pycache__", ".git", "*.egg-info", "deploy_to_hf.py", ".env", "*.db", "venv", "venv/**", ".venv", ".venv/**", "scripts/**", "test_*.py"]
         )
         print("\n" + "=" * 50)
         print("Upload complete!")

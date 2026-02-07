@@ -110,9 +110,11 @@ export const api = {
    * Process a user query (text).
    * Backend endpoint: POST /api/query
    * 60s timeout for LLM calls during clarification flows
+   * @param text - User query text
+   * @param sessionName - Optional session name for "Call me X" feature
    */
-  sendMessage: async (text: string): Promise<ProcessQueryResponse> => {
-    console.log('Sending query:', text);
+  sendMessage: async (text: string, sessionName?: string): Promise<ProcessQueryResponse> => {
+    console.log('Sending query:', text, sessionName ? `(as ${sessionName})` : '');
 
     const response = await handleResponse(
       await fetchWithTimeout(
@@ -123,7 +125,10 @@ export const api = {
             'Content-Type': 'application/json',
             ...getAuthHeaders(),
           },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({
+            text,
+            user_name: sessionName || null  // Pass session name for personalization
+          }),
         },
         60000  // 60 second timeout
       )
@@ -231,8 +236,9 @@ export const api = {
   },
 
   /**
-   * Convert text to speech using ElevenLabs.
+   * Convert text to speech using ElevenLabs (blocking - waits for full audio).
    * Backend endpoint: POST /api/text-to-speech
+   * @deprecated Use textToSpeechStream for better latency (saves 2-4 seconds)
    */
   textToSpeech: async (text: string, voiceId?: string): Promise<Blob> => {
     const response = await handleResponse(
@@ -261,6 +267,137 @@ export const api = {
       return new Blob([blob], { type: 'audio/mpeg' });
     }
     return blob;
+  },
+
+  /**
+   * Convert text to speech with STREAMING - collects full audio blob.
+   * Backend endpoint: POST /api/text-to-speech/stream
+   * Returns the full audio blob once streaming completes.
+   * For true streaming playback, use textToSpeechStreamAndPlay instead.
+   */
+  textToSpeechStream: async (text: string, voiceId?: string): Promise<Blob> => {
+    const response = await handleResponse(
+      await fetch(`${API_BASE_URL}/api/text-to-speech/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({
+          text,
+          voice_id: voiceId || getElevenLabsVoiceId()
+        }),
+      })
+    );
+
+    if (!response.ok) {
+      throw new Error('TTS stream request failed');
+    }
+
+    const blob = await response.blob();
+    if (blob.type !== 'audio/mpeg') {
+      return new Blob([blob], { type: 'audio/mpeg' });
+    }
+    return blob;
+  },
+
+  /**
+   * TRUE STREAMING TTS - Audio starts playing as chunks arrive (~200-500ms first byte).
+   * Uses chunked collection + immediate playback for best latency.
+   * Backend endpoint: POST /api/text-to-speech/stream
+   *
+   * @param text - Text to convert to speech
+   * @param voiceId - Optional ElevenLabs voice ID
+   * @param onStart - Callback when audio starts playing
+   * @param onEnd - Callback when audio finishes
+   * @param onError - Callback on error
+   * @returns Audio element that is playing (or will play)
+   */
+  textToSpeechStreamAndPlay: async (
+    text: string,
+    voiceId?: string,
+    onStart?: () => void,
+    onEnd?: () => void,
+    onError?: (error: Error) => void
+  ): Promise<{ audio: HTMLAudioElement; blob: Promise<Blob> }> => {
+    const response = await handleResponse(
+      await fetch(`${API_BASE_URL}/api/text-to-speech/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({
+          text,
+          voice_id: voiceId || getElevenLabsVoiceId()
+        }),
+      })
+    );
+
+    if (!response.ok || !response.body) {
+      const err = new Error('TTS stream request failed');
+      onError?.(err);
+      throw err;
+    }
+
+    // Collect chunks while streaming
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLength = 0;
+
+    // Start collecting chunks
+    const collectChunks = async (): Promise<Blob> => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          totalLength += value.length;
+        }
+      }
+
+      // Combine all chunks into a single blob
+      const combined = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return new Blob([combined], { type: 'audio/mpeg' });
+    };
+
+    // Start chunk collection (runs in background)
+    const blobPromise = collectChunks();
+
+    // Create audio element - will play once blob is ready
+    const audio = new Audio();
+
+    // Wait for blob and play
+    blobPromise.then((blob) => {
+      const url = URL.createObjectURL(blob);
+      audio.src = url;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        onError?.(new Error('Audio playback failed'));
+      };
+      audio.play()
+        .then(() => {
+          onStart?.();
+          audio.playbackRate = 1.3; // 30% faster playback
+        })
+        .catch((e) => {
+          // Browser autoplay policy - audio element is returned for manual play
+          console.warn('Autoplay blocked, user interaction required:', e);
+        });
+    }).catch((err) => {
+      onError?.(err);
+    });
+
+    return { audio, blob: blobPromise };
   },
 
   // ============================================================================
@@ -350,6 +487,40 @@ export const api = {
     );
 
     return await response.json();
+  },
+
+  // ============================================================================
+  // Cache Management
+  // ============================================================================
+
+  /**
+   * Clear backend caches (query cache, context).
+   * Called when user clears chat.
+   * Backend endpoint: POST /api/context/clear
+   */
+  clearCache: async (): Promise<{ success: boolean; cleared_queries?: number }> => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/context/clear`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        console.warn('[API] clearCache failed:', response.status);
+        return { success: false };
+      }
+
+      const result = await response.json();
+      console.log('[API] Cache cleared:', result);
+      return result;
+    } catch (e) {
+      console.error('[API] clearCache error:', e);
+      return { success: false };
+    }
   },
 
   // ============================================================================

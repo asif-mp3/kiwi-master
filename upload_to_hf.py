@@ -14,14 +14,14 @@ login(token=token)
 # Initialize API
 api = HfApi()
 
-# Upload entire backend folder to Space
-print("Uploading backend to Hugging Face Space...")
+# Upload entire backend folder to Space (v2)
+print("Uploading backend to Hugging Face Space v2...")
 api.upload_folder(
     folder_path="backend",
-    repo_id="Asif-mp3/thara-backend",
+    repo_id="Asif-mp3/Thara-Backend-v2",  # Updated to v2
     repo_type="space",
-    commit_message="Deploy backend to HF Spaces"
+    commit_message="Deploy backend to HF Spaces v2"
 )
 
 print("✅ Upload complete!")
-print("Your backend is now live at: https://asif-mp3-thara-backend.hf.space")
+print("Your backend is now live at: https://asif-mp3-thara-backend-v2.hf.space")

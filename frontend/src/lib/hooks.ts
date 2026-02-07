@@ -8,9 +8,15 @@ const CHAT_KEY = 'thara_chat';
 const CONFIG_KEY = 'thara_config';
 const CHAT_TABS_KEY = 'thara_tabs';
 const SESSION_LAST_ACTIVITY_KEY = 'thara_last_activity';
+const SESSION_NAME_KEY = 'thara_session_name'; // "Call me X" - clears on session timeout
 
-// Session timeout: 300 seconds (5 minutes) of inactivity
-const SESSION_TIMEOUT_MS = 300 * 1000;
+// Session timeout: 1 hour of inactivity
+const SESSION_TIMEOUT_MS = 3600 * 1000;
+
+// Debug: Log timeout value when module loads
+if (typeof window !== 'undefined') {
+  console.log(`[Session] Module loaded - timeout set to ${SESSION_TIMEOUT_MS}ms (${SESSION_TIMEOUT_MS / 1000 / 60} minutes)`);
+}
 
 export function useAppState() {
   const [auth, setAuth] = useState<AuthState>({
@@ -25,6 +31,9 @@ export function useAppState() {
     googleSheetUrl: null,
   });
   const [isInitializing, setIsInitializing] = useState(true);
+
+  // Session-based name for "Call me X" feature - defaults to "Boss", clears on timeout
+  const [sessionName, setSessionNameState] = useState<string>('Boss');
 
   useEffect(() => {
     // Safe JSON parse helper - returns null on error and clears corrupted data
@@ -63,15 +72,29 @@ export function useAppState() {
     // Check if session has expired due to inactivity
     const isSessionExpired = (): boolean => {
       const lastActivity = localStorage.getItem(SESSION_LAST_ACTIVITY_KEY);
-      if (!lastActivity) return true; // No activity recorded = expired
+      if (!lastActivity) {
+        console.log('[Session] No activity timestamp found - session expired');
+        return true;
+      }
       const lastActivityTime = parseInt(lastActivity, 10);
-      if (isNaN(lastActivityTime)) return true;
+      if (isNaN(lastActivityTime)) {
+        console.log('[Session] Invalid activity timestamp - session expired');
+        return true;
+      }
       const now = Date.now();
-      return (now - lastActivityTime) > SESSION_TIMEOUT_MS;
+      const elapsed = now - lastActivityTime;
+      const isExpired = elapsed > SESSION_TIMEOUT_MS;
+      console.log(`[Session] Check: elapsed=${Math.round(elapsed/1000)}s, timeout=${Math.round(SESSION_TIMEOUT_MS/1000)}s, expired=${isExpired}`);
+      return isExpired;
     };
 
     // CRITICAL: Only restore auth if valid token exists AND session not expired
-    if (!validateToken() || isSessionExpired()) {
+    const tokenValid = validateToken();
+    const sessionExpired = isSessionExpired();
+    console.log(`[Session] Init check: tokenValid=${tokenValid}, sessionExpired=${sessionExpired}`);
+
+    if (!tokenValid || sessionExpired) {
+      console.log(`[Session] Clearing auth - tokenValid=${tokenValid}, sessionExpired=${sessionExpired}`);
       clearAllAuthData();
       setIsInitializing(false);
       return;
@@ -101,6 +124,12 @@ export function useAppState() {
       }
     }
 
+    // Load session name (for "Call me X" feature)
+    const savedSessionName = localStorage.getItem(SESSION_NAME_KEY);
+    if (savedSessionName) {
+      setSessionNameState(savedSessionName);
+    }
+
     setIsInitializing(false);
   }, []);
 
@@ -117,23 +146,26 @@ export function useAppState() {
     const checkSessionExpiry = () => {
       const lastActivity = localStorage.getItem(SESSION_LAST_ACTIVITY_KEY);
       if (!lastActivity) {
-        // No activity recorded while authenticated - logout
+        console.log('[Session] Periodic check: No activity timestamp - logging out');
         handleSessionTimeout();
         return;
       }
       const lastActivityTime = parseInt(lastActivity, 10);
       if (isNaN(lastActivityTime)) {
+        console.log('[Session] Periodic check: Invalid timestamp - logging out');
         handleSessionTimeout();
         return;
       }
       const now = Date.now();
-      if ((now - lastActivityTime) > SESSION_TIMEOUT_MS) {
+      const elapsed = now - lastActivityTime;
+      if (elapsed > SESSION_TIMEOUT_MS) {
+        console.log(`[Session] Periodic check: Expired (${Math.round(elapsed/1000)}s > ${Math.round(SESSION_TIMEOUT_MS/1000)}s) - logging out`);
         handleSessionTimeout();
       }
     };
 
     const handleSessionTimeout = () => {
-      console.log('[Session] Timeout due to inactivity - logging out');
+      console.log(`[Session] Timeout triggered - timeout was ${Math.round(SESSION_TIMEOUT_MS/1000)}s (${SESSION_TIMEOUT_MS}ms)`);
       // Clear all auth data
       localStorage.removeItem(AUTH_KEY);
       localStorage.removeItem(CHAT_KEY);
@@ -141,12 +173,14 @@ export function useAppState() {
       localStorage.removeItem(CHAT_TABS_KEY);
       localStorage.removeItem('thara_access_token');
       localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
+      localStorage.removeItem(SESSION_NAME_KEY); // Clear "Call me X" name
       // Reset state
       setAuth({ isAuthenticated: false, username: null });
       setMessages([]);
       setChatTabs([]);
       setActiveChatId(null);
       setConfig({ googleSheetUrl: null });
+      setSessionNameState('Boss'); // Reset to default
     };
 
     // Set initial activity timestamp on login
@@ -212,21 +246,36 @@ export function useAppState() {
     setAuth({ isAuthenticated: true, username });
   };
 
+  const setUsername = (newName: string) => {
+    // Update username (for "call me X" feature) - SESSION ONLY
+    // Deliberately NOT persisting to localStorage so it resets to "Boss" on logout/timeout
+    setAuth(prev => ({ ...prev, username: newName }));
+  };
+
+  // Set session name for "Call me X" feature - persists until session timeout
+  const setSessionName = (name: string) => {
+    setSessionNameState(name);
+    localStorage.setItem(SESSION_NAME_KEY, name);
+    console.log(`[Session] Name set to: ${name}`);
+  };
+
   const logout = () => {
     setAuth({ isAuthenticated: false, username: null });
     setMessages([]);
     setChatTabs([]);
     setActiveChatId(null);
     setConfig({ googleSheetUrl: null });
+    setSessionNameState('Boss'); // Reset to default
     localStorage.removeItem(AUTH_KEY);
     localStorage.removeItem(CHAT_KEY);
     localStorage.removeItem(CONFIG_KEY);
     localStorage.removeItem(CHAT_TABS_KEY);
     localStorage.removeItem('thara_access_token');
     localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
+    localStorage.removeItem(SESSION_NAME_KEY);
   };
 
-  const addMessage = (content: string, role: MessageRole = 'user', metadata?: Message['metadata']) => {
+  const addMessage = (content: string, role: MessageRole = 'user', metadata?: Message['metadata'], targetChatId?: string) => {
     const newMessage: Message = {
       id: Math.random().toString(36).substring(7),
       role,
@@ -236,9 +285,12 @@ export function useAppState() {
     };
     setMessages((prev) => [...prev, newMessage]);
 
-    if (activeChatId) {
+    // Use explicit targetChatId if provided, otherwise fall back to activeChatId
+    // This fixes the race condition when creating a new chat and immediately adding a message
+    const chatIdToUse = targetChatId || activeChatId;
+    if (chatIdToUse) {
       setChatTabs((prev) => prev.map((tab) =>
-        tab.id === activeChatId
+        tab.id === chatIdToUse
           ? { ...tab, messages: [...tab.messages, newMessage], updatedAt: Date.now() }
           : tab
       ));
@@ -347,10 +399,10 @@ export function useAppState() {
     return chatTabs.find((tab) => tab.id === activeChatId);
   };
 
-  const clearCurrentChat = () => {
+  const clearCurrentChat = async () => {
     if (!activeChatId) return;
 
-    // Clear messages but keep the chat tab and dataset connection
+    // Clear messages but keep the chat tab, dataset connection, and session name
     setMessages([]);
     setChatTabs((prev) =>
       prev.map((tab) =>
@@ -359,6 +411,14 @@ export function useAppState() {
           : tab
       )
     );
+
+    // Clear backend caches (query cache, context)
+    try {
+      const { api } = await import('../services/api');
+      await api.clearCache();
+    } catch (e) {
+      console.warn('[Session] Failed to clear backend cache:', e);
+    }
   };
 
   const setGoogleSheetUrl = (url: string | null) => {
@@ -372,8 +432,11 @@ export function useAppState() {
     chatTabs,
     activeChatId,
     isInitializing,
+    sessionName, // "Call me X" name - defaults to "Boss"
     login,
     logout,
+    setUsername,
+    setSessionName, // Set "Call me X" name
     addMessage,
     setMessages,
     setGoogleSheetUrl,

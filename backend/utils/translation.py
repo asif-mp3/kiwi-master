@@ -28,10 +28,10 @@ RULES:
 1. Map months to their English names (e.g., 'டிசம்பர்' -> 'December')
 2. Do not add specific dates (like '25') unless explicitly in the text
 3. IMPORTANT - Location hierarchy context:
-   - If asking "in [State X], which state/மாநிலம்..." → translate as "which branch/district in [State X]..."
+   - If asking "in [State X], which state/மாநிலம்..." -> translate as "which branch/district in [State X]..."
    - Because you cannot have a state inside another state, so the user means sub-units (branch/district)
    - Example: "தமிழ்நாட்டில் எந்த மாநிலம்" should become "which branch in Tamil Nadu" NOT "which state in Tamil Nadu"
-   - Similarly: "கர்நாடகாவில் எந்த மாநிலம்" → "which branch/district in Karnataka"
+   - Similarly: "கர்நாடகாவில் எந்த மாநிலம்" -> "which branch/district in Karnataka"
 4. Prepositions like "இல்" (in) attached to a location name indicate a FILTER, not a target
    - "தமிழ்நாட்டில்" (in Tamil Nadu) = filter by Tamil Nadu
    - "சென்னையில்" (in Chennai) = filter by Chennai
@@ -42,10 +42,10 @@ Text: {text}"""
         )
         english_text = response.text.strip()
         elapsed = (time.time() - start) * 1000
-        print(f"🔄 Translation (Tamil -> English): {text} -> {english_text} [{elapsed:.0f}ms]")
+        print(f"[TRANSLATE] Translation (Tamil -> English): {text} -> {english_text} [{elapsed:.0f}ms]")
         return english_text
     except Exception as e:
-        print(f"❌ Translation Error (to English): {e}")
+        print(f"[NO] Translation Error (to English): {e}")
         return text  # Fallback to original
 
 
@@ -60,8 +60,8 @@ def translate_to_tamil(text: str) -> str:
         )
         tamil_text = response.text.strip()
         elapsed = (time.time() - start) * 1000
-        print(f"🔄 Translation (English -> Tamil): {text} -> {tamil_text} [{elapsed:.0f}ms]")
+        print(f"[TRANSLATE] Translation (English -> Tamil): {text} -> {tamil_text} [{elapsed:.0f}ms]")
         return tamil_text
     except Exception as e:
-        print(f"❌ Translation Error (to Tamil): {e}")
+        print(f"[NO] Translation Error (to Tamil): {e}")
         return text  # Fallback to original

@@ -640,12 +640,12 @@ def _extract_table_reference(text: str) -> Optional[str]:
     Extract table/sheet reference from text.
 
     Examples:
-        "what is sheet 1" → "sheet 1"
-        "what is present in sheet four" → "sheet 4"
-        "describe the sales table" → "sales"
-        "tell me about Pincode sales" → "Pincode sales"
-        "what tables do I have" → None (general query)
-        "ஷீட் த்ரீயில் என்ன உள்ளது" → "sheet 3"
+        "what is sheet 1" -> "sheet 1"
+        "what is present in sheet four" -> "sheet 4"
+        "describe the sales table" -> "sales"
+        "tell me about Pincode sales" -> "Pincode sales"
+        "what tables do I have" -> None (general query)
+        "ஷீட் த்ரீயில் என்ன உள்ளது" -> "sheet 3"
     """
     # Word to number mapping (English + Tamil transliterations + Tamil numerals)
     word_to_num = {
@@ -1240,15 +1240,15 @@ def is_date_context_statement(text: str) -> Tuple[bool, Optional[Dict]]:
     Detect if the user is providing date/time context for queries.
 
     Examples:
-    - "Today is November 14th" → True, {month: 'November', day: 14}
-    - "Remember today is December" → True, {month: 'December'}
-    - "The date is January 1st" → True, {month: 'January', day: 1}
-    - "I mean today is 14th November 2025" → True, {month: 'November', day: 14, year: 2025}
+    - "Today is November 14th" -> True, {month: 'November', day: 14}
+    - "Remember today is December" -> True, {month: 'December'}
+    - "The date is January 1st" -> True, {month: 'January', day: 1}
+    - "I mean today is 14th November 2025" -> True, {month: 'November', day: 14, year: 2025}
 
     NOT date context (these are data queries WITH dates):
-    - "November 15th enna sales" → False (asking for sales data)
-    - "Show me December 10th revenue" → False (data query)
-    - "What were the transactions on October 5th?" → False (data query)
+    - "November 15th enna sales" -> False (asking for sales data)
+    - "Show me December 10th revenue" -> False (data query)
+    - "What were the transactions on October 5th?" -> False (data query)
 
     Args:
         text: User input text

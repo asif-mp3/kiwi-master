@@ -72,39 +72,65 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    - LOW row count (<50) = already summarized/grouped data = NEVER use for raw totals
 
 4. **Row Count Guide**:
-   - 5000+ rows = Transaction-level raw data → BEST for totals/counts
-   - 100-500 rows = Branch/item level data → Good for breakdowns
-   - 10-50 rows = Category/monthly summaries → Use only for summary questions
-   - 3-10 rows = Quarterly/annual summaries → NEVER use for "total" or "all" questions
+   - 5000+ rows = Transaction-level raw data -> BEST for totals/counts
+   - 100-500 rows = Branch/item level data -> Good for breakdowns
+   - 10-50 rows = Category/monthly summaries -> Use only for summary questions
+   - 3-10 rows = Quarterly/annual summaries -> NEVER use for "total" or "all" questions
 
 5. **CRITICAL: Time-Filtered Queries**:
    **RULE #2: For queries with TIME FILTERS, ALWAYS use TRANSACTIONAL tables with Date column**
    - Keywords: "last month", "last 3 months", "yesterday", "this week", "November", "October", etc.
    - Summary tables (10-50 rows) have PRE-AGGREGATED data - they CANNOT be filtered by date!
-   - Example: "category-wise sales for last 3 months" → MUST use Daily_Sales_Transactions (has Date column)
-   - Example: "sales in November" → MUST use table with Date column, NOT a summary table
+   - Example: "category-wise sales for last 3 months" -> MUST use Daily_Sales_Transactions (has Date column)
+   - Example: "sales in November" -> MUST use table with Date column, NOT a summary table
    - If question mentions ANY time period, use the HIGH ROW COUNT table with Date column
    - A Monthly_Category_Summary table shows ALL-TIME data, not filterable by date
 
 6. **CRITICAL: TREND Queries (time-series analysis)**:
    **RULE #3: For "trend", "over time", "growing", "declining", "pattern", "stable", "volatile", "consistent growth" - MUST use tables with ACTUAL Date column**
    - TREND analysis REQUIRES a table with a Date/DateTime column containing temporal data
-   - **LOOK FOR THE MARKERS**: Tables are marked with "✅ HAS DATE COLUMN" or "⚠️ NO DATE COLUMN"
-   - **ONLY use tables marked "✅ HAS DATE COLUMN" for ANY trend/time analysis!**
-   - **NEVER use tables marked "⚠️ NO DATE COLUMN" for trends** - they CANNOT show data over time!
+   - **LOOK FOR THE MARKERS**: Tables are marked with "[YES] HAS DATE COLUMN" or "[WARN] NO DATE COLUMN"
+   - **ONLY use tables marked "[YES] HAS DATE COLUMN" for ANY trend/time analysis!**
+   - **NEVER use tables marked "[WARN] NO DATE COLUMN" for trends** - they CANNOT show data over time!
    - **CRITICAL**: A column named "SKU_ID", "Transaction_ID", "Product_ID", "Item_ID" is an IDENTIFIER, NOT a date! NEVER use ID columns for trend X-axis!
-   - Example: "Is profit stable over time?" → Use table marked "✅ HAS DATE COLUMN"
-   - Example: "Which state has declining trend?" → Use table with Date AND State columns
-   - Example: "consistent growth across months?" → MUST use table marked "✅ HAS DATE COLUMN"
+   - Example: "Is profit stable over time?" -> Use table marked "[YES] HAS DATE COLUMN"
+   - Example: "Which state has declining trend?" -> Use table with Date AND State columns
+   - Example: "consistent growth across months?" -> MUST use table marked "[YES] HAS DATE COLUMN"
    - The table MUST have sufficient rows (100+) to show a meaningful trend over time
    - **IF NO TABLE HAS DATE COLUMN**: Return confidence 0.0 and explain that trend analysis is not possible with current data
 
-7. **Other Rules**:
+7. **CRITICAL: COMPARISON Queries**:
+   **RULE #4: For "compare X vs Y", "X versus Y", "which is better" - Use SUMMARY tables with pre-aggregated data**
+   - When comparing two states (TN vs KA): Use State_Performance or State summary table
+   - When comparing two categories (Sarees vs Dhoti): Use Category_Performance table
+   - When comparing two payment modes (UPI vs Cash): Use Payment_Mode_Analysis table
+   - When comparing two time periods (Q3 vs Q4): Use the table with those periods pre-aggregated
+   - **DO NOT use transaction tables for comparisons** - they require aggregation
+   - Look for tables with names containing: "Performance", "Summary", "Analysis"
+
+8. **CRITICAL: PERCENTAGE Queries**:
+   **RULE #5: For "percentage", "share", "contribution", "% of" - Match the dimension being asked**
+   - Payment mode question (UPI, Cash, Card, Online) -> Use table with "Payment" in name
+   - State question (Tamil Nadu, Karnataka) -> Use table with "State" in name
+   - Category question (Sarees, Dhoti) -> Use table with "Category" in name
+   - **MATCHING RULE**: The table name MUST contain the dimension being asked about:
+     - "UPI share" = payment dimension = find table with "Payment_Mode" in name
+     - "Tamil Nadu percentage" = state dimension = find table with "State" in name
+     - "Sarees contribution" = category dimension = find table with "Category" in name
+   - **DO NOT use State table for payment questions or vice versa!**
+
+9. **FILTER Queries (show data for X)**:
+   **RULE #6: For "sales in X", "show X transactions", "data for X" - Use TRANSACTION tables**
+   - These queries need to filter raw data, so use the HIGH ROW COUNT table
+   - "Sales in Tamil Nadu" -> Use Daily_Transactions (can filter by State column)
+   - "UPI transactions" -> Use Daily_Transactions (can filter by Payment_Mode column)
+   - **DO NOT use summary tables for filter queries** - they have pre-aggregated data
+
+10. **Other Rules**:
    - For "how many X" questions: Select the table with MOST rows that has X data
-   - For "percentage" questions: Need a table with the breakdown dimension
    - For "show all" questions: Need the detailed transaction-level table
 
-8. **Validate Your Choice**:
+11. **Validate Your Choice**:
    - Does this table have the column needed for filtering? (e.g., State column for "Tamil Nadu")
    - Does this table have the metric column? (e.g., Sales, Revenue, Amount)
    - Does this table contain the specific values mentioned? (e.g., "UPI" in Payment_Mode values)
@@ -196,25 +222,39 @@ def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
         # Check if this is a partial data or aggregated table
         name_lower = table_name.lower()
         is_partial = any(x in name_lower for x in ['top_', 'top20', 'top10'])
-        is_aggregated = any(x in name_lower for x in ['summary', 'quarterly', 'monthly', 'yearly', 'performance', 'overview'])
+        is_aggregated = any(x in name_lower for x in ['summary', 'quarterly', 'monthly', 'yearly', 'performance', 'overview', 'analysis'])
         is_transaction = any(x in name_lower for x in ['transaction', 'daily', 'detail', 'raw', 'order', 'sale'])
+
+        # Detect specific summary types for comparison/percentage queries
+        is_state_summary = 'state' in name_lower and is_aggregated
+        is_category_summary = 'category' in name_lower and is_aggregated
+        is_payment_summary = 'payment' in name_lower and is_aggregated
+        is_branch_summary = 'branch' in name_lower and is_aggregated
 
         # Build notes list
         notes = []
 
         # Date column indicator (CRITICAL for trend queries)
         if has_date_column:
-            notes.append(f"✅ HAS DATE COLUMN ({date_column_name}) - USE FOR TRENDS")
+            notes.append(f"[YES] HAS DATE COLUMN ({date_column_name}) - USE FOR TRENDS")
         else:
-            notes.append("⚠️ NO DATE COLUMN - CANNOT USE FOR TREND ANALYSIS")
+            notes.append("[WARN] NO DATE COLUMN - CANNOT USE FOR TREND ANALYSIS")
 
-        # Table type indicators
+        # Table type indicators with specific usage hints
         if is_partial:
             notes.append("PARTIAL DATA - Top N only, NOT for totals")
+        elif is_state_summary:
+            notes.append("STATE SUMMARY - USE FOR state comparisons & percentages")
+        elif is_category_summary:
+            notes.append("CATEGORY SUMMARY - USE FOR category comparisons & percentages")
+        elif is_payment_summary:
+            notes.append("PAYMENT SUMMARY - USE FOR payment mode comparisons & percentages")
+        elif is_branch_summary:
+            notes.append("BRANCH SUMMARY - USE FOR branch comparisons")
         elif is_aggregated:
-            notes.append("AGGREGATED/SUMMARY - Pre-computed, NOT for raw totals")
+            notes.append("AGGREGATED/SUMMARY - Pre-computed, USE FOR comparisons/percentages")
         elif is_transaction and row_count > 100:
-            notes.append("TRANSACTION-LEVEL - Use for totals/counts")
+            notes.append("TRANSACTION-LEVEL - Use for totals/counts/trends")
 
         note = " [" + " | ".join(notes) + "]" if notes else ""
 
@@ -262,10 +302,10 @@ def select_table_with_llm(
 
     if verbose:
         print("\n" + "="*60)
-        print("🤖 LLM TABLE SELECTOR")
+        print("[LLM] TABLE SELECTOR")
         print("="*60)
-        print(f"📝 Question: {question}")
-        print(f"\n📊 Tables provided to LLM:")
+        print(f"Question: {question}")
+        print(f"\nTables provided to LLM:")
         # Show summary of tables
         for line in table_context.split('\n'):
             if line.startswith('## '):
@@ -289,7 +329,7 @@ Analyze the question and select the BEST table to answer it. Consider:
 Output JSON only."""
 
         if verbose:
-            print(f"\n⏳ Calling LLM...")
+            print(f"\n... Calling LLM...")
 
         # Call with timeout
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -298,7 +338,7 @@ Output JSON only."""
                 response = future.result(timeout=timeout_seconds)
             except concurrent.futures.TimeoutError:
                 if verbose:
-                    print(f"❌ LLM TIMEOUT after {timeout_seconds}s")
+                    print(f"[NO] LLM TIMEOUT after {timeout_seconds}s")
                 return {
                     "selected_table": None,
                     "confidence": 0.0,
@@ -322,8 +362,8 @@ Output JSON only."""
         result = json.loads(response_text)
 
         if verbose:
-            print(f"✅ LLM responded in {elapsed:.2f}s")
-            print(f"\n🎯 LLM DECISION:")
+            print(f"[YES] LLM responded in {elapsed:.2f}s")
+            print(f"\n[RESULT] LLM DECISION:")
             print(f"   Table: {result.get('selected_table')}")
             print(f"   Confidence: {result.get('confidence', 0):.0%}")
             print(f"   Reason: {result.get('reason', 'N/A')}")
@@ -335,7 +375,7 @@ Output JSON only."""
 
     except Exception as e:
         if verbose:
-            print(f"❌ LLM ERROR: {str(e)}")
+            print(f"[NO] LLM ERROR: {str(e)}")
         return {
             "selected_table": None,
             "confidence": 0.0,
@@ -373,7 +413,7 @@ def select_table_hybrid(
         return (None, 0.0, "No tables available")
 
     if verbose:
-        print(f"\n📊 Available Tables ({len(profiles)}):")
+        print(f"\n[DATA] Available Tables ({len(profiles)}):")
         for name, prof in profiles.items():
             row_count = prof.get('row_count', 0)
             print(f"   • {name} ({row_count} rows)")
@@ -405,7 +445,7 @@ def select_table_hybrid(
                     )
 
             if verbose:
-                print(f"⚠️  LLM selected '{selected}' but table not found in profiles")
+                print(f"[WARN]  LLM selected '{selected}' but table not found in profiles")
 
     # Fallback: use semantic similarity scoring based on question keywords
     if profiles:
@@ -421,7 +461,7 @@ def select_table_hybrid(
             reverse=True
         )
         if verbose:
-            print(f"⚠️  Fallback: using largest table {sorted_tables[0][0]}")
+            print(f"[WARN]  Fallback: using largest table {sorted_tables[0][0]}")
         return (sorted_tables[0][0], 0.3, "Fallback: largest table")
 
     return (None, 0.0, "No tables available")
@@ -519,7 +559,7 @@ def _semantic_fallback_selection(
     table_scores.sort(key=lambda x: x[1], reverse=True)
 
     if verbose:
-        print(f"📊 Semantic fallback scores:")
+        print(f"[DATA] Semantic fallback scores:")
         for t, s in table_scores[:3]:
             print(f"   • {t}: {s}")
 

@@ -30,9 +30,9 @@ def run_sanity_checks(df, query_type=None, allow_nulls=True, allow_negatives=Tru
         for col in df.columns:
             null_pct = (df[col].isnull().sum() / len(df)) * 100
             if null_pct > max_null_percentage:
-                print(f"⚠️  Warning: Column '{col}' has {null_pct:.1f}% NULL values")
+                print(f"[WARN]  Warning: Column '{col}' has {null_pct:.1f}% NULL values")
             if null_pct == 100:
-                print(f"⚠️  Warning: Column '{col}' is completely NULL")
+                print(f"[WARN]  Warning: Column '{col}' is completely NULL")
     
     # Check for negative values (optional)
     if not allow_negatives:
@@ -43,13 +43,13 @@ def run_sanity_checks(df, query_type=None, allow_nulls=True, allow_negatives=Tru
     
     # Warn about very large result sets (potential performance issue)
     if len(df) > 10000:
-        print(f"⚠️  Warning: Large result set ({len(df):,} rows). Consider adding filters or limits.")
+        print(f"[WARN]  Warning: Large result set ({len(df):,} rows). Consider adding filters or limits.")
     
     # Check for suspicious data patterns
     for col in df.columns:
         if df[col].dtype.kind in "if":  # numeric types
             # Check for all zeros
             if (df[col].fillna(0) == 0).all():
-                print(f"⚠️  Warning: Column '{col}' contains only zeros")
+                print(f"[WARN]  Warning: Column '{col}' contains only zeros")
     
     return True

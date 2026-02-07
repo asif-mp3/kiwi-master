@@ -346,8 +346,8 @@ class QueryContext:
         Provides previous query context for follow-up understanding.
 
         CRITICAL for pronoun resolution:
-        - If user asks "Which state has highest profit?" → Answer: "West Bengal"
-        - Then user asks "In that state, which branch..." → "that state" = West Bengal
+        - If user asks "Which state has highest profit?" -> Answer: "West Bengal"
+        - Then user asks "In that state, which branch..." -> "that state" = West Bengal
         - We include result_values so LLM can resolve "that", "this", "in that"
         """
         if not self.turns:
@@ -375,13 +375,13 @@ class QueryContext:
                 for key, value in last_turn.result_values.items():
                     key_lower = key.lower()
                     if 'state' in key_lower:
-                        context_parts.append(f"  → 'that state' or 'in that state' refers to: {value}")
+                        context_parts.append(f"  -> 'that state' or 'in that state' refers to: {value}")
                     elif 'branch' in key_lower:
-                        context_parts.append(f"  → 'that branch' or 'in that branch' refers to: {value}")
+                        context_parts.append(f"  -> 'that branch' or 'in that branch' refers to: {value}")
                     elif 'area' in key_lower or 'region' in key_lower or 'location' in key_lower:
-                        context_parts.append(f"  → 'that area/region' refers to: {value}")
+                        context_parts.append(f"  -> 'that area/region' refers to: {value}")
                     elif 'category' in key_lower:
-                        context_parts.append(f"  → 'that category' refers to: {value}")
+                        context_parts.append(f"  -> 'that category' refers to: {value}")
 
         # Add filters
         if last_turn.filters_applied:

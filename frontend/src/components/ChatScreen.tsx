@@ -41,7 +41,10 @@ import {
   Search,
   PanelLeftClose,
   PanelLeft,
-  PhoneOff
+  PhoneOff,
+  BarChart3,
+  Quote,
+  TrendingUp
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
@@ -89,46 +92,50 @@ interface ChatScreenProps {
   username: string;
 }
 
-// Typing animation pill component
-function TypingPlaceholderPill({
+// Voice mode input - hybrid suggestion/text input component
+function VoiceModeInput({
   suggestions,
-  onSelect
+  onSend,
+  onOpenChat
 }: {
   suggestions: string[];
-  onSelect: (suggestion: string) => void;
+  onSend: (text: string) => void;
+  onOpenChat: () => void;
 }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [displayText, setDisplayText] = useState('');
   const [isTyping, setIsTyping] = useState(true);
+  const [isFocused, setIsFocused] = useState(false);
+  const [inputValue, setInputValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  // Typing animation for suggestions (only when not focused)
   useEffect(() => {
+    if (isFocused) return; // Stop animation when input is focused
+
     const currentSuggestion = suggestions[currentIndex];
     let charIndex = 0;
     let timeout: NodeJS.Timeout;
 
     if (isTyping) {
-      // Typing effect
       const typeChar = () => {
         if (charIndex <= currentSuggestion.length) {
           setDisplayText(currentSuggestion.slice(0, charIndex));
           charIndex++;
-          timeout = setTimeout(typeChar, 50); // Typing speed
+          timeout = setTimeout(typeChar, 50);
         } else {
-          // Pause at the end before erasing
           timeout = setTimeout(() => setIsTyping(false), 2000);
         }
       };
       typeChar();
     } else {
-      // Erasing effect
       let eraseIndex = currentSuggestion.length;
       const eraseChar = () => {
         if (eraseIndex >= 0) {
           setDisplayText(currentSuggestion.slice(0, eraseIndex));
           eraseIndex--;
-          timeout = setTimeout(eraseChar, 30); // Erasing speed (faster)
+          timeout = setTimeout(eraseChar, 30);
         } else {
-          // Move to next suggestion
           setCurrentIndex((prev) => (prev + 1) % suggestions.length);
           setIsTyping(true);
         }
@@ -137,32 +144,604 @@ function TypingPlaceholderPill({
     }
 
     return () => clearTimeout(timeout);
-  }, [currentIndex, isTyping, suggestions]);
+  }, [currentIndex, isTyping, suggestions, isFocused]);
+
+  const handleFocus = () => {
+    setIsFocused(true);
+    // Pre-fill with current suggestion if input is empty
+    if (!inputValue) {
+      setInputValue(suggestions[currentIndex]);
+    }
+  };
+
+  const handleBlur = () => {
+    // Only unfocus if input is empty
+    if (!inputValue.trim()) {
+      setIsFocused(false);
+      setInputValue('');
+    }
+  };
+
+  const handleSend = () => {
+    const textToSend = inputValue.trim() || suggestions[currentIndex];
+    if (textToSend) {
+      onSend(textToSend);
+      setInputValue('');
+      setIsFocused(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (inputValue.trim() || suggestions[currentIndex])) {
+      handleSend();
+    }
+    if (e.key === 'Escape') {
+      setInputValue('');
+      setIsFocused(false);
+      inputRef.current?.blur();
+    }
+  };
+
+  return (
+    <div className="group relative">
+      <div className={cn(
+        "flex items-center gap-2 sm:gap-3 h-11 sm:h-14 px-4 sm:px-6 rounded-full border backdrop-blur-xl shadow-lg shadow-black/20 transition-all duration-300",
+        isFocused
+          ? "bg-zinc-800/90 border-violet-500/50"
+          : "bg-zinc-900/80 border-zinc-700/50 hover:border-violet-500/30 cursor-text"
+      )}
+      onClick={() => {
+        if (!isFocused) {
+          setIsFocused(true);
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }
+      }}
+      >
+        <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400 shrink-0" />
+
+        <div className="flex-1 overflow-hidden relative">
+          {isFocused ? (
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
+              onKeyDown={handleKeyDown}
+              placeholder="Type your question..."
+              className="w-full bg-transparent text-zinc-200 text-xs sm:text-sm font-medium outline-none placeholder:text-zinc-500"
+              autoFocus
+            />
+          ) : (
+            <span className="text-zinc-400 text-xs sm:text-sm font-medium">
+              {displayText}
+              <motion.span
+                animate={{ opacity: [1, 0] }}
+                transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
+                className="inline-block w-0.5 h-3 sm:h-4 bg-violet-400 ml-0.5 align-middle"
+              />
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {isFocused ? (
+            <motion.button
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSend();
+              }}
+              className="p-2 rounded-full bg-violet-500 hover:bg-violet-400 transition-colors"
+            >
+              <Send className="w-4 h-4 text-white" />
+            </motion.button>
+          ) : (
+            <>
+              <span className="text-xs text-zinc-500 hidden sm:inline">Click to type</span>
+              <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-violet-400 transition-all" />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Live Captions Component - shows transcription and responses with word-by-word animation
+function LiveCaptions({
+  caption,
+  isRecording,
+  isProcessing,
+  isSpeaking
+}: {
+  caption: { text: string; type: 'user' | 'assistant' | 'status' } | null;
+  isRecording: boolean;
+  isProcessing: boolean;
+  isSpeaking: boolean;
+}) {
+  const [displayedWords, setDisplayedWords] = useState<string[]>([]);
+  const [currentWordIndex, setCurrentWordIndex] = useState(0);
+  const prevCaptionRef = useRef<string | null>(null);
+
+  // Word-by-word animation effect
+  useEffect(() => {
+    if (!caption?.text) {
+      setDisplayedWords([]);
+      setCurrentWordIndex(0);
+      prevCaptionRef.current = null;
+      return;
+    }
+
+    const words = caption.text.split(' ');
+
+    // If caption changed, reset and animate word by word
+    if (caption.text !== prevCaptionRef.current) {
+      prevCaptionRef.current = caption.text;
+      setDisplayedWords([]);
+      setCurrentWordIndex(0);
+
+      // Animate words appearing one by one
+      let wordIdx = 0;
+      const interval = setInterval(() => {
+        if (wordIdx < words.length) {
+          setDisplayedWords(prev => [...prev, words[wordIdx]]);
+          wordIdx++;
+        } else {
+          clearInterval(interval);
+        }
+      }, 80); // 80ms per word for natural speaking pace
+
+      return () => clearInterval(interval);
+    }
+  }, [caption?.text]);
+
+  const statusText = isRecording ? "Listening..." : isProcessing ? "Processing..." : "...";
 
   return (
     <motion.div
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={() => onSelect(suggestions[currentIndex])}
-      className="group relative cursor-pointer"
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="hidden lg:flex flex-col items-end justify-center h-full pr-8 max-w-xs"
     >
-      <div className="flex items-center gap-2 sm:gap-3 h-11 sm:h-14 px-4 sm:px-6 rounded-full bg-zinc-900/80 border border-zinc-700/50 hover:border-violet-500/50 hover:bg-zinc-800/80 transition-all duration-300 backdrop-blur-xl shadow-lg shadow-black/20">
-        <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400 shrink-0" />
-        <div className="flex-1 overflow-hidden">
-          <span className="text-zinc-400 text-xs sm:text-sm font-medium">
-            {displayText}
-            <motion.span
-              animate={{ opacity: [1, 0] }}
-              transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
-              className="inline-block w-0.5 h-3 sm:h-4 bg-violet-400 ml-0.5 align-middle"
-            />
-          </span>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs text-zinc-500 hidden sm:inline">Click to ask</span>
-          <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-violet-400 group-hover:translate-x-0.5 transition-all" />
-        </div>
-      </div>
+      <AnimatePresence mode="wait">
+        {(isRecording || isProcessing || isSpeaking || caption) && (
+          <motion.div
+            key={caption?.type || 'status'}
+            initial={{ opacity: 0, y: 10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -10, scale: 0.95 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className="relative"
+          >
+            {/* Quote decoration */}
+            <Quote className="absolute -top-2 -left-4 w-6 h-6 text-violet-500/30 rotate-180" />
+
+            <div className={cn(
+              "relative p-4 rounded-2xl backdrop-blur-sm max-w-[280px]",
+              caption?.type === 'user'
+                ? "bg-violet-500/10 border border-violet-500/20"
+                : caption?.type === 'assistant'
+                  ? "bg-purple-500/10 border border-purple-500/20"
+                  : "bg-zinc-800/50 border border-zinc-700/30"
+            )}>
+              {/* Status indicator */}
+              <div className="flex items-center gap-2 mb-2">
+                {isRecording && (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
+                    <span className="text-xs text-violet-400 font-medium">You</span>
+                  </>
+                )}
+                {isProcessing && !isRecording && !isSpeaking && (
+                  <>
+                    <Loader2 className="w-3 h-3 text-cyan-400 animate-spin" />
+                    <span className="text-xs text-cyan-400 font-medium">Thinking</span>
+                  </>
+                )}
+                {isSpeaking && (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                    <span className="text-xs text-purple-400 font-medium">Thara</span>
+                  </>
+                )}
+              </div>
+
+              {/* Caption text with word-by-word animation */}
+              <p className={cn(
+                "text-sm leading-relaxed",
+                caption?.type === 'user' ? "text-violet-200" :
+                caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
+              )}>
+                {caption?.text ? (
+                  <>
+                    {displayedWords.map((word, idx) => (
+                      <motion.span
+                        key={`${idx}-${word}`}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="inline"
+                      >
+                        {word}{' '}
+                      </motion.span>
+                    ))}
+                    {displayedWords.length < (caption.text.split(' ').length) && (
+                      <motion.span
+                        animate={{ opacity: [0.3, 1, 0.3] }}
+                        transition={{ duration: 0.8, repeat: Infinity }}
+                        className="inline-block w-1.5 h-4 bg-current align-middle ml-0.5"
+                      />
+                    )}
+                  </>
+                ) : statusText}
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Idle state hint */}
+      {!isRecording && !isProcessing && !isSpeaking && !caption && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-right"
+        >
+          <p className="text-xs text-zinc-600 mb-1">Live captions</p>
+          <p className="text-[10px] text-zinc-700">appear here</p>
+        </motion.div>
+      )}
+    </motion.div>
+  );
+}
+
+// Mobile Captions Component - shows below voice button with word-by-word animation
+function MobileCaptions({
+  caption,
+  isRecording,
+  isProcessing,
+  isSpeaking,
+  onOpenChat
+}: {
+  caption: { text: string; type: 'user' | 'assistant' | 'status' } | null;
+  isRecording: boolean;
+  isProcessing: boolean;
+  isSpeaking: boolean;
+  onOpenChat: () => void;
+}) {
+  const [displayedWords, setDisplayedWords] = useState<string[]>([]);
+  const [isTruncated, setIsTruncated] = useState(false);
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const prevCaptionRef = useRef<string | null>(null);
+
+  // Word-by-word animation effect
+  useEffect(() => {
+    if (!caption?.text) {
+      setDisplayedWords([]);
+      prevCaptionRef.current = null;
+      return;
+    }
+
+    const words = caption.text.split(' ');
+
+    if (caption.text !== prevCaptionRef.current) {
+      prevCaptionRef.current = caption.text;
+      setDisplayedWords([]);
+
+      let wordIdx = 0;
+      const interval = setInterval(() => {
+        if (wordIdx < words.length) {
+          setDisplayedWords(prev => [...prev, words[wordIdx]]);
+          wordIdx++;
+        } else {
+          clearInterval(interval);
+        }
+      }, 80);
+
+      return () => clearInterval(interval);
+    }
+  }, [caption?.text]);
+
+  // Check if text is truncated
+  useEffect(() => {
+    if (textRef.current) {
+      const el = textRef.current;
+      setIsTruncated(el.scrollHeight > el.clientHeight);
+    }
+  }, [displayedWords]);
+
+  if (!isRecording && !isProcessing && !isSpeaking && !caption) {
+    return null;
+  }
+
+  return (
+    <AnimatePresence mode="wait">
+      {(isRecording || isProcessing || isSpeaking || caption) && (
+        <motion.div
+          key={caption?.type || 'status'}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -10 }}
+          className="lg:hidden w-full max-w-sm mx-auto px-4 mb-4"
+        >
+          <button
+            onClick={onOpenChat}
+            className={cn(
+              "w-full p-3 rounded-xl backdrop-blur-sm text-center transition-all",
+              "hover:scale-[1.02] active:scale-[0.98] cursor-pointer",
+              caption?.type === 'user'
+                ? "bg-violet-500/10 border border-violet-500/20 hover:bg-violet-500/15"
+                : caption?.type === 'assistant'
+                  ? "bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/15"
+                  : "bg-zinc-800/30 border border-zinc-700/20 hover:bg-zinc-800/40"
+            )}
+          >
+            <div className="flex items-center justify-center gap-2 mb-1">
+              {isRecording && <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />}
+              {isProcessing && !isRecording && !isSpeaking && (
+                <Loader2 className="w-3 h-3 text-cyan-400 animate-spin" />
+              )}
+              {isSpeaking && <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />}
+              <span className={cn(
+                "text-xs font-medium",
+                isRecording ? "text-violet-400" :
+                isSpeaking ? "text-purple-400" :
+                isProcessing ? "text-cyan-400" : "text-zinc-500"
+              )}>
+                {isRecording ? "You" : isSpeaking ? "Thara" : "Processing"}
+              </span>
+            </div>
+            <p
+              ref={textRef}
+              className={cn(
+                "text-sm line-clamp-3",
+                caption?.type === 'user' ? "text-violet-200" :
+                caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
+              )}
+            >
+              {caption?.text ? (
+                <>
+                  {displayedWords.map((word, idx) => (
+                    <motion.span
+                      key={`${idx}-${word}`}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.1 }}
+                      className="inline"
+                    >
+                      {word}{' '}
+                    </motion.span>
+                  ))}
+                  {displayedWords.length < (caption.text.split(' ').length) && (
+                    <motion.span
+                      animate={{ opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 0.6, repeat: Infinity }}
+                      className="inline-block w-1 h-3 bg-current align-middle ml-0.5"
+                    />
+                  )}
+                </>
+              ) : (isRecording ? "Listening..." : "Working on it...")}
+            </p>
+            {/* Tap to view more hint when truncated */}
+            {isTruncated && caption?.text && displayedWords.length >= caption.text.split(' ').length && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-2 text-xs text-zinc-500 flex items-center justify-center gap-1"
+              >
+                <span>Tap to view full response</span>
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </motion.div>
+            )}
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// Visualization Panel Component - shows charts on the right side with context
+function VisualizationPanel({
+  visualization,
+  messages
+}: {
+  visualization: any;
+  messages: any[];
+}) {
+  // Find the most recent visualization from messages if not provided
+  const displayViz = visualization || messages
+    .slice()
+    .reverse()
+    .find(m => m.metadata?.visualization)?.metadata?.visualization;
+
+  // Helper to format numbers in Indian style
+  const formatValue = (val: number) => {
+    if (val >= 10000000) return `₹${(val / 10000000).toFixed(1)} Cr`;
+    if (val >= 100000) return `₹${(val / 100000).toFixed(1)} L`;
+    if (val >= 1000) return `₹${(val / 1000).toFixed(1)} K`;
+    return val.toLocaleString('en-IN');
+  };
+
+  // Get trend info for line charts
+  const getTrendInfo = (data: any[]) => {
+    if (!data || data.length < 2) return null;
+    const first = data[0]?.value || 0;
+    const last = data[data.length - 1]?.value || 0;
+    const change = last - first;
+    const percentChange = first > 0 ? ((change / first) * 100).toFixed(1) : 0;
+    const isUp = change > 0;
+    return { first, last, change, percentChange, isUp, firstLabel: data[0]?.name, lastLabel: data[data.length - 1]?.name };
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="hidden lg:flex flex-col items-start justify-center h-full pl-8 max-w-sm"
+    >
+      <AnimatePresence mode="wait">
+        {displayViz ? (
+          <motion.div
+            key={displayViz.title}
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+            className="w-full max-w-[320px]"
+          >
+            {/* Chart header with icon */}
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-1.5 rounded-lg bg-violet-500/20">
+                {displayViz.type === 'line' ? (
+                  <TrendingUp className="w-4 h-4 text-violet-400" />
+                ) : (
+                  <BarChart3 className="w-4 h-4 text-violet-400" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-sm font-medium text-zinc-300 block truncate">
+                  {displayViz.title}
+                </span>
+                <span className="text-[10px] text-zinc-500">
+                  {displayViz.data?.length || 0} data points
+                </span>
+              </div>
+            </div>
+
+            {/* Mini chart preview with values */}
+            <div className="relative p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800/50 backdrop-blur-sm">
+              {displayViz.type === 'metric_card' ? (
+                // Metric card display
+                <div className="text-center py-2">
+                  <p className="text-xs text-zinc-500 mb-1">{displayViz.title}</p>
+                  <div className="text-3xl font-bold text-violet-400">
+                    {typeof displayViz.data?.value === 'number'
+                      ? displayViz.data.is_percentage
+                        ? `${displayViz.data.value.toFixed(1)}%`
+                        : formatValue(displayViz.data.value)
+                      : displayViz.data?.value}
+                  </div>
+                  {displayViz.data?.supporting_text && (
+                    <p className="text-xs text-zinc-500 mt-2">{displayViz.data.supporting_text}</p>
+                  )}
+                </div>
+              ) : displayViz.type === 'bar' || displayViz.type === 'horizontal_bar' ? (
+                // Bar chart with values
+                <div className="space-y-2">
+                  {(displayViz.data || []).slice(0, 4).map((item: any, idx: number) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex justify-between text-[10px]">
+                        <span className="text-zinc-400 truncate max-w-[120px]">{item.name}</span>
+                        <span className="text-violet-400 font-medium">{formatValue(item.value)}</span>
+                      </div>
+                      <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min((item.value / Math.max(...displayViz.data.map((d: any) => d.value))) * 100, 100)}%` }}
+                          transition={{ duration: 0.8, delay: idx * 0.1 }}
+                          className="h-full rounded-full"
+                          style={{ backgroundColor: displayViz.colors?.[idx % 5] || '#8B5CF6' }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {displayViz.data?.length > 4 && (
+                    <p className="text-[10px] text-zinc-600 text-center pt-1">+{displayViz.data.length - 4} more items</p>
+                  )}
+                </div>
+              ) : displayViz.type === 'line' ? (
+                // Line chart with trend summary
+                <div className="space-y-3">
+                  {/* Trend summary */}
+                  {(() => {
+                    const trend = getTrendInfo(displayViz.data);
+                    if (!trend) return null;
+                    return (
+                      <div className="flex justify-between items-center text-xs">
+                        <div>
+                          <p className="text-zinc-500">{trend.firstLabel}</p>
+                          <p className="text-zinc-300 font-medium">{formatValue(trend.first)}</p>
+                        </div>
+                        <div className={cn(
+                          "flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium",
+                          trend.isUp ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                        )}>
+                          {trend.isUp ? '↑' : '↓'} {Math.abs(Number(trend.percentChange))}%
+                        </div>
+                        <div className="text-right">
+                          <p className="text-zinc-500">{trend.lastLabel}</p>
+                          <p className="text-zinc-300 font-medium">{formatValue(trend.last)}</p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  {/* Sparkline */}
+                  <div className="h-12 flex items-end gap-0.5">
+                    {(displayViz.data || []).slice(0, 12).map((item: any, idx: number) => {
+                      const maxVal = Math.max(...displayViz.data.map((d: any) => d.value));
+                      const height = maxVal > 0 ? (item.value / maxVal) * 100 : 0;
+                      return (
+                        <motion.div
+                          key={idx}
+                          initial={{ height: 0 }}
+                          animate={{ height: `${height}%` }}
+                          transition={{ duration: 0.5, delay: idx * 0.05 }}
+                          className="flex-1 bg-gradient-to-t from-violet-600 to-violet-400 rounded-t"
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : displayViz.type === 'pie' ? (
+                // Pie chart with values
+                <div className="space-y-1.5">
+                  {(displayViz.data || []).slice(0, 4).map((item: any, idx: number) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: displayViz.colors?.[idx % 5] || '#8B5CF6' }}
+                      />
+                      <span className="text-[10px] text-zinc-400 flex-1 truncate">{item.name}</span>
+                      <span className="text-[10px] text-violet-400 font-medium">{formatValue(item.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                // Fallback
+                <div className="text-center py-4">
+                  <BarChart3 className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                  <p className="text-xs text-zinc-500">Chart available</p>
+                </div>
+              )}
+
+              {/* Subtle glow effect */}
+              <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-violet-500/5 to-transparent pointer-events-none" />
+            </div>
+
+            <p className="text-[10px] text-zinc-600 text-center mt-2">
+              Click Chat for detailed view
+            </p>
+          </motion.div>
+        ) : (
+          // Empty state
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-left"
+          >
+            <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/30 mb-2">
+              <BarChart3 className="w-6 h-6 text-zinc-700 mx-auto" />
+            </div>
+            <p className="text-xs text-zinc-600 mb-1">Visualizations</p>
+            <p className="text-[10px] text-zinc-700">appear here</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -203,7 +782,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     renameChat,
     getCurrentChat,
     setDatasetForChat,
-    clearCurrentChat
+    clearCurrentChat,
+    sessionName  // "Call me X" name - defaults to "Boss"
   } = useAppState();
 
   const [isRecording, setIsRecording] = useState(false);
@@ -276,6 +856,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
   // Follow-up suggestions state - refreshed after each assistant response
   const [followUpSuggestions, setFollowUpSuggestions] = useState<string[]>(() => getRandomSuggestions());
+
+  // Live caption state for voice mode UI - shows transcription and responses
+  const [liveCaption, setLiveCaption] = useState<{ text: string; type: 'user' | 'assistant' | 'status' } | null>(null);
+  // Track last visualization for right panel display
+  const [lastVisualization, setLastVisualization] = useState<any>(null);
 
   // Helper to detect concluding/farewell phrases
   const isConcludingPhrase = (text: string): boolean => {
@@ -545,16 +1130,28 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
     // Call API with delay
     try {
-      const response = await api.sendMessage(content);
+      const response = await api.sendMessage(content, sessionName);
 
       if (response.success) {
-        addMessage(response.explanation, 'assistant', {
+        const explanationText = response.explanation || "Here's what I found.";
+
+        addMessage(explanationText, 'assistant', {
           plan: response.plan,
           data: response.data,
           schema_context: response.schema_context,
           data_refreshed: response.data_refreshed,
           visualization: response.visualization
         });
+
+        // Update live caption with response (for voice mode display)
+        if (isVoiceInput) {
+          setLiveCaption({ text: explanationText, type: 'assistant' });
+        }
+
+        // Update visualization panel if response has visualization
+        if (response.visualization) {
+          setLastVisualization(response.visualization);
+        }
 
         // Auto-expand Query Plan if available
         if (response.plan) {
@@ -570,11 +1167,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
         // Play TTS response with Rachel voice
         console.log('🔊 shouldPlayTTS:', shouldPlayTTS);
-        console.log('📝 Response explanation:', response.explanation.substring(0, 50));
+        console.log('📝 Response explanation:', explanationText.substring(0, 50));
 
         if (shouldPlayTTS) {
           console.log('✅ Playing TTS...');
-          await playTextToSpeech(response.explanation);
+          await playTextToSpeech(explanationText);
         } else {
           console.log('⚠️ TTS disabled (flag not set)');
           // Clear processing state since we're not playing TTS
@@ -582,6 +1179,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           setIsProcessingVoice(false);
           setIsCurrentInputVoice(false);
           setHasTamilInput(false);
+          // Clear caption after a delay when not using TTS
+          setTimeout(() => setLiveCaption(null), 5000);
         }
 
       } else {
@@ -665,6 +1264,14 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         setSpeakingMessageId(null);
         audioRef.current = null;
         URL.revokeObjectURL(audioUrl);
+
+        // Clear live caption after TTS ends (with delay for readability)
+        setTimeout(() => {
+          // Only clear if not recording (new question might be coming)
+          if (!shouldResumeRecording.current) {
+            setLiveCaption(null);
+          }
+        }, 2000);
 
         // Auto-resume recording if in always-on mode
         // Use ref (shouldResumeRecording) instead of state (isAlwaysOnMode) to avoid stale closure
@@ -789,6 +1396,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             return;
           }
 
+          // Update live caption with user's transcribed text
+          setLiveCaption({ text, type: 'user' });
+
           // Check if this is a concluding phrase (thank you, bye, etc.)
           if (isConcludingPhrase(text)) {
             console.log('👋 Concluding phrase detected in resumed recording:', text);
@@ -800,6 +1410,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             const farewellMsg = getFarewellResponse();
             addMessage(farewellMsg, 'assistant');
 
+            // Update caption with farewell response
+            setLiveCaption({ text: farewellMsg, type: 'assistant' });
+
             // Play farewell TTS
             setIsVoiceMode(true);
             await playTextToSpeech(farewellMsg);
@@ -809,6 +1422,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             shouldResumeRecording.current = false;
             setIsFullscreenVoice(false);
             setIsProcessingVoice(false);
+
+            // Clear caption after farewell
+            setTimeout(() => setLiveCaption(null), 3000);
 
             toast.success("Conversation ended", { description: "Tap mic to start again" });
             return;
@@ -1024,8 +1640,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             if (!text || text.trim() === '') {
               console.warn('⚠️ Empty transcription result');
               toast.error("No speech detected", { description: "Please try speaking again." });
+              setLiveCaption(null);
               return;
             }
+
+            // Update live caption with user's transcribed text
+            setLiveCaption({ text, type: 'user' });
 
             // Check if this is a concluding phrase (thank you, bye, etc.)
             if (isConcludingPhrase(text)) {
@@ -1038,6 +1658,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
               const farewellMsg = getFarewellResponse();
               addMessage(farewellMsg, 'assistant');
 
+              // Update caption with farewell response
+              setLiveCaption({ text: farewellMsg, type: 'assistant' });
+
               // Play farewell TTS
               setIsVoiceMode(true);
               await playTextToSpeech(farewellMsg);
@@ -1047,6 +1670,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
               shouldResumeRecording.current = false;
               setIsFullscreenVoice(false);
               setIsProcessingVoice(false);
+
+              // Clear caption after farewell
+              setTimeout(() => setLiveCaption(null), 3000);
 
               toast.success("Conversation ended", { description: "Tap mic to start again" });
               return;
@@ -1696,185 +2322,172 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 1.05 }}
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                className="relative z-10 w-full max-w-3xl flex flex-col items-center justify-between h-full py-4 sm:py-8 gap-2 sm:gap-4 px-4 sm:px-6 overflow-hidden"
+                className="relative z-10 w-full h-full flex items-center justify-center overflow-hidden"
               >
-                <div className="flex-1 flex flex-col items-center justify-center gap-4 sm:gap-8 w-full min-h-0">
-                  {/* Brand Header */}
-                  <motion.div
-                    initial={{ opacity: 0, y: -20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                    className="text-center space-y-2"
-                  >
-                    <h1 className="text-2xl sm:text-3xl md:text-4xl font-display font-bold tracking-tight">
-                      {isRecording ? (
-                        <span className="text-violet-400">Listening<span className="animate-pulse">...</span></span>
-                      ) : (isProcessingVoice || isProcessingQuery) ? (
-                        <span className="text-cyan-400">Processing<span className="animate-pulse">...</span></span>
-                      ) : isSpeaking ? (
-                        <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
-                      ) : (
-                        <>Hello <span className="gradient-text">{username}</span></>
-                      )}
-                    </h1>
-                    <p className="text-zinc-500 text-xs sm:text-sm font-medium max-w-md mx-auto px-4">
-                      {isRecording
-                        ? "Voice captured securely"
-                        : (isProcessingVoice || isProcessingQuery)
-                          ? "Working on your request..."
-                          : isSpeaking
-                            ? "Tap to stop"
-                            : "Tap to start voice conversation"}
-                    </p>
-                  </motion.div>
+                {/* 3-Column Layout: Captions | Voice | Visualization */}
+                <div className="w-full h-full grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 sm:px-6 lg:px-8">
 
-                  {/* Voice Visualizer - always show in voice mode */}
-                  {/* Animate based on state: recording, speaking, or idle */}
-                  <VoiceVisualizer
+                  {/* LEFT: Live Captions Panel */}
+                  <LiveCaptions
+                    caption={liveCaption}
                     isRecording={isRecording}
-                    isSpeaking={isSpeaking || isProcessingVoice || isProcessingQuery}
+                    isProcessing={isProcessingVoice || isProcessingQuery}
+                    isSpeaking={isSpeaking}
                   />
 
-                  {/* Voice Button - supports push-to-talk on mobile */}
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    animate={isRecording ? {
-                      scale: [1, 1.05, 1],
-                    } : {}}
-                    transition={isRecording ? {
-                      duration: 1.5,
-                      repeat: Infinity,
-                      ease: "easeInOut"
-                    } : {}}
-                    onClick={() => {
-                      // If speaking, stop TTS
-                      if (isSpeaking) {
-                        stopTextToSpeech();
-                        return;
-                      }
-                      // Toggle recording on/off
-                      handleVoiceToggle();
-                    }}
-                    aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : "Tap to start recording"}
-                    className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
-                      isRecording
-                        ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
-                        : isSpeaking
-                          ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
+                  {/* CENTER: Main Voice Interface */}
+                  <div className="flex flex-col items-center justify-center gap-4 sm:gap-6 py-4 sm:py-8 max-w-md mx-auto">
+                    {/* Brand Header */}
+                    <motion.div
+                      initial={{ opacity: 0, y: -20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2 }}
+                      className="text-center space-y-2"
+                    >
+                      <h1 className="text-2xl sm:text-3xl md:text-4xl font-display font-bold tracking-tight">
+                        {isRecording ? (
+                          <span className="text-violet-400">Listening<span className="animate-pulse">...</span></span>
+                        ) : (isProcessingVoice || isProcessingQuery) ? (
+                          <span className="text-cyan-400">Processing<span className="animate-pulse">...</span></span>
+                        ) : isSpeaking ? (
+                          <span className="text-purple-400">Speaking<span className="animate-pulse">...</span></span>
+                        ) : (
+                          <>Hello <span className="gradient-text">{sessionName}</span></>
+                        )}
+                      </h1>
+                      <p className="text-zinc-500 text-xs sm:text-sm font-medium max-w-md mx-auto px-4">
+                        {isRecording
+                          ? "Voice captured securely"
                           : (isProcessingVoice || isProcessingQuery)
-                            ? 'bg-cyan-500/20 border-2 border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'
-                            : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
-                      }`}
-                  >
-                    {/* Pulsing ring when recording */}
-                    {isRecording && (
-                      <motion.span
-                        className="absolute inset-0 rounded-full bg-violet-500"
-                        animate={{
-                          scale: [1, 1.5],
-                          opacity: [0.4, 0]
-                        }}
-                        transition={{
-                          duration: 1.2,
-                          repeat: Infinity,
-                          ease: "easeOut"
-                        }}
-                      />
-                    )}
-                    {/* Pulsing ring when speaking */}
-                    {isSpeaking && (
-                      <motion.span
-                        className="absolute inset-0 rounded-full bg-red-500"
-                        animate={{
-                          scale: [1, 1.5],
-                          opacity: [0.4, 0]
-                        }}
-                        transition={{
-                          duration: 1.2,
-                          repeat: Infinity,
-                          ease: "easeOut"
-                        }}
-                      />
-                    )}
-                    {/* Pulsing ring when processing */}
-                    {(isProcessingVoice || isProcessingQuery) && !isRecording && !isSpeaking && (
-                      <motion.span
-                        className="absolute inset-0 rounded-full border-2 border-cyan-500"
-                        animate={{
-                          scale: [1, 1.3],
-                          opacity: [0.6, 0]
-                        }}
-                        transition={{
-                          duration: 1.5,
-                          repeat: Infinity,
-                          ease: "easeOut"
-                        }}
-                      />
-                    )}
-                    <AnimatePresence mode="wait">
-                      {isSpeaking ? (
-                        <motion.div
-                          key="stop-speaking"
-                          initial={{ scale: 0, rotate: -90 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          exit={{ scale: 0, rotate: 90 }}
-                        >
-                          <StopCircle className="w-6 h-6 text-white" />
-                        </motion.div>
-                      ) : isRecording ? (
-                        <motion.div
-                          key="stop"
-                          initial={{ scale: 0, rotate: -90 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          exit={{ scale: 0, rotate: 90 }}
-                        >
-                          <Square className="w-6 h-6 text-white fill-current" />
-                        </motion.div>
-                      ) : isProcessingVoice ? (
-                        <motion.div
-                          key="loading"
-                          initial={{ scale: 0, rotate: 90 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          exit={{ scale: 0, rotate: -90 }}
-                        >
-                          <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                        </motion.div>
-                      ) : (
-                        <motion.div
-                          key="mic"
-                          initial={{ scale: 0, rotate: 90 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          exit={{ scale: 0, rotate: -90 }}
-                        >
-                          <Mic className="w-6 h-6 text-muted-foreground" />
-                        </motion.div>
+                            ? "Working on your request..."
+                            : isSpeaking
+                              ? "Tap to stop"
+                              : "Tap to start voice conversation"}
+                      </p>
+                    </motion.div>
+
+                    {/* Voice Visualizer */}
+                    <VoiceVisualizer
+                      isRecording={isRecording}
+                      isSpeaking={isSpeaking || isProcessingVoice || isProcessingQuery}
+                    />
+
+                    {/* Voice Button */}
+                    <motion.button
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      animate={isRecording ? {
+                        scale: [1, 1.05, 1],
+                      } : {}}
+                      transition={isRecording ? {
+                        duration: 1.5,
+                        repeat: Infinity,
+                        ease: "easeInOut"
+                      } : {}}
+                      onClick={() => {
+                        if (isSpeaking) {
+                          stopTextToSpeech();
+                          return;
+                        }
+                        handleVoiceToggle();
+                      }}
+                      aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : "Tap to start recording"}
+                      className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
+                        isRecording
+                          ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
+                          : isSpeaking
+                            ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
+                            : (isProcessingVoice || isProcessingQuery)
+                              ? 'bg-cyan-500/20 border-2 border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'
+                              : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
+                        }`}
+                    >
+                      {/* Pulsing ring when recording */}
+                      {isRecording && (
+                        <motion.span
+                          className="absolute inset-0 rounded-full bg-violet-500"
+                          animate={{ scale: [1, 1.5], opacity: [0.4, 0] }}
+                          transition={{ duration: 1.2, repeat: Infinity, ease: "easeOut" }}
+                        />
                       )}
-                    </AnimatePresence>
-                  </motion.button>
-                </div>
+                      {/* Pulsing ring when speaking */}
+                      {isSpeaking && (
+                        <motion.span
+                          className="absolute inset-0 rounded-full bg-red-500"
+                          animate={{ scale: [1, 1.5], opacity: [0.4, 0] }}
+                          transition={{ duration: 1.2, repeat: Infinity, ease: "easeOut" }}
+                        />
+                      )}
+                      {/* Pulsing ring when processing */}
+                      {(isProcessingVoice || isProcessingQuery) && !isRecording && !isSpeaking && (
+                        <motion.span
+                          className="absolute inset-0 rounded-full border-2 border-cyan-500"
+                          animate={{ scale: [1, 1.3], opacity: [0.6, 0] }}
+                          transition={{ duration: 1.5, repeat: Infinity, ease: "easeOut" }}
+                        />
+                      )}
+                      <AnimatePresence mode="wait">
+                        {isSpeaking ? (
+                          <motion.div key="stop-speaking" initial={{ scale: 0, rotate: -90 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0, rotate: 90 }}>
+                            <StopCircle className="w-6 h-6 text-white" />
+                          </motion.div>
+                        ) : isRecording ? (
+                          <motion.div key="stop" initial={{ scale: 0, rotate: -90 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0, rotate: 90 }}>
+                            <Square className="w-6 h-6 text-white fill-current" />
+                          </motion.div>
+                        ) : isProcessingVoice ? (
+                          <motion.div key="loading" initial={{ scale: 0, rotate: 90 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0, rotate: -90 }}>
+                            <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                          </motion.div>
+                        ) : (
+                          <motion.div key="mic" initial={{ scale: 0, rotate: 90 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0, rotate: -90 }}>
+                            <Mic className="w-6 h-6 text-muted-foreground" />
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </motion.button>
 
-                {/* Animated Suggestion Pill */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 }}
-                  className="w-full max-w-xl mx-auto px-4"
-                >
-                  <TypingPlaceholderPill
-                    suggestions={[
-                      "Which month recorded the highest total profit?",
-                      "Are sales increasing or decreasing in Chennai?",
-                      "Which category shows consistent growth?",
-                      "How many transactions were made using UPI?"
-                    ]}
-                    onSelect={(suggestion) => {
-                      setInputMessage(suggestion);
-                      setShowChat(true);
-                    }}
+                    {/* Mobile Caption Display - shows below voice button on small screens */}
+                    <MobileCaptions
+                      caption={liveCaption}
+                      isRecording={isRecording}
+                      isProcessing={isProcessingVoice || isProcessingQuery}
+                      isSpeaking={isSpeaking}
+                      onOpenChat={() => setShowChat(true)}
+                    />
+
+                    {/* Animated Suggestion Pill */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.2 }}
+                      className="w-full max-w-xl mx-auto px-4"
+                    >
+                      <VoiceModeInput
+                        suggestions={[
+                          "Which month recorded the highest total profit?",
+                          "Are sales increasing or decreasing in Chennai?",
+                          "Which category shows consistent growth?",
+                          "How many transactions were made using UPI?"
+                        ]}
+                        onSend={(text) => {
+                          setShowChat(true);
+                          // Small delay to ensure chat is visible before sending
+                          setTimeout(() => {
+                            handleSendMessage(text, false, false);
+                          }, 100);
+                        }}
+                        onOpenChat={() => setShowChat(true)}
+                      />
+                    </motion.div>
+                  </div>
+
+                  {/* RIGHT: Visualization Panel */}
+                  <VisualizationPanel
+                    visualization={lastVisualization}
+                    messages={messages}
                   />
-                </motion.div>
-
+                </div>
               </motion.div>
             ) : (
               <motion.div

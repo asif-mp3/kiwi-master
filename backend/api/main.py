@@ -9,6 +9,65 @@ Updated with:
 - Conversation context management
 """
 
+# CRITICAL: Force UTF-8 encoding for stdout/stderr
+# This prevents UnicodeEncodeError when printing non-ASCII characters (like emojis, ₹, Tamil text)
+# MUST run BEFORE any imports that might print
+import sys
+import io
+import os
+
+# Set environment variables first
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONLEGACYWINDOWSSTDIO'] = '0'
+
+# Create a safe print function that handles encoding errors
+_original_print = print
+def _safe_print(*args, **kwargs):
+    """Print function that handles Unicode encoding errors gracefully."""
+    try:
+        # Convert any problematic characters
+        safe_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                # Replace any characters that can't be encoded
+                safe_args.append(arg.encode('utf-8', errors='replace').decode('utf-8'))
+            else:
+                safe_args.append(arg)
+        _original_print(*safe_args, **kwargs)
+    except UnicodeEncodeError:
+        # Last resort: encode and decode with replacement
+        try:
+            safe_args = [str(arg).encode('ascii', errors='replace').decode('ascii') for arg in args]
+            _original_print(*safe_args, **kwargs)
+        except Exception:
+            pass  # Silently fail rather than crash
+    except Exception:
+        pass  # Silently fail rather than crash
+
+# Replace the built-in print globally
+import builtins
+builtins.print = _safe_print
+
+# Also try to reconfigure stdout/stderr
+def _setup_utf8_output():
+    """Wrap stdout/stderr with UTF-8 encoding to handle any Unicode characters."""
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        pass
+
+_setup_utf8_output()
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -50,11 +109,11 @@ app = FastAPI(
 
 # Configure CORS for frontend
 ALLOWED_ORIGINS = [
-    # Local development
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
+    # Local development (commented - using deployed URLs)
+    # "http://localhost:3000",
+    # "http://127.0.0.1:3000",
+    # "http://localhost:3001",
+    # "http://127.0.0.1:3001",
     # Production (Vercel)
     "https://thara-ai.vercel.app",
     "https://www.thara-ai.vercel.app",
@@ -101,7 +160,7 @@ def _is_skip_auth_allowed() -> bool:
     """
     skip_auth = os.getenv("SKIP_AUTH", "false").lower() == "true"
     if skip_auth and not _is_dev_environment():
-        print("⚠️  WARNING: SKIP_AUTH=true ignored - only allowed in development environment!")
+        print("[WARN]  WARNING: SKIP_AUTH=true ignored - only allowed in development environment!")
         print("    Set ENVIRONMENT=development to enable auth bypass.")
         return False
     return skip_auth
@@ -114,7 +173,7 @@ async def verify_auth_token(request: Request) -> Optional[dict]:
     """
     # Check for bypass (development mode only - set SKIP_AUTH=true explicitly)
     if _is_skip_auth_allowed():
-        return {"id": "dev-user", "email": "dev@localhost", "name": "Developer"}
+        return {"id": "dev-user", "email": "dev@thara.ai", "name": "Developer"}
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
@@ -518,11 +577,13 @@ async def process_query(request: QueryRequest, user: dict = Depends(require_auth
         if not request.text or not request.text.strip():
             raise HTTPException(status_code=400, detail="Query text is required")
 
+        print(f"[API] POST /api/query - Body: {{'text': '{request.text[:50]}...'}}")
         print(f"[API] Query: {request.text[:80]}...")
 
-        # Pass conversation_id if provided
+        # Pass conversation_id and user_name if provided
         conversation_id = getattr(request, 'conversation_id', None)
-        result = process_query_service(request.text, conversation_id)
+        user_name = getattr(request, 'user_name', None)
+        result = process_query_service(request.text, conversation_id, user_name)
 
         if result.get('success'):
             print(f"[API] Query success - Table: {result.get('table_used')}, "
@@ -533,6 +594,9 @@ async def process_query(request: QueryRequest, user: dict = Depends(require_auth
             # Note: Query failures (no data found, etc.) return 200 with success=false
             # This is intentional - the client request was valid, just no data matched
 
+        # DEBUG: Add server identifier to help trace which backend is responding
+        result['debug_server'] = 'hf-space-thara-backend-v2'
+        result['debug_data_count'] = len(result.get('data') or [])
         return result
     except HTTPException:
         raise  # Re-raise HTTPExceptions as-is
@@ -943,7 +1007,7 @@ async def startup_event():
         from utils.config_loader import print_startup_validation
         print_startup_validation()
     except Exception as e:
-        print(f"  ⚠️  Config validation error: {e}")
+        print(f"  [WARN]  Config validation error: {e}")
 
     print()
 
@@ -994,15 +1058,15 @@ async def startup_event():
                             stats = result.get('stats', {})
                             tables = stats.get('totalTables', 0)
                             records = stats.get('totalRecords', 0)
-                            print(f"    ✓ Loaded {len(files)} files: {', '.join(files)}")
-                            print(f"    ✓ Total: {tables} tables, {records:,} records")
+                            print(f"    [OK] Loaded {len(files)} files: {', '.join(files)}")
+                            print(f"    [OK] Total: {tables} tables, {records:,} records")
                         else:
-                            print(f"    ✗ Failed: {result.get('error', 'Unknown error')}")
+                            print(f"    [FAIL] Failed: {result.get('error', 'Unknown error')}")
                     else:
-                        print("    ✓ No changes detected - using cached data")
+                        print("    [OK] No changes detected - using cached data")
 
                 except Exception as e:
-                    print(f"    ✗ Error syncing folder: {e}")
+                    print(f"    [FAIL] Error syncing folder: {e}")
                     import traceback
                     traceback.print_exc()
 
@@ -1026,11 +1090,11 @@ async def startup_event():
                                 stats = result.get('stats', {})
                                 tables = stats.get('totalTables', 0) if stats else 0
                                 sheets = stats.get('sheetCount', 0) if stats else 0
-                                print(f"    [{idx}/{len(auto_load_ids)}] ✓ Loaded {tables} tables from {sheets} sheets")
+                                print(f"    [{idx}/{len(auto_load_ids)}] [OK] Loaded {tables} tables from {sheets} sheets")
                             else:
-                                print(f"    [{idx}/{len(auto_load_ids)}] ✗ Failed: {result.get('error', 'Unknown error')}")
+                                print(f"    [{idx}/{len(auto_load_ids)}] [FAIL] Failed: {result.get('error', 'Unknown error')}")
                         except Exception as e:
-                            print(f"    [{idx}/{len(auto_load_ids)}] ✗ Error: {e}")
+                            print(f"    [{idx}/{len(auto_load_ids)}] [FAIL] Error: {e}")
 
                     print("  [DEMO MODE] Auto-load complete!")
                     print()
