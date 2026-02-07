@@ -783,7 +783,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     getCurrentChat,
     setDatasetForChat,
     clearCurrentChat,
-    sessionName  // "Call me X" name - defaults to "Boss"
+    sessionName,  // "Call me X" name - defaults to "Boss"
+    setSessionName  // Update session name when user says "Call me X"
   } = useAppState();
 
   const [isRecording, setIsRecording] = useState(false);
@@ -1134,6 +1135,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
       if (response.success) {
         const explanationText = response.explanation || "Here's what I found.";
+
+        // Check if user said "Call me X" - update session name
+        if (response.name_changed && response.new_name) {
+          setSessionName(response.new_name);
+          console.log(`[Session] Name updated to: ${response.new_name}`);
+        }
 
         addMessage(explanationText, 'assistant', {
           plan: response.plan,
