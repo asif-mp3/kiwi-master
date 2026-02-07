@@ -16,8 +16,9 @@ export const VAD_SILENCE_DURATION = 1000; // Stop after 1 second of silence (fas
 export const VAD_MIN_SPEECH_DURATION = 250; // Minimum speech before checking silence (ms)
 export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms) - faster polling
 
-// API defaults (fallbacks only - prefer environment variables)
+// API URLs
 const LOCALHOST_API_URL = 'http://localhost:8000';
+const PRODUCTION_API_URL = 'https://asif-mp3-thara-backend-v2.hf.space';
 
 // Get environment variables with fallbacks
 export const getApiBaseUrl = () => {
@@ -33,14 +34,10 @@ export const getApiBaseUrl = () => {
     if (isLocalhost) {
       return LOCALHOST_API_URL;
     }
-    // Production without env var - warn developer
-    console.warn(
-      'NEXT_PUBLIC_API_BASE_URL not set! Set this in Vercel Environment Variables.',
-      'Falling back to localhost which will fail in production.'
-    );
   }
 
-  return LOCALHOST_API_URL; // Will fail in production - forces proper config
+  // Production: use Hugging Face backend
+  return PRODUCTION_API_URL;
 };
 
 export const getElevenLabsVoiceId = () => {
