@@ -2,8 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "required": [
-    "query_type",
-    "table"
+    "query_type"
   ],
   "properties": {
     "query_type": {
@@ -19,11 +18,53 @@
         "comparison",
         "percentage",
         "trend",
-        "projection"
+        "projection",
+        "multi_step"
       ]
     },
     "table": {
       "type": "string"
+    },
+    "steps": {
+      "type": "array",
+      "description": "For multi_step queries - array of sequential query steps",
+      "items": {
+        "type": "object",
+        "required": [
+          "step_id",
+          "table",
+          "query_type"
+        ],
+        "properties": {
+          "step_id": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "query_type": {
+            "type": "string"
+          },
+          "table": {
+            "type": "string"
+          },
+          "filters": {
+            "type": "array"
+          },
+          "order_by": {
+            "type": "array"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "output_variable": {
+            "type": "string"
+          },
+          "extract_column": {
+            "type": "string"
+          }
+        }
+      }
     },
     "select_columns": {
       "type": [
@@ -121,85 +162,163 @@
       ]
     },
     "comparison": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "For comparison query type - compare two periods or values",
       "properties": {
         "period_a": {
           "type": "object",
           "properties": {
-            "label": { "type": "string" },
-            "table": { "type": "string" },
-            "column": { "type": "string" },
-            "filters": { "type": "array" },
-            "aggregation": { "type": "string" }
+            "label": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string"
+            },
+            "column": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "array"
+            },
+            "aggregation": {
+              "type": "string"
+            }
           }
         },
         "period_b": {
           "type": "object",
           "properties": {
-            "label": { "type": "string" },
-            "table": { "type": "string" },
-            "column": { "type": "string" },
-            "filters": { "type": "array" },
-            "aggregation": { "type": "string" }
+            "label": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string"
+            },
+            "column": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "array"
+            },
+            "aggregation": {
+              "type": "string"
+            }
           }
         },
         "compare_type": {
           "type": "string",
-          "enum": ["difference", "percentage_change", "ratio"]
+          "enum": [
+            "difference",
+            "percentage_change",
+            "ratio"
+          ]
         }
       }
     },
     "percentage": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "For percentage query type - calculate percentage contribution",
       "properties": {
         "numerator": {
           "type": "object",
           "properties": {
-            "column": { "type": "string" },
-            "filters": { "type": "array" },
-            "aggregation": { "type": "string" }
+            "column": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "array"
+            },
+            "aggregation": {
+              "type": "string"
+            }
           }
         },
         "denominator": {
           "type": "object",
           "properties": {
-            "column": { "type": "string" },
-            "filters": { "type": "array" },
-            "aggregation": { "type": "string" }
+            "column": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "array"
+            },
+            "aggregation": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "trend": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "For trend query type - analyze patterns over time",
       "properties": {
-        "date_column": { "type": "string" },
-        "value_column": { "type": "string" },
-        "aggregation": { "type": "string" },
+        "date_column": {
+          "type": "string"
+        },
+        "value_column": {
+          "type": "string"
+        },
+        "aggregation": {
+          "type": "string"
+        },
         "period": {
           "type": "string",
-          "enum": ["daily", "weekly", "monthly"]
+          "enum": [
+            "daily",
+            "weekly",
+            "monthly"
+          ]
         },
         "analysis_type": {
           "type": "string",
-          "enum": ["direction", "pattern", "forecast"]
+          "enum": [
+            "direction",
+            "pattern",
+            "forecast"
+          ]
         }
       }
     },
     "projection": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "For projection query type - forecast future values based on historical data",
       "properties": {
-        "base_value": { "type": "number", "description": "Current/base value to project from" },
-        "base_label": { "type": "string", "description": "Label for the base value (e.g., category name)" },
-        "projection_periods": { "type": "integer", "description": "Number of periods to forecast" },
-        "growth_rate": { "type": "number", "description": "Estimated growth rate (0.0 = flat, 0.1 = 10% growth)" },
+        "base_value": {
+          "type": "number",
+          "description": "Current/base value to project from"
+        },
+        "base_label": {
+          "type": "string",
+          "description": "Label for the base value (e.g., category name)"
+        },
+        "projection_periods": {
+          "type": "integer",
+          "description": "Number of periods to forecast"
+        },
+        "growth_rate": {
+          "type": "number",
+          "description": "Estimated growth rate (0.0 = flat, 0.1 = 10% growth)"
+        },
         "method": {
           "type": "string",
-          "enum": ["linear", "average", "trend"],
+          "enum": [
+            "linear",
+            "average",
+            "trend"
+          ],
           "description": "Projection method"
         }
       }

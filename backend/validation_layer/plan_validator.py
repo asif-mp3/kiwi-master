@@ -619,7 +619,9 @@ def validate_no_unknown_keys(plan: dict):
         # Advanced query type keys (comparison, percentage, trend)
         "comparison", "percentage", "trend",
         # Date period grouping (MONTH, YEAR, WEEK, etc.)
-        "date_grouping"
+        "date_grouping",
+        # Multi-step query keys
+        "steps", "description"
     }
     
     unknown_keys = set(plan.keys()) - allowed_keys
@@ -712,7 +714,23 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     # 2. Reject unknown keys
     validate_no_unknown_keys(plan)
     
-    # 3. Validate table exists
+    # 3. Validate table exists (skip for multi_step - each step has its own table)
+    query_type = plan.get("query_type")
+    if query_type == "multi_step":
+        # Multi-step queries have tables inside each step, not at root
+        # Basic validation: ensure steps array exists and has content
+        steps = plan.get("steps", [])
+        if not steps:
+            raise ValueError("multi_step queries require a non-empty 'steps' array")
+        # Validate each step has a table
+        for i, step in enumerate(steps):
+            step_table = step.get("table")
+            if not step_table:
+                raise ValueError(f"Step {i+1} is missing 'table' field")
+            validate_table_exists(step_table)
+        # Return early - skip standard single-table validation
+        return True
+    
     table = plan.get("table")
     validate_table_exists(table)
     
