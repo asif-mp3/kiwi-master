@@ -2999,19 +2999,18 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 'error_type': 'invalid_input'
             }
 
-        # Detect transcription noise patterns (ElevenLabs Scribe returns these for non-speech audio)
-        noise_patterns = ['[mouse clicking]', '[inaudible]', '[silence]', '[background noise]',
-                         '[music]', '[noise]', '[click]', '[static]', '[pause]', '[applause]',
-                         '[laughter]', '...']
-        if any(noise in question_clean.lower() for noise in noise_patterns):
-            print(f"  [FAIL] Transcription noise detected: {question_clean[:50]}")
-            print("=" * 60 + "\n")
-            return {
-                'success': False,
-                'error': 'Transcription noise detected',
-                'explanation': "I couldn't understand the audio. Please try speaking clearly.",
-                'error_type': 'transcription_noise'
-            }
+
+        # === NOISE DETECTION REMOVED ===
+        # The transcription service (ElevenLabs Scribe) already filters noise
+        # This check was causing false positives on legitimate typed queries
+        # If transcription returns noise markers, they'll be in the text and user can retry
+        
+        # Log the query for debugging
+        if len(question_clean) > 100:
+            print(f"  [INFO] Long query detected ({len(question_clean)} chars): {question_clean[:100]}...")
+        else:
+            print(f"  [INFO] Query: {question_clean}")
+
 
         # === TABLE CLARIFICATION FEATURE REMOVED ===
         # Clear any stale pending clarification from before this change
@@ -3153,6 +3152,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 'is_greeting': True,
                 'is_conversational': True
             }
+        
         print("  [FAIL] Not conversational (likely a data query)")
         _log_timing("conversational_detection", _step_start)
 
@@ -3194,11 +3194,20 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             value = memory_result["value"]
             print(f"    Category: {category}, Key: {key}, Value: {value}")
 
-            # Handle "Call me X" - SESSION BASED (not permanent storage)
+            # Handle "Call me X" - SAVE TO PERMANENT STORAGE
             if key == "address_as":
                 app_state.personality.set_name(value)
                 ctx.set_user_name(value)
-                print(f"  [OK] Session name set to: {value} (not saved permanently)")
+                
+                # Save to permanent storage
+                from utils.permanent_memory import update_memory
+                success = update_memory("user_preferences", "address_as", value)
+                if success:
+                    print(f"  [OK] Name '{value}' saved permanently to persistent_memory.json")
+                else:
+                    print(f"  [WARN] Failed to save name to permanent storage")
+                
+                print(f"  [OK] Session name set to: {value}")
 
                 # CRITICAL: Invalidate cached LLM models so they pick up the new name
                 from planning_layer.planner_client import invalidate_planner_model

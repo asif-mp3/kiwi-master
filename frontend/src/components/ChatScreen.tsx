@@ -190,12 +190,12 @@ function VoiceModeInput({
           ? "bg-zinc-800/90 border-violet-500/50"
           : "bg-zinc-900/80 border-zinc-700/50 hover:border-violet-500/30 cursor-text"
       )}
-      onClick={() => {
-        if (!isFocused) {
-          setIsFocused(true);
-          setTimeout(() => inputRef.current?.focus(), 50);
-        }
-      }}
+        onClick={() => {
+          if (!isFocused) {
+            setIsFocused(true);
+            setTimeout(() => inputRef.current?.focus(), 50);
+          }
+        }}
       >
         <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400 shrink-0" />
 
@@ -353,7 +353,7 @@ function LiveCaptions({
               <p className={cn(
                 "text-sm leading-relaxed",
                 caption?.type === 'user' ? "text-violet-200" :
-                caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
+                  caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
               )}>
                 {caption?.text ? (
                   <>
@@ -488,8 +488,8 @@ function MobileCaptions({
               <span className={cn(
                 "text-xs font-medium",
                 isRecording ? "text-violet-400" :
-                isSpeaking ? "text-purple-400" :
-                isProcessing ? "text-cyan-400" : "text-zinc-500"
+                  isSpeaking ? "text-purple-400" :
+                    isProcessing ? "text-cyan-400" : "text-zinc-500"
               )}>
                 {isRecording ? "You" : isSpeaking ? "Thara" : "Processing"}
               </span>
@@ -499,7 +499,7 @@ function MobileCaptions({
               className={cn(
                 "text-sm line-clamp-3",
                 caption?.type === 'user' ? "text-violet-200" :
-                caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
+                  caption?.type === 'assistant' ? "text-purple-200" : "text-zinc-400"
               )}
             >
               {caption?.text ? (
@@ -748,7 +748,8 @@ function VisualizationPanel({
 
 // Suggested follow-up questions (English only)
 const FOLLOW_UP_SUGGESTIONS = [
-  "Are sales increasing or decreasing?",
+  // Trend Analysis (10)
+  "Are sales increasing or decreasing in Chennai?",
   "Which state shows a declining sales trend?",
   "Which category shows consistent growth across months?",
   "Are profits stable or volatile over time?",
@@ -758,14 +759,118 @@ const FOLLOW_UP_SUGGESTIONS = [
   "Which category is losing revenue month by month?",
   "Are costs rising faster than revenue?",
   "Which quarter performed the worst overall?",
+
+  // Follow-up Chains (15)
+  "What is the total sales amount in Chennai?",
+  "Is it higher or lower compared to Bangalore?",
+  "Which category has the highest total sales?",
+  "Did sales for this category increase or decrease over time?",
+  "Which branch has the highest revenue overall?",
+  "Is this branch performing better or worse than the average branch?",
+  "Which payment mode has the highest sales amount?",
+  "Has the usage of this payment mode increased over the months?",
+  "Which SKU has the highest total revenue?",
+  "Is this SKU's sales trend consistently increasing?",
+  "Compare total sales between November and December",
+  "If the same trend continues, what could be the projected sales for January?",
+  "Show sales trend for Chennai across months",
+  "Based on this trend, estimate next month's sales",
+  "Show category-wise sales for the last three months",
+
+  // Projection Questions (10)
+  "If the top category continues this pattern, what is the expected sales next month?",
+  "Project the next month's revenue assuming similar change",
+  "If this trend continues, what could be the sales next month?",
+  "What could be the projected sales for January?",
+  "Estimate next month's sales based on current trend",
+  "Based on this trend, what's the forecast for next quarter?",
+  "If growth continues, when will we reach 1 crore revenue?",
+  "What's the expected profit margin next month?",
+  "Project year-end revenue based on current performance",
+  "Estimate Q4 sales if current trend persists",
+
+  // Employee/HR Queries (15)
+  "How many employees do we have?",
+  "Show staff in Sales department",
+  "How many managers are there?",
+  "What is the average salary?",
+  "Employees in Tamil Nadu",
+  "Who is on leave?",
+  "How many employees are on probation?",
+  "Active staff count",
+  "IT department employees",
+  "Show employees by department",
+  "Who has the highest salary?",
+  "Average salary by department",
+  "How many employees joined in 2024?",
+  "Show designation-wise employee count",
+  "Employees from Karnataka",
+
+  // Attendance Queries (10)
+  "Today's attendance percentage",
+  "HR department attendance",
+  "Average hours worked",
+  "Half day count",
+  "Show attendance by department",
+  "Which department has best attendance?",
+  "How many employees were present today?",
+  "Who worked more than 9 hours?",
+  "Show check-in times for IT department",
+  "Average working hours by department",
+
+  // Payroll Queries (6)
+  "Show net salary by department",
+  "Average bonus amount",
+  "Total deductions this month",
+  "Highest paid employee",
+  "Department-wise total payroll",
+  "Monthly payroll cost",
+
+  // Sales Analysis (15)
   "What is the total sales this month?",
   "Show me top 5 products by revenue",
+  "Which month recorded the highest total profit?",
+  "How many transactions were made using UPI?",
+  "Show month-over-month growth",
+  "What's the average order value?",
+  "Which product category generates most revenue?",
+  "Compare sales across different regions",
+  "What's the profit margin by category?",
+  "Show sales distribution by payment method",
+  "Which branch has the lowest sales?",
+  "What's the total revenue this quarter?",
+  "Show top 10 selling products",
+  "Which state contributes most to revenue?",
+  "What's the conversion rate by channel?",
+
+  // Advanced Analytics (10)
+  "Which state moved from top 3 to bottom 3 in revenue?",
+  "Show correlation between marketing spend and sales",
+  "What's the customer retention rate?",
+  "Identify products with declining margins",
+  "Which branch has the highest growth rate?",
+  "Show seasonal patterns in sales data",
+  "What's the average customer lifetime value?",
+  "Identify underperforming product categories",
+  "Show year-over-year growth comparison",
+  "What's the inventory turnover ratio?",
+
+  // Miscellaneous (9)
+  "Show me the data summary",
+  "What tables are available?",
+  "Give me an overview of the dataset",
+  "What time period does the data cover?",
+  "How many records are in the database?",
+  "Show me sample data",
+  "What metrics can I query?",
+  "Explain the data structure",
+  "What's the data quality like?",
 ];
 
 // Get 2 random suggestions
 function getRandomSuggestions(): string[] {
   const shuffled = [...FOLLOW_UP_SUGGESTIONS].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, 2);
+  return shuffled.slice(0, 3);  // Show 3 random suggestions from 100+
 }
 
 export function ChatScreen({ onLogout, username }: ChatScreenProps) {
@@ -1577,268 +1682,268 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
       setIsRecording(newIsRecording);
       activeRecordingRef.current = newIsRecording;
 
-    // Haptic feedback for mobile
-    if (newIsRecording) {
-      // Short vibration pulse when starting to record
-      navigator.vibrate?.(50);
-    } else {
-      // Double-pulse when stopping
-      navigator.vibrate?.([30, 50, 30]);
-    }
+      // Haptic feedback for mobile
+      if (newIsRecording) {
+        // Short vibration pulse when starting to record
+        navigator.vibrate?.(50);
+      } else {
+        // Double-pulse when stopping
+        navigator.vibrate?.([30, 50, 30]);
+      }
 
-    if (newIsRecording) { // Started listening
-      console.log('🎤 Started listening (always-on mode enabled)...');
-      setExpandedVoiceSection(null);
+      if (newIsRecording) { // Started listening
+        console.log('🎤 Started listening (always-on mode enabled)...');
+        setExpandedVoiceSection(null);
 
-      // Reset abort flag for new recording
-      userAbortedRef.current = false;
+        // Reset abort flag for new recording
+        userAbortedRef.current = false;
 
-      // Enable fullscreen voice mode for immersive experience
-      setIsFullscreenVoice(true);
+        // Enable fullscreen voice mode for immersive experience
+        setIsFullscreenVoice(true);
 
-      // Enable always-on mode
-      setIsAlwaysOnMode(true);
-      shouldResumeRecording.current = true;
+        // Enable always-on mode
+        setIsAlwaysOnMode(true);
+        shouldResumeRecording.current = true;
 
-      try {
-        // Request microphone access
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-        // Create MediaRecorder
-        const recorder = new MediaRecorder(stream, {
-          mimeType: 'audio/webm;codecs=opus'
-        });
-
-        const chunks: Blob[] = [];
-
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            chunks.push(event.data);
-          }
-        };
-
-        recorder.onstop = async () => {
-          console.log('🎤 Recording stopped, processing...');
-
-          // Mark recording as inactive
-          activeRecordingRef.current = false;
-
-          // Stop all tracks
-          stream.getTracks().forEach(track => track.stop());
-
-          // Check if user manually aborted - skip processing entirely
-          if (userAbortedRef.current) {
-            console.log('⏹️ User aborted - skipping audio processing');
-            userAbortedRef.current = false; // Reset for next recording
-            setIsProcessingVoice(false);
-            return;
-          }
-
-          // Create audio blob from chunks
-          const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-          console.log('📦 Audio blob size:', audioBlob.size, 'bytes');
-
-          try {
-            console.log('📤 Sending audio for transcription...');
-            setIsProcessingVoice(true); // Start loading UI
-            const text = await api.transcribeAudio(audioBlob);
-            console.log('✅ Transcribed text:', text);
-
-            if (!text || text.trim() === '') {
-              console.warn('⚠️ Empty transcription result');
-              toast.error("No speech detected", { description: "Please try speaking again." });
-              setLiveCaption(null);
-              return;
-            }
-
-            // Update live caption with user's transcribed text
-            setLiveCaption({ text, type: 'user' });
-
-            // Check if this is a concluding phrase (thank you, bye, etc.)
-            if (isConcludingPhrase(text)) {
-              console.log('👋 Concluding phrase detected:', text);
-
-              // Add user message
-              addMessage(text, 'user');
-
-              // Add farewell response
-              const farewellMsg = getFarewellResponse();
-              addMessage(farewellMsg, 'assistant');
-
-              // Update caption with farewell response
-              setLiveCaption({ text: farewellMsg, type: 'assistant' });
-
-              // Play farewell TTS
-              setIsVoiceMode(true);
-              await playTextToSpeech(farewellMsg);
-
-              // Stop always-on mode and exit fullscreen
-              setIsAlwaysOnMode(false);
-              shouldResumeRecording.current = false;
-              setIsFullscreenVoice(false);
-              setIsProcessingVoice(false);
-
-              // Clear caption after farewell
-              setTimeout(() => setLiveCaption(null), 3000);
-
-              toast.success("Conversation ended", { description: "Tap mic to start again" });
-              return;
-            }
-
-            // Enable voice mode for TTS playback
-            console.log('🔊 Enabling voice mode for TTS...');
-            setIsVoiceMode(true);
-
-            // NOTE: Keep isProcessingVoice=true until handleSendMessage sets isProcessingQuery
-            // This prevents "Ready..." gap between transcription and query processing
-
-            // Send transcribed message WITH TTS enabled and mark as voice input
-            console.log('📤 Sending transcribed message with TTS...');
-            await handleSendMessage(text, true, true); // TTS enabled + voice input flag
-
-            // Keep voice mode enabled for a bit, then disable
-            // Clear any previous timeout before setting a new one
-            if (voiceModeTimeoutRef.current) {
-              clearTimeout(voiceModeTimeoutRef.current);
-            }
-            voiceModeTimeoutRef.current = setTimeout(() => {
-              console.log('🔇 Disabling voice mode');
-              setIsVoiceMode(false);
-              voiceModeTimeoutRef.current = null;
-            }, VOICE_MODE_TIMEOUT);
-
-          } catch (err) {
-            console.error('❌ Voice processing error:', err);
-            toast.error("Voice processing failed", {
-              description: err instanceof Error ? err.message : "Unknown error"
-            });
-          } finally {
-            setIsProcessingVoice(false);
-          }
-        };
-
-        // Start recording
-        recorder.start();
-        setMediaRecorder(recorder);
-        console.log('🔴 Recording started...');
-
-        // === VOICE ACTIVITY DETECTION (VAD) for phone-call-like experience ===
         try {
-          // Create AudioContext for analyzing audio levels
-          const audioContext = new AudioContext();
-          audioContextRef.current = audioContext;
+          // Request microphone access
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-          const source = audioContext.createMediaStreamSource(stream);
-          const analyser = audioContext.createAnalyser();
-          analyser.fftSize = 256;
-          analyser.smoothingTimeConstant = 0.3;
-          source.connect(analyser);
-          analyserRef.current = analyser;
+          // Create MediaRecorder
+          const recorder = new MediaRecorder(stream, {
+            mimeType: 'audio/webm;codecs=opus'
+          });
 
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          speechStartRef.current = Date.now();
-          silenceStartRef.current = null;
+          const chunks: Blob[] = [];
 
-          console.log('🎙️ VAD started - listening for silence...');
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+              chunks.push(event.data);
+            }
+          };
 
-          // Check audio levels periodically
-          vadIntervalRef.current = setInterval(() => {
-            if (!analyserRef.current || recorder.state !== 'recording') {
-              stopVAD();
+          recorder.onstop = async () => {
+            console.log('🎤 Recording stopped, processing...');
+
+            // Mark recording as inactive
+            activeRecordingRef.current = false;
+
+            // Stop all tracks
+            stream.getTracks().forEach(track => track.stop());
+
+            // Check if user manually aborted - skip processing entirely
+            if (userAbortedRef.current) {
+              console.log('⏹️ User aborted - skipping audio processing');
+              userAbortedRef.current = false; // Reset for next recording
+              setIsProcessingVoice(false);
               return;
             }
 
-            analyser.getByteFrequencyData(dataArray);
-            // Calculate average audio level
-            const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+            // Create audio blob from chunks
+            const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+            console.log('📦 Audio blob size:', audioBlob.size, 'bytes');
 
-            const now = Date.now();
-            const speechDuration = now - (speechStartRef.current || now);
+            try {
+              console.log('📤 Sending audio for transcription...');
+              setIsProcessingVoice(true); // Start loading UI
+              const text = await api.transcribeAudio(audioBlob);
+              console.log('✅ Transcribed text:', text);
 
-            // Only check for silence after minimum speech duration
-            if (speechDuration < VAD_MIN_SPEECH_DURATION) {
-              return;
+              if (!text || text.trim() === '') {
+                console.warn('⚠️ Empty transcription result');
+                toast.error("No speech detected", { description: "Please try speaking again." });
+                setLiveCaption(null);
+                return;
+              }
+
+              // Update live caption with user's transcribed text
+              setLiveCaption({ text, type: 'user' });
+
+              // Check if this is a concluding phrase (thank you, bye, etc.)
+              if (isConcludingPhrase(text)) {
+                console.log('👋 Concluding phrase detected:', text);
+
+                // Add user message
+                addMessage(text, 'user');
+
+                // Add farewell response
+                const farewellMsg = getFarewellResponse();
+                addMessage(farewellMsg, 'assistant');
+
+                // Update caption with farewell response
+                setLiveCaption({ text: farewellMsg, type: 'assistant' });
+
+                // Play farewell TTS
+                setIsVoiceMode(true);
+                await playTextToSpeech(farewellMsg);
+
+                // Stop always-on mode and exit fullscreen
+                setIsAlwaysOnMode(false);
+                shouldResumeRecording.current = false;
+                setIsFullscreenVoice(false);
+                setIsProcessingVoice(false);
+
+                // Clear caption after farewell
+                setTimeout(() => setLiveCaption(null), 3000);
+
+                toast.success("Conversation ended", { description: "Tap mic to start again" });
+                return;
+              }
+
+              // Enable voice mode for TTS playback
+              console.log('🔊 Enabling voice mode for TTS...');
+              setIsVoiceMode(true);
+
+              // NOTE: Keep isProcessingVoice=true until handleSendMessage sets isProcessingQuery
+              // This prevents "Ready..." gap between transcription and query processing
+
+              // Send transcribed message WITH TTS enabled and mark as voice input
+              console.log('📤 Sending transcribed message with TTS...');
+              await handleSendMessage(text, true, true); // TTS enabled + voice input flag
+
+              // Keep voice mode enabled for a bit, then disable
+              // Clear any previous timeout before setting a new one
+              if (voiceModeTimeoutRef.current) {
+                clearTimeout(voiceModeTimeoutRef.current);
+              }
+              voiceModeTimeoutRef.current = setTimeout(() => {
+                console.log('🔇 Disabling voice mode');
+                setIsVoiceMode(false);
+                voiceModeTimeoutRef.current = null;
+              }, VOICE_MODE_TIMEOUT);
+
+            } catch (err) {
+              console.error('❌ Voice processing error:', err);
+              toast.error("Voice processing failed", {
+                description: err instanceof Error ? err.message : "Unknown error"
+              });
+            } finally {
+              setIsProcessingVoice(false);
             }
+          };
 
-            if (average < VAD_SILENCE_THRESHOLD) {
-              // Silence detected
-              if (!silenceStartRef.current) {
-                silenceStartRef.current = now;
-                console.log('🔇 Silence started...');
-              } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
-                // Silence duration exceeded - stop recording
-                console.log('✋ VAD: Silence detected for', VAD_SILENCE_DURATION, 'ms - stopping recording');
+          // Start recording
+          recorder.start();
+          setMediaRecorder(recorder);
+          console.log('🔴 Recording started...');
+
+          // === VOICE ACTIVITY DETECTION (VAD) for phone-call-like experience ===
+          try {
+            // Create AudioContext for analyzing audio levels
+            const audioContext = new AudioContext();
+            audioContextRef.current = audioContext;
+
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.smoothingTimeConstant = 0.3;
+            source.connect(analyser);
+            analyserRef.current = analyser;
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            speechStartRef.current = Date.now();
+            silenceStartRef.current = null;
+
+            console.log('🎙️ VAD started - listening for silence...');
+
+            // Check audio levels periodically
+            vadIntervalRef.current = setInterval(() => {
+              if (!analyserRef.current || recorder.state !== 'recording') {
                 stopVAD();
-                if (recorder.state === 'recording') {
-                  recorder.stop();
-                  setIsRecording(false);
-                }
+                return;
               }
-            } else {
-              // Speech detected - reset silence timer
-              if (silenceStartRef.current) {
-                console.log('🗣️ Speech resumed');
-              }
-              silenceStartRef.current = null;
-            }
-          }, VAD_CHECK_INTERVAL);
 
-        } catch (vadError) {
-          console.warn('⚠️ VAD setup failed, using timeout fallback:', vadError);
+              analyser.getByteFrequencyData(dataArray);
+              // Calculate average audio level
+              const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+              const now = Date.now();
+              const speechDuration = now - (speechStartRef.current || now);
+
+              // Only check for silence after minimum speech duration
+              if (speechDuration < VAD_MIN_SPEECH_DURATION) {
+                return;
+              }
+
+              if (average < VAD_SILENCE_THRESHOLD) {
+                // Silence detected
+                if (!silenceStartRef.current) {
+                  silenceStartRef.current = now;
+                  console.log('🔇 Silence started...');
+                } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
+                  // Silence duration exceeded - stop recording
+                  console.log('✋ VAD: Silence detected for', VAD_SILENCE_DURATION, 'ms - stopping recording');
+                  stopVAD();
+                  if (recorder.state === 'recording') {
+                    recorder.stop();
+                    setIsRecording(false);
+                  }
+                }
+              } else {
+                // Speech detected - reset silence timer
+                if (silenceStartRef.current) {
+                  console.log('🗣️ Speech resumed');
+                }
+                silenceStartRef.current = null;
+              }
+            }, VAD_CHECK_INTERVAL);
+
+          } catch (vadError) {
+            console.warn('⚠️ VAD setup failed, using timeout fallback:', vadError);
+          }
+
+          // Fallback: Auto-stop after max timeout (in case VAD fails)
+          // Clear any previous timeout before setting a new one
+          if (recordingTimeoutRef.current) {
+            clearTimeout(recordingTimeoutRef.current);
+          }
+          recordingTimeoutRef.current = setTimeout(() => {
+            stopVAD();
+            if (recorder.state === 'recording') {
+              console.log('⏱️ Max timeout reached - stopping recording');
+              recorder.stop();
+              setIsRecording(false);
+            }
+            recordingTimeoutRef.current = null;
+          }, VOICE_RECORDING_TIMEOUT);
+
+        } catch (err) {
+          console.error('❌ Microphone access error:', err);
+          toast.error("Microphone access denied", {
+            description: "Please allow microphone access to use voice input."
+          });
+          setIsRecording(false);
+          activeRecordingRef.current = false;
         }
 
-        // Fallback: Auto-stop after max timeout (in case VAD fails)
-        // Clear any previous timeout before setting a new one
+      } else {
+        // Manual stop - user clicked to stop recording
+        console.log('🛑 Manually stopping recording...');
+
+        // NOTE: Do NOT set userAbortedRef here - we want to process the audio!
+        // userAbortedRef is only for cancellation, not for normal stop
+
+        // Exit fullscreen voice mode
+        setIsFullscreenVoice(false);
+
+        // Disable always-on mode
+        setIsAlwaysOnMode(false);
+        shouldResumeRecording.current = false;
+
+        // Clean up VAD
+        stopVAD();
+
+        // Clear the auto-stop timeout since we're manually stopping
         if (recordingTimeoutRef.current) {
           clearTimeout(recordingTimeoutRef.current);
-        }
-        recordingTimeoutRef.current = setTimeout(() => {
-          stopVAD();
-          if (recorder.state === 'recording') {
-            console.log('⏱️ Max timeout reached - stopping recording');
-            recorder.stop();
-            setIsRecording(false);
-          }
           recordingTimeoutRef.current = null;
-        }, VOICE_RECORDING_TIMEOUT);
-
-      } catch (err) {
-        console.error('❌ Microphone access error:', err);
-        toast.error("Microphone access denied", {
-          description: "Please allow microphone access to use voice input."
-        });
-        setIsRecording(false);
+        }
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+        // Mark recording as inactive when stopping
         activeRecordingRef.current = false;
       }
-
-    } else {
-      // Manual stop - user clicked to stop recording
-      console.log('🛑 Manually stopping recording...');
-
-      // NOTE: Do NOT set userAbortedRef here - we want to process the audio!
-      // userAbortedRef is only for cancellation, not for normal stop
-
-      // Exit fullscreen voice mode
-      setIsFullscreenVoice(false);
-
-      // Disable always-on mode
-      setIsAlwaysOnMode(false);
-      shouldResumeRecording.current = false;
-
-      // Clean up VAD
-      stopVAD();
-
-      // Clear the auto-stop timeout since we're manually stopping
-      if (recordingTimeoutRef.current) {
-        clearTimeout(recordingTimeoutRef.current);
-        recordingTimeoutRef.current = null;
-      }
-      if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
-      }
-      // Mark recording as inactive when stopping
-      activeRecordingRef.current = false;
-    }
     } finally {
       // Always release the toggle lock after async operations complete
       // Use a small delay to prevent rapid re-triggering
@@ -2165,111 +2270,111 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
               )}
             </div>
 
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Info Button - Shows dataset stats */}
-            <DatasetInfoPopover
-              datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
-              isConnected={isConnectionVerified}
-            />
+            <div className="flex items-center gap-2 sm:gap-3">
+              {/* Info Button - Shows dataset stats */}
+              <DatasetInfoPopover
+                datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
+                isConnected={isConnectionVerified}
+              />
 
-            <Button
-              variant="ghost"
-              onClick={() => {
-                const newShowChat = !showChat;
-                setShowChat(newShowChat);
-                // Exit fullscreen voice mode when switching to chat
-                if (newShowChat) {
-                  setIsFullscreenVoice(false);
-                }
-              }}
-              className={cn(
-                "h-9 sm:h-11 px-2 sm:px-4 rounded-xl border transition-all gap-1.5 sm:gap-2",
-                showChat
-                  ? 'bg-violet-500 text-white border-violet-400 hover:bg-violet-400'
-                  : 'glass border-border hover:border-violet-500/30 hover:bg-accent'
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  const newShowChat = !showChat;
+                  setShowChat(newShowChat);
+                  // Exit fullscreen voice mode when switching to chat
+                  if (newShowChat) {
+                    setIsFullscreenVoice(false);
+                  }
+                }}
+                className={cn(
+                  "h-9 sm:h-11 px-2 sm:px-4 rounded-xl border transition-all gap-1.5 sm:gap-2",
+                  showChat
+                    ? 'bg-violet-500 text-white border-violet-400 hover:bg-violet-400'
+                    : 'glass border-border hover:border-violet-500/30 hover:bg-accent'
+                )}
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span className="text-xs sm:text-sm font-medium">Chat</span>
+              </Button>
+
+              {/* Clear Chat Button - only visible when in chat mode with messages */}
+              {showChat && messages.length > 0 && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Clear chat conversation"
+                      className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-red-500/30 hover:bg-red-500/10 transition-all"
+                    >
+                      <Eraser className="w-4 h-4 text-zinc-400" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent className="bg-card border-border">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Clear conversation?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will delete all messages in this chat. Your dataset connection will be preserved.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel className="border-border hover:bg-accent">Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => {
+                          clearCurrentChat();
+                          toast.success("Chat cleared");
+                        }}
+                        className="bg-red-500 hover:bg-red-600 text-white"
+                      >
+                        Clear Chat
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
-            >
-              <MessageCircle className="w-4 h-4" />
-              <span className="text-xs sm:text-sm font-medium">Chat</span>
-            </Button>
 
-            {/* Clear Chat Button - only visible when in chat mode with messages */}
-            {showChat && messages.length > 0 && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label="Clear chat conversation"
-                    className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-red-500/30 hover:bg-red-500/10 transition-all"
+                    aria-label="User menu"
+                    className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
                   >
-                    <Eraser className="w-4 h-4 text-zinc-400" />
+                    <User className="w-4 h-4 text-zinc-400" />
                   </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent className="bg-card border-border">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Clear conversation?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will delete all messages in this chat. Your dataset connection will be preserved.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel className="border-border hover:bg-accent">Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => {
-                        clearCurrentChat();
-                        toast.success("Chat cleared");
-                      }}
-                      className="bg-red-500 hover:bg-red-600 text-white"
-                    >
-                      Clear Chat
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="User menu"
-                  className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl glass border border-border hover:border-violet-500/30 hover:bg-accent transition-all"
-                >
-                  <User className="w-4 h-4 text-zinc-400" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56 bg-card border-border text-card-foreground">
-                <DropdownMenuLabel className="font-normal">
-                  <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-medium leading-none">{username}</p>
-                    <p className="text-xs leading-none text-muted-foreground">Thara.ai User</p>
-                  </div>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator className="bg-border" />
-                <DropdownMenuItem
-                  onClick={() => setShowSettings(true)}
-                  className="cursor-pointer hover:bg-accent focus:bg-accent"
-                >
-                  <Settings className="mr-2 h-4 w-4" />
-                  <span>Settings</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem className="cursor-pointer hover:bg-accent focus:bg-accent">
-                  <User className="mr-2 h-4 w-4" />
-                  <span>Profile</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator className="bg-border" />
-                <DropdownMenuItem
-                  onClick={onLogout}
-                  className="cursor-pointer text-red-400 hover:bg-accent focus:bg-accent hover:text-red-300"
-                >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>Logout</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 bg-card border-border text-card-foreground">
+                  <DropdownMenuLabel className="font-normal">
+                    <div className="flex flex-col space-y-1">
+                      <p className="text-sm font-medium leading-none">{username}</p>
+                      <p className="text-xs leading-none text-muted-foreground">Thara.ai User</p>
+                    </div>
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator className="bg-border" />
+                  <DropdownMenuItem
+                    onClick={() => setShowSettings(true)}
+                    className="cursor-pointer hover:bg-accent focus:bg-accent"
+                  >
+                    <Settings className="mr-2 h-4 w-4" />
+                    <span>Settings</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="cursor-pointer hover:bg-accent focus:bg-accent">
+                    <User className="mr-2 h-4 w-4" />
+                    <span>Profile</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-border" />
+                  <DropdownMenuItem
+                    onClick={onLogout}
+                    className="cursor-pointer text-red-400 hover:bg-accent focus:bg-accent hover:text-red-300"
+                  >
+                    <LogOut className="mr-2 h-4 w-4" />
+                    <span>Logout</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </header>
         )}
 
@@ -2399,14 +2504,13 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         handleVoiceToggle();
                       }}
                       aria-label={isRecording ? "Tap to stop recording" : isSpeaking ? "Stop speaking" : "Tap to start recording"}
-                      className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all duration-500 flex items-center justify-center ${
-                        isRecording
-                          ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
-                          : isSpeaking
-                            ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
-                            : (isProcessingVoice || isProcessingQuery)
-                              ? 'bg-cyan-500/20 border-2 border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'
-                              : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
+                      className={`relative w-14 h-14 sm:w-16 sm:h-16 rounded-full transition-all duration-500 flex items-center justify-center ${isRecording
+                        ? 'bg-violet-500 shadow-[0_0_60px_rgba(139,92,246,0.5)]'
+                        : isSpeaking
+                          ? 'bg-red-500 shadow-[0_0_60px_rgba(239,68,68,0.5)]'
+                          : (isProcessingVoice || isProcessingQuery)
+                            ? 'bg-cyan-500/20 border-2 border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'
+                            : 'bg-secondary border border-border hover:border-primary/50 hover:shadow-[0_0_40px_rgba(var(--primary),0.2)]'
                         }`}
                     >
                       {/* Pulsing ring when recording */}

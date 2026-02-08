@@ -454,6 +454,19 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
         if hint_parts:
             entity_hints = "\n**Extracted Entities (use these for filters):**\n" + "\n".join(hint_parts) + "\n"
 
+        # CRITICAL: Add multi-domain query hints for cross-table execution
+        if entities and entities.get('multi_domain_query'):
+            multi_domain = entities['multi_domain_query']
+            var = multi_domain.get('intermediate_variable', 'target_date')
+            cross_table_hint = f"""
+**CROSS-TABLE QUERY DETECTED - USE multi_step QUERY TYPE!**
+This query requires data from MULTIPLE TABLES. Look at the schema above to identify:
+- Step 1: Find the {var} from the relevant table (set output_variable: '{var}', extract_column: usually 'Date')
+- Step 2: Use ${{{var}}} in filters to query another table
+Use the tables listed in the schema context - don't assume table names.
+"""
+            entity_hints = entity_hints + cross_table_hint
+
     # Build user prompt
     user_prompt = f"""{schema_text}
 {entity_hints}

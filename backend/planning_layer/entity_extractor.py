@@ -265,6 +265,26 @@ class EntityExtractor:
         'trend from', 'trend over', 'trend across'
     ]
 
+    # Multi-domain query patterns - queries requiring data from DIFFERENT tables
+    # Format: (pattern, source_hint, target_hint, intermediate_variable)
+    # These are GENERIC patterns - they detect cross-table intent without hardcoding specific table names
+    MULTI_DOMAIN_PATTERNS = [
+        # Pattern: "who/what [from table B] on/during [extreme from table A]"
+        # E.g., "who worked on peak sales date", "what sold on best attendance day"
+        (r'who (?:worked|was present|attended|came|showed up).*(?:peak|highest|best|top|maximum)', 'primary', 'secondary', 'peak_date'),
+        (r'(?:staff|employees|workers|people).*(?:on|during|when).*(?:peak|highest|best|top|maximum)', 'primary', 'secondary', 'peak_date'),
+        
+        # Pattern: "[table B data] on/during [extreme from table A]"
+        (r'(?:inventory|stock|products|items|orders).*(?:peak|highest|best|top|maximum)', 'primary', 'secondary', 'peak_date'),
+        
+        # Pattern: "on the day when [table A metric was extreme], show [table B data]"
+        (r'(?:on|during).*(?:day|date).*(?:when|where).*(?:highest|lowest|peak|best|worst)', 'primary', 'secondary', 'target_date'),
+        
+        # Pattern: Explicit cross-reference 
+        (r'(?:combine|join|merge|cross.?reference).*(?:tables?|data|sheets?)', 'primary', 'secondary', 'join_key'),
+        (r'from (?:both|multiple|different) (?:tables?|sheets?|data)', 'primary', 'secondary', 'join_key'),
+    ]
+
     # Trend analysis keywords - indicates user wants trend/pattern analysis
     TREND_ANALYSIS_TERMS = [
         'trend', 'trends', 'trending', 'pattern', 'patterns',
@@ -326,6 +346,7 @@ class EntityExtractor:
             'comparison': self._is_comparison(q_lower),
             'multi_month_comparison': self._is_multi_month_comparison(q_lower),
             'cross_table_intent': self._is_cross_table_query(q_lower),
+            'multi_domain_query': self._detect_multi_domain_query(q_lower),
             'dimension_keywords': self._extract_dimension_keywords(q_lower),
             'time_period': self._extract_time_period(q_lower),
             'explicit_table': self._extract_explicit_table(question),
@@ -790,6 +811,30 @@ class EntityExtractor:
         - "Profit-ஐ அதிகமாக பாதிக்கும் காரணி எது?"
         """
         return any(term in text for term in self.IMPACT_ANALYSIS_TERMS)
+
+    def _detect_multi_domain_query(self, text: str) -> Optional[Dict[str, str]]:
+        """
+        Detect if query requires data from multiple different tables/domains.
+        
+        Returns dict with:
+        - source_domain: Primary data domain (e.g., 'sales')
+        - target_domain: Secondary data domain (e.g., 'attendance')
+        - intermediate_variable: What needs to be extracted from source (e.g., 'peak_sales_date')
+        - pattern_matched: The regex pattern that matched
+        
+        Examples:
+        - "Who worked on peak sales dates?" -> {source: 'sales', target: 'attendance', var: 'peak_sales_date'}
+        - "What was sold on best attendance days?" -> {source: 'attendance', target: 'sales', var: 'best_attendance_date'}
+        """
+        for pattern, source, target, var in self.MULTI_DOMAIN_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return {
+                    'source_domain': source,
+                    'target_domain': target,
+                    'intermediate_variable': var,
+                    'pattern_matched': pattern
+                }
+        return None
 
     def is_followup_question(self, question: str, has_previous_context: bool = False) -> bool:
         """

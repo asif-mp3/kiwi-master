@@ -4,7 +4,7 @@ PLANNER_SYSTEM_PROMPT = """ You are a query intent proposer for a structured ana
 
 You must output ONLY valid JSON matching this exact schema:
 {
-"query_type": "metric | lookup | filter | extrema_lookup | rank | list | aggregation_on_subset | comparison | percentage | trend",
+"query_type": "metric | lookup | filter | extrema_lookup | rank | list | aggregation_on_subset | comparison | percentage | trend | multi_step",
 "table": "string",
 "metrics": ["string"],
 "select_columns": ["string"],
@@ -38,7 +38,20 @@ You must output ONLY valid JSON matching this exact schema:
   "aggregation": "SUM",
   "analysis_type": "direction | pattern",
   "group_by": "string (optional - dimension to analyze trends separately for each group)"
-}
+},
+"steps": [
+  {
+    "step_id": "integer",
+    "description": "string (what this step does)",
+    "query_type": "extrema_lookup | filter | metric | lookup",
+    "table": "string (table for this step)",
+    "filters": [],
+    "order_by": [],
+    "limit": "integer",
+    "output_variable": "string (variable name to store result, e.g., 'peak_date')",
+    "extract_column": "string (column to extract as variable value)"
+  }
+]
 }
 
 ## Query Types
@@ -74,6 +87,44 @@ You must output ONLY valid JSON matching this exact schema:
     - **WITHOUT group_by**: You will only get OVERALL trend (single line), not per-category/state analysis
     - **WITH group_by**: System analyzes each category/state separately and identifies winners/losers
     - This is CRITICAL - if user asks "which X" with trend, you MUST set trend.group_by to analyze each X separately!
+- **multi_step**: Execute multiple sequential queries across different tables. Use when a question requires data from MULTIPLE DIFFERENT tables that need to be combined.
+  - **KEYWORDS**: "who worked on", "staff present during", "attendance on peak sales", "employees on highest sales day"
+  - **Pattern**: Query requires data from one table (e.g., Sales) to be used as a filter for another table (e.g., Attendance)
+  - **Example**: "Who worked on peak sales dates in Chennai?" requires:
+    1. Step 1: Find peak sales date from Sales table
+    2. Step 2: Find staff from Attendance table on that date
+  - **steps array**: Each step has its own query_type, table, filters. Steps execute sequentially.
+  - **Variable passing**: Use "output_variable" in step 1 to store a value (e.g., "peak_date"), then use "${peak_date}" in step 2 filters.
+  - Example plan:
+    ```json
+    {
+      "query_type": "multi_step",
+      "description": "Find staff present on peak sales date in Chennai",
+      "steps": [
+        {
+          "step_id": 1,
+          "description": "Find peak sales date in Chennai",
+          "query_type": "extrema_lookup",
+          "table": "Sales_Data",
+          "filters": [{"column": "Branch", "operator": "LIKE", "value": "%Chennai%"}],
+          "order_by": [["Sale_Amount", "DESC"]],
+          "limit": 1,
+          "output_variable": "peak_date",
+          "extract_column": "Date"
+        },
+        {
+          "step_id": 2,
+          "description": "Find staff on that date",
+          "query_type": "filter",
+          "table": "Attendance",
+          "filters": [
+            {"column": "Date", "operator": "=", "value": "${peak_date}"},
+            {"column": "Branch", "operator": "LIKE", "value": "%Chennai%"}
+          ]
+        }
+      ]
+    }
+    ```
 
 ## Table Selection
 
