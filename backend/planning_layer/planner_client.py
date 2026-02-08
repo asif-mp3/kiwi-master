@@ -497,15 +497,30 @@ Output the query plan as JSON:"""
             if "query_type" not in plan:
                 raise ValueError("LLM response missing required field: query_type")
 
-            if "table" not in plan:
-                raise ValueError("LLM response missing required field: table")
+            # multi_step queries don't have a root "table" - each step has its own table
+            query_type = plan.get("query_type")
+            if query_type == "multi_step":
+                # Validate steps array for multi_step queries
+                if "steps" not in plan or not isinstance(plan.get("steps"), list) or len(plan.get("steps", [])) == 0:
+                    raise ValueError("multi_step query_type requires a non-empty 'steps' array")
+                # Validate each step has a table
+                for i, step in enumerate(plan.get("steps", [])):
+                    if not isinstance(step, dict):
+                        raise ValueError(f"Step {i+1} must be a dictionary")
+                    if "table" not in step:
+                        raise ValueError(f"Step {i+1} missing required field: table")
+            else:
+                # Standard queries require root-level table
+                if "table" not in plan:
+                    raise ValueError("LLM response missing required field: table")
 
             # === TYPE VALIDATION ===
             # Ensure critical fields have correct types to prevent downstream errors
             if not isinstance(plan.get("query_type"), str):
                 raise ValueError(f"query_type must be a string, got: {type(plan.get('query_type'))}")
 
-            if not isinstance(plan.get("table"), str):
+            # Only validate root table for non-multi_step queries
+            if query_type != "multi_step" and not isinstance(plan.get("table"), str):
                 raise ValueError(f"table must be a string, got: {type(plan.get('table'))}")
 
             # Optional field type validation
