@@ -317,6 +317,13 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
             context["is_advanced_query"] = True
             context["analysis"] = result_df.attrs.get('analysis', {})
             context["calculation_result"] = result_df.attrs.get('calculation_result')
+        
+        # Add multi-step query metadata if present (cross-table queries)
+        if result_df.attrs.get('is_multi_step'):
+            context["is_multi_step"] = True
+            context["analysis"] = result_df.attrs.get('analysis', {})
+            context["steps_executed"] = result_df.attrs.get('steps_executed', [])
+            context["variables"] = result_df.attrs.get('variables', {})
     
     # Build the prompt for the LLM
     prompt = f"""Given the following query results, generate a concise, natural language explanation.
