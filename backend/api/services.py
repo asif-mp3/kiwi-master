@@ -3600,12 +3600,24 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         print("\n[STEP 8/8] QUERY EXECUTION...")
         try:
             # Import at function level to avoid circular imports
-            from execution_layer.executor import ADVANCED_QUERY_TYPES
+            from execution_layer.executor import ADVANCED_QUERY_TYPES, MULTI_STEP_QUERY_TYPES
             
             query_type = plan.get('query_type')
             
+            # Route multi-step queries to cross-table executor
+            if query_type in MULTI_STEP_QUERY_TYPES or plan.get('steps') is not None:
+                print(f"  -> Executing multi-step query: {query_type}")
+                from execution_layer.executor import execute_plan
+                result = execute_plan(plan)
+                final_sql = f"[Multi-step {query_type} query - see steps]"
+                print(f"  [OK] Multi-step query completed")
+                
+                # Attach multi-step metadata for explainer
+                if hasattr(result, 'attrs'):
+                    result.attrs['is_multi_step'] = True
+            
             # Route advanced query types to specialized executor (comparison, percentage, trend)
-            if query_type in ADVANCED_QUERY_TYPES:
+            elif query_type in ADVANCED_QUERY_TYPES:
                 print(f"  -> Executing advanced query type: {query_type}")
                 from execution_layer.executor import execute_plan
                 result = execute_plan(plan)
