@@ -103,6 +103,56 @@ import numpy as np
 import math
 
 
+def _extract_metric_name_from_result(previous_turn) -> str:
+    """
+    Extract human-readable metric name from previous query turn.
+    Works with ANY dataset by examining result columns and query plan.
+    """
+    if not previous_turn:
+        return "value"
+
+    # Priority 1: Check query plan for aggregation column
+    query_plan = getattr(previous_turn, 'query_plan', None) or {}
+    agg_col = query_plan.get('aggregation_column') or query_plan.get('metrics', [None])[0] if query_plan.get('metrics') else None
+    if agg_col:
+        return _humanize_metric(agg_col)
+
+    # Priority 2: Check result_data for value columns
+    result_data = getattr(previous_turn, 'result_data', None) or []
+    if result_data and isinstance(result_data, list) and len(result_data) > 0:
+        first_row = result_data[0] if isinstance(result_data[0], dict) else {}
+        for col in first_row.keys():
+            col_lower = col.lower()
+            # Skip internal/identifier columns
+            if col_lower in ('name', 'id', 'category', 'date', 'month', 'year', 'row_count'):
+                continue
+            # Likely a value column
+            if any(kw in col_lower for kw in ['value', 'amount', 'total', 'count', 'sum', 'avg', 'revenue', 'sales', 'profit', 'quantity']):
+                return _humanize_metric(col)
+            # First numeric-looking column
+            if isinstance(first_row.get(col), (int, float)):
+                return _humanize_metric(col)
+
+    # Priority 3: Table name as context
+    table_used = getattr(previous_turn, 'table_used', '')
+    if table_used:
+        # Extract meaningful part
+        clean = table_used.replace('Dataset_', '').replace('_', ' ')
+        return f"{clean} value"
+
+    return "value"
+
+
+def _humanize_metric(name: str) -> str:
+    """Convert column/metric name to human-readable format."""
+    if not name:
+        return "value"
+    # Remove common prefixes/suffixes and clean up
+    clean = name.replace('_', ' ').replace('-', ' ')
+    # Capitalize each word
+    return ' '.join(word.capitalize() for word in clean.split()).lower()
+
+
 def _resolve_top_references(question: str, previous_turn) -> str:
     """
     Resolve "top X" references in question using previous query's result_values.
@@ -310,6 +360,9 @@ class AppState:
         Checks:
         1. DuckDB file exists with tables
         2. Profile file exists with profiles
+
+        Also loads metadata (total_records, detected_tables) so the
+        /api/dataset-status endpoint returns correct values.
         """
         try:
             from analytics_engine.duckdb_manager import DuckDBManager
@@ -319,10 +372,11 @@ class AppState:
 
             # Check DuckDB has data
             has_duckdb_data = False
+            table_names = []
             if db_path.exists() and db_path.stat().st_size > 0:
                 db = DuckDBManager()
-                tables = db.list_tables()
-                if tables and len(tables) > 0:
+                table_names = db.list_tables()
+                if table_names and len(table_names) > 0:
                     has_duckdb_data = True
 
             # Check profiles exist
@@ -332,6 +386,54 @@ class AppState:
             if has_duckdb_data and has_profiles:
                 self.data_loaded = True
                 print(f"  [OK] Found existing data (DuckDB + profiles) - no reload needed")
+
+                # IMPORTANT: Also load metadata so /api/dataset-status returns correct values
+                try:
+                    db = DuckDBManager()
+                    total_records = 0
+                    detected_tables = []
+                    original_sheets = set()
+
+                    for table_name in table_names:
+                        try:
+                            # Get row count for this table
+                            result = db.query(f'SELECT COUNT(*) as cnt FROM "{table_name}"')
+                            # Convert numpy.int64 to native Python int for JSON serialization
+                            row_count = int(result.iloc[0]['cnt']) if len(result) > 0 else 0
+                            total_records += row_count
+
+                            # Get column info
+                            sample = db.query(f'SELECT * FROM "{table_name}" LIMIT 1')
+                            columns = [str(col) for col in sample.columns] if len(sample) > 0 else []
+
+                            # Extract original sheet name (remove file prefix if present)
+                            # Format is typically: "filename__sheetname" or just "sheetname"
+                            if '__' in table_name:
+                                parts = table_name.split('__')
+                                sheet_name = parts[-1] if len(parts) > 1 else table_name
+                            else:
+                                sheet_name = table_name
+                            original_sheets.add(sheet_name)
+
+                            detected_tables.append({
+                                'table_id': str(table_name),
+                                'title': str(table_name),
+                                'sheet_name': str(sheet_name),
+                                'source_id': '',
+                                'total_rows': row_count,  # Already converted to int above
+                                'columns': columns
+                            })
+                        except Exception as table_err:
+                            print(f"  [WARN] Could not get metadata for {table_name}: {table_err}")
+
+                    self.total_records = int(total_records)  # Ensure native int
+                    self.detected_tables = detected_tables
+                    self.original_sheet_names = list(original_sheets)
+                    print(f"  [OK] Loaded metadata: {len(table_names)} tables, {total_records:,} records")
+
+                except Exception as meta_err:
+                    print(f"  [WARN] Could not load metadata: {meta_err}")
+
         except Exception as e:
             # Silently fail - will load data normally
             pass
@@ -1249,17 +1351,20 @@ def _handle_projection(
                 elif v >= 1000: return f"Rs.{v/1000:.1f}K"
                 else: return f"Rs.{v:.0f}"
 
+            # Extract metric name dynamically (dataset-agnostic)
+            metric_name = _extract_metric_name_from_result(previous_turn)
+
             if is_tamil:
                 explanation = (
-                    f"{item_name} தற்போது {format_indian(item_value)} விற்பனையில் முன்னணியில் உள்ளது. "
-                    f"இந்த pattern தொடர்ந்தால், அடுத்த மாதம் எதிர்பார்க்கப்படும் விற்பனை "
+                    f"{item_name} தற்போது {format_indian(item_value)} {metric_name}-ல் முன்னணியில் உள்ளது. "
+                    f"இந்த pattern தொடர்ந்தால், அடுத்த மாதம் எதிர்பார்க்கப்படும் மதிப்பு "
                     f"சுமார் {format_indian(projected_value)} ஆக இருக்கும். "
                     f"(குறிப்பு: இது 5% வளர்ச்சி அனுமானத்தின் அடிப்படையில்)"
                 )
             else:
                 explanation = (
-                    f"{item_name} is currently the top performer with {format_indian(item_value)} in sales. "
-                    f"If this pattern continues, the expected sales for next month would be "
+                    f"{item_name} is currently the top performer with {format_indian(item_value)}. "
+                    f"If this pattern continues, the expected {metric_name} for next month would be "
                     f"approximately {format_indian(projected_value)}. "
                     f"(Note: This projection assumes ~5% growth based on current performance)"
                 )
@@ -1298,13 +1403,13 @@ def _handle_projection(
                 'explanation': explanation,
                 'data': [
                     {'Metric': 'Category', 'Value': item_name},
-                    {'Metric': 'Current Sales', 'Value': format_indian(item_value)},
-                    {'Metric': 'Projected Sales (Next Month)', 'Value': format_indian(projected_value)},
+                    {'Metric': f'Current {metric_name}', 'Value': format_indian(item_value)},
+                    {'Metric': f'Projected {metric_name} (Next Month)', 'Value': format_indian(projected_value)},
                     {'Metric': 'Growth Assumption', 'Value': '5%'},
                 ],
                 'visualization': {
                     'type': 'line',
-                    'title': f'{item_name} Sales Projection',
+                    'title': f'{item_name} Projection',
                     'data': chart_data,
                     'xKey': 'name',
                     'yKey': 'value',
@@ -1319,10 +1424,10 @@ def _handle_projection(
         # No usable data - provide guidance
         else:
             message = (
-                "முந்தைய கேள்வியில் போக்கு தகவல் இல்லை. முதலில் ஒரு போக்கு கேள்வி கேளுங்கள், எ.கா.: 'மாதவாரியான விற்பனை போக்கை காட்டு'"
+                "முந்தைய கேள்வியில் போக்கு தகவல் இல்லை. முதலில் ஒரு போக்கு கேள்வி கேளுங்கள், எ.கா.: 'மாதவாரியான போக்கை காட்டு'"
                 if is_tamil else
                 "I don't have enough data from your previous question to make a projection. "
-                "Try asking: 'Show me the sales trend across months' first."
+                "Try asking a trend question first, like: 'Show me the trend over time'"
             )
 
             return {
@@ -1478,7 +1583,7 @@ def _generate_projection_explanation(
         period = ' '.join(word.capitalize() for word in period.split())
 
     if is_tamil:
-        explanation = f"{conf_ta}, {period} விற்பனை சுமார் {projected} ஆக இருக்கும் என்று எதிர்பார்க்கப்படுகிறது."
+        explanation = f"{conf_ta}, {period} மதிப்பு சுமார் {projected} ஆக இருக்கும் என்று எதிர்பார்க்கப்படுகிறது."
 
         if result.expected_change != 0:
             if result.expected_change > 0:
@@ -1495,7 +1600,7 @@ def _generate_projection_explanation(
             explanation += f" மதிப்பு {range_low} முதல் {range_high} வரை இருக்கலாம்."
 
     else:
-        explanation = f"{conf_en}, {period} sales would be around {projected}."
+        explanation = f"{conf_en}, {period} value would be around {projected}."
 
         if result.expected_change != 0:
             explanation += f" That's about {change} ({change_pct:.0f}%) {dir_en} from current."
@@ -3524,7 +3629,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         # === CRITICAL: PRE-VALIDATE DATE FOR "TODAY/YESTERDAY" QUERIES ===
         # Check BEFORE planning to avoid hallucination with wrong data
-        time_period = entities.get('time_period', '').lower() if entities else ''
+        time_period = (entities.get('time_period') or '').lower() if entities else ''
 
         # FALLBACK: Also check raw question for today/yesterday keywords (belt and suspenders)
         query_lower = processing_query.lower()
@@ -3710,7 +3815,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             print(f"  ! Query returned 0 rows")
 
             # Check if this is a "today/yesterday" query with date outside data range
-            time_period = entities.get('time_period', '').lower() if entities else ''
+            time_period = (entities.get('time_period') or '').lower() if entities else ''
             # Fallback: check raw query for today/yesterday
             if not time_period:
                 query_lower_check = processing_query.lower()
@@ -3844,14 +3949,25 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         # Sanitize numpy types for JSON serialization
         data_list = None
         if result is not None and hasattr(result, 'to_dict'):
-            data_list = _sanitize_for_json(result.to_dict('records'))
+            # For aggregation queries, prefer underlying_rows for the data table
+            # This shows WHAT was counted, not just the count
+            if hasattr(result, 'attrs') and result.attrs.get('underlying_rows'):
+                data_list = _sanitize_for_json(result.attrs['underlying_rows'])
+                print(f"  [DATA] Using underlying rows for data table ({len(data_list)} rows)")
+            else:
+                data_list = _sanitize_for_json(result.to_dict('records'))
 
         # Determine visualization type based on query type and data
+        # For visualization, use the aggregated result (not underlying rows)
+        viz_data = None
+        if result is not None and hasattr(result, 'to_dict'):
+            viz_data = _sanitize_for_json(result.to_dict('records'))
+
         # NOTE: Removed len(data_list) > 1 gate to allow metric cards for single-value results
         visualization = None
-        if data_list:
+        if viz_data:
             try:
-                visualization = determine_visualization(plan, data_list, entities)
+                visualization = determine_visualization(plan, viz_data, entities)
             except Exception as viz_err:
                 print(f"[Visualization] Warning: Could not determine visualization: {viz_err}")
 

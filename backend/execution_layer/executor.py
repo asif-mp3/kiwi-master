@@ -49,6 +49,19 @@ def execute_plan(plan: dict):
         result_df.attrs['aggregation_column'] = aggregation_column
         result_df.attrs['query_type'] = 'aggregation_on_subset'
 
+        # Also fetch the underlying matching rows for the data table
+        # This is useful for COUNT queries where users want to see WHAT was counted
+        try:
+            from execution_layer.sql_compiler import compile_detail_query
+            detail_sql = compile_detail_query(plan, limit=100)  # Limit to 100 rows for display
+            if detail_sql:
+                detail_df = db.query(detail_sql)
+                if detail_df is not None and not detail_df.empty:
+                    result_df.attrs['underlying_rows'] = detail_df.to_dict('records')
+                    print(f"[Executor] Fetched {len(detail_df)} underlying rows for data table")
+        except Exception as e:
+            print(f"[Executor] Warning: Could not fetch underlying rows: {e}")
+
     return result_df
 
 

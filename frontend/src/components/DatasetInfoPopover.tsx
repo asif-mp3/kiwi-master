@@ -32,9 +32,10 @@ export interface DatasetInfo {
 interface DatasetInfoPopoverProps {
   datasetInfo: DatasetInfo | null;
   isConnected: boolean;
+  onClick?: () => void;  // Click handler to open full panel
 }
 
-export function DatasetInfoPopover({ datasetInfo, isConnected }: DatasetInfoPopoverProps) {
+export function DatasetInfoPopover({ datasetInfo, isConnected, onClick }: DatasetInfoPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [expandedSheet, setExpandedSheet] = useState<string | null>(null);
 
@@ -212,12 +213,26 @@ export function DatasetInfoPopover({ datasetInfo, isConnected }: DatasetInfoPopo
 
             {/* Footer */}
             <div className="px-4 py-3 border-t border-border bg-muted/30">
-              <p className="text-[10px] text-muted-foreground text-center">
-                {isConnected
-                  ? 'Demo data is pre-loaded and ready for queries'
-                  : 'Connect a dataset to start analyzing'
-                }
-              </p>
+              {onClick ? (
+                <Button
+                  onClick={() => {
+                    setIsOpen(false);
+                    onClick();
+                  }}
+                  variant="outline"
+                  className="w-full h-9 text-xs font-medium border-violet-500/30 hover:bg-violet-500/10 hover:border-violet-500/50"
+                >
+                  <Database className="w-3.5 h-3.5 mr-2" />
+                  View All Data Sources
+                </Button>
+              ) : (
+                <p className="text-[10px] text-muted-foreground text-center">
+                  {isConnected
+                    ? 'Demo data is pre-loaded and ready for queries'
+                    : 'Connect a dataset to start analyzing'
+                  }
+                </p>
+              )}
             </div>
           </motion.div>
         </AnimatePresence>

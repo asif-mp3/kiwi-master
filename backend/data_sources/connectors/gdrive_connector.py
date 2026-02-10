@@ -34,8 +34,8 @@ class GoogleDriveConnector(BaseConnector):
     Note: For Google Sheets, use the existing Google Sheets code path.
     """
 
-    def __init__(self, url: str):
-        super().__init__(url)
+    def __init__(self, url: str, credentials: Optional[Dict] = None):
+        super().__init__(url, credentials)
         self._file_id: Optional[str] = None
         self._detected_type: Optional[str] = None
 

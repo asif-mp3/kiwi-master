@@ -148,7 +148,37 @@ def determine_visualization(
                 # Determine if this is a percentage
                 is_percentage = query_type == 'percentage' or 'percent' in value_col.lower()
 
-                print(f"[Viz] Metric card: {value_col} = {value}, is_percentage={is_percentage}")
+                # Determine if this is a currency value
+                # Use STRONG currency keywords (likely to be actual money)
+                strong_currency_keywords = ['sales', 'revenue', 'price', 'cost', 'rupee', 'inr', 'usd', 'dollar', 'profit', 'income', 'expense']
+                # Use WEAK keywords that only apply if combined with money context
+                weak_currency_keywords = ['amount', 'value', 'total']
+
+                col_lower = value_col.lower()
+                agg_col = (query_plan or {}).get('aggregation_column', '').lower() if query_plan else ''
+                agg_func = (query_plan or {}).get('aggregation_function', '').upper() if query_plan else ''
+
+                # Check if column name strongly suggests currency
+                is_currency = any(kw in col_lower for kw in strong_currency_keywords)
+
+                # Also check aggregation column
+                if agg_col and any(kw in agg_col for kw in strong_currency_keywords):
+                    is_currency = True
+
+                # For weak keywords, only mark as currency if aggregation is SUM (summing amounts)
+                if not is_currency and agg_func == 'SUM':
+                    if any(kw in col_lower for kw in weak_currency_keywords) or any(kw in agg_col for kw in weak_currency_keywords):
+                        is_currency = True
+
+                # COUNT queries are NEVER currency (counting items, not money)
+                if agg_func == 'COUNT' or agg_func == 'COUNT_DISTINCT':
+                    is_currency = False
+
+                # Percentages are NEVER currency
+                if is_percentage:
+                    is_currency = False
+
+                print(f"[Viz] Metric card: {value_col} = {value}, is_percentage={is_percentage}, is_currency={is_currency}")
 
                 return {
                     'type': 'metric_card',
@@ -156,6 +186,7 @@ def determine_visualization(
                     'data': {
                         'value': value,
                         'is_percentage': is_percentage,
+                        'is_currency': is_currency,
                         'supporting_text': _build_supporting_text(row, value_col, query_type)
                     }
                 }

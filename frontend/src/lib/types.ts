@@ -195,3 +195,46 @@ export interface HealthCheckResponse {
     };
   };
 }
+
+// ============================================================================
+// Plug-and-Play Data Source Types
+// ============================================================================
+
+export type DataSourceType =
+  | 'google_sheets'
+  | 'google_drive_folder'
+  | 'google_drive_file'
+  | 'csv'
+  | 'excel'
+  | 'dropbox'
+  | 'onedrive'
+  | 'local';
+
+export type DataSourceStatus =
+  | 'connected'
+  | 'syncing'
+  | 'error'
+  | 'disconnected';
+
+export interface DataSource {
+  id: string;
+  type: DataSourceType;
+  name: string;
+  url: string;
+  status: DataSourceStatus;
+  lastSync?: string;
+  tableCount: number;
+  recordCount: number;
+  error?: string;
+  isAutoSync?: boolean;  // True for demo mode drive folder
+  tables?: string[];
+}
+
+export interface DataSourcesResponse {
+  success: boolean;
+  sources: DataSource[];
+  totalTables: number;
+  totalRecords: number;
+  demoMode: boolean;
+  demoFolderUrl?: string;
+}

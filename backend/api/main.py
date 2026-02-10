@@ -441,6 +441,26 @@ async def load_dataset(request: LoadDataRequest, user: dict = Depends(require_au
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def is_local_path(path: str) -> bool:
+    """Check if a path is a local filesystem path (not a remote URL)."""
+    if not path:
+        return False
+    path = path.strip()
+    # file:// URLs
+    if path.startswith('file://'):
+        return True
+    # Windows absolute paths: C:\, D:\, etc.
+    if len(path) >= 2 and path[1] == ':':
+        return True
+    # Unix absolute paths
+    if path.startswith('/'):
+        return True
+    # Home directory paths
+    if path.startswith('~'):
+        return True
+    return False
+
+
 @app.post("/api/load-source", response_model=LoadDataResponse)
 async def load_source(request: LoadDataRequest, user: dict = Depends(require_auth)):
     """
@@ -451,6 +471,7 @@ async def load_source(request: LoadDataRequest, user: dict = Depends(require_aut
     - CSV files: https://example.com/data.csv or local paths
     - Excel files: https://example.com/data.xlsx or local paths
     - Google Drive files: https://drive.google.com/file/d/...
+    - Local files: C:\\path\\file.csv, /path/file.csv, ~/file.csv
 
     For Google Sheets URLs, this automatically uses the existing code path.
     For other sources, it uses the new connector system.
@@ -464,8 +485,10 @@ async def load_source(request: LoadDataRequest, user: dict = Depends(require_aut
         if not request.url or not request.url.strip():
             raise HTTPException(status_code=400, detail="URL is required")
 
-        # SSRF Prevention: Validate URL domain
-        validate_url_for_ssrf(request.url)
+        # SSRF Prevention: Only validate remote URLs
+        # Local paths have their own security via LocalConnector.ALLOWED_BASE_DIRS
+        if not is_local_path(request.url):
+            validate_url_for_ssrf(request.url)
 
         # Get user ID for OAuth credentials (used for Google Sheets)
         user_id = user.get("id") if user else None
@@ -484,6 +507,184 @@ async def load_source(request: LoadDataRequest, user: dict = Depends(require_aut
         raise
     except Exception as e:
         print(f"[API] Exception in load_source: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/upload-file", response_model=LoadDataResponse)
+async def upload_file(
+    file: UploadFile = File(...),
+    append: bool = False,
+    user: dict = Depends(require_auth)
+):
+    """
+    Upload a local file (CSV, Excel, PDF) directly.
+
+    This endpoint handles file uploads from the frontend when users want to
+    add local files. The file is saved to a temp location and processed.
+
+    Args:
+        file: The uploaded file
+        append: If true, append to existing data. Default: false (replace)
+
+    Returns:
+        LoadDataResponse with success status and loaded table info
+    """
+    import tempfile
+    import shutil
+
+    try:
+        print(f"[API] upload-file: {file.filename} (append={append})")
+
+        # Validate file type
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Filename is required")
+
+        filename_lower = file.filename.lower()
+        allowed_extensions = ['.csv', '.xlsx', '.xls', '.xlsm', '.pdf']
+
+        if not any(filename_lower.endswith(ext) for ext in allowed_extensions):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+
+        # Save to temp file
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            temp_path = tmp.name
+
+        print(f"[API] Saved upload to: {temp_path}")
+
+        try:
+            # Process file directly based on extension
+            # (bypass LocalConnector security check for temp files)
+            tables = {}
+            ext = suffix.lower()
+
+            if ext == '.csv':
+                from data_sources.connectors.csv_connector import CSVConnector
+                connector = CSVConnector(temp_path)
+                tables = connector.fetch_tables()
+            elif ext in ('.xlsx', '.xls', '.xlsm'):
+                from data_sources.connectors.excel_connector import ExcelConnector
+                connector = ExcelConnector(temp_path)
+                tables = connector.fetch_tables()
+            elif ext == '.pdf':
+                from data_sources.connectors.pdf_connector import PDFConnector
+                connector = PDFConnector(temp_path)
+                tables = connector.fetch_tables()
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+
+            if not tables:
+                raise HTTPException(status_code=422, detail="No data found in file")
+
+            # Load tables into DuckDB directly
+            from analytics_engine.duckdb_manager import DuckDBManager
+            from schema_intelligence.data_profiler import DataProfiler
+            from api.services import app_state  # Use shared singleton
+
+            db = DuckDBManager()
+            conn = db.get_connection()
+            profiler = DataProfiler()
+            profile_store = app_state.profile_store  # USE SHARED INSTANCE (not local)
+
+            # If not appending, DELETE all existing data first
+            if not append:
+                print("[API] Replace mode: deleting existing tables and profiles...")
+
+                # Get all existing tables from DuckDB
+                existing_tables = [row[0] for row in conn.execute("SHOW TABLES").fetchall()]
+
+                # Drop all existing tables
+                for old_table in existing_tables:
+                    try:
+                        conn.execute(f'DROP TABLE IF EXISTS "{old_table}"')
+                        print(f"[API] Dropped table: {old_table}")
+                    except Exception as drop_err:
+                        print(f"[API] Warning: Could not drop {old_table}: {drop_err}")
+
+                # Clear all profiles
+                profile_store.clear_profiles()
+                print(f"[API] Cleared {len(existing_tables)} existing tables and profiles")
+
+            total_records = 0
+            loaded_tables = []
+
+            for table_name, dfs in tables.items():
+                for i, df in enumerate(dfs):
+                    # Generate unique table name
+                    safe_name = table_name.replace(' ', '_').replace('-', '_')
+                    safe_name = ''.join(c for c in safe_name if c.isalnum() or c == '_')
+                    full_table_name = f"{safe_name}_{i}" if len(dfs) > 1 else safe_name
+
+                    # Load into DuckDB
+                    conn.execute(f'DROP TABLE IF EXISTS "{full_table_name}"')
+                    conn.execute(f'CREATE TABLE "{full_table_name}" AS SELECT * FROM df')
+
+                    total_records += len(df)
+                    loaded_tables.append(full_table_name)
+
+                    # Profile the table (args: table_name, df)
+                    try:
+                        profile = profiler.profile_table(full_table_name, df)
+                        profile_store.set_profile(full_table_name, profile)
+                    except Exception as profile_err:
+                        print(f"[API] Warning: Could not profile {full_table_name}: {profile_err}")
+
+            print(f"[API] Loaded {len(loaded_tables)} tables with {total_records} records")
+
+            # Save profiles to disk (using shared instance)
+            profile_store.save_profiles()
+
+            # Update app_state metadata DIRECTLY (no need to reload from disk)
+            sheet_names = list(tables.keys())
+            detected_tables = []
+            for table_name in loaded_tables:
+                detected_tables.append({
+                    "table_id": table_name,
+                    "title": table_name,
+                    "sheet_name": table_name,
+                    "source_id": f"upload#{table_name}",
+                    "sheet_hash": "",
+                    "row_range": (0, 0),
+                    "col_range": (0, 0),
+                    "total_rows": 0
+                })
+
+            # Update app_state with new metadata
+            app_state.total_records = int(total_records)
+            app_state.detected_tables = detected_tables
+            app_state.original_sheet_names = sheet_names
+            app_state.data_loaded = True
+            print(f"[API] Updated app_state: {len(loaded_tables)} tables, {total_records} records")
+
+            return {
+                "success": True,
+                "stats": {
+                    "totalTables": len(loaded_tables),
+                    "totalRecords": int(total_records),
+                    "sheetCount": len(sheet_names),
+                    "sheets": sheet_names,
+                    "detectedTables": detected_tables,
+                    "profiledTables": len(loaded_tables)
+                }
+            }
+
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Exception in upload_file: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -544,16 +745,33 @@ async def get_dataset_status():
 
         if app_state.data_loaded and app_state.profile_store:
             profiles = app_state.profile_store.get_all_profiles()
+
+            # Get drive folder URL from settings if in demo mode
+            drive_folder_url = None
+            is_demo_mode = False
+            try:
+                from utils.config_loader import get_config
+                config = get_config()
+                # Config is a dataclass, use attribute access not .get()
+                demo_mode_config = config.google_sheets.demo_mode
+                if demo_mode_config and demo_mode_config.enabled:
+                    is_demo_mode = True
+                    drive_folder_url = demo_mode_config.drive_folder_url
+            except Exception as e:
+                print(f"[API] Could not get demo mode config: {e}")
+                pass
+
             return {
                 "loaded": True,
-                "demo_mode": True,
+                "demo_mode": is_demo_mode,
                 "total_tables": len(profiles),
                 "tables": list(profiles.keys()),  # DuckDB table names (for reference)
                 # Rich metadata for UI display
                 "original_sheets": app_state.original_sheet_names,
                 "total_records": app_state.total_records,
                 "detected_tables": app_state.detected_tables,
-                "loaded_spreadsheets": app_state.loaded_spreadsheet_ids
+                "loaded_spreadsheets": app_state.loaded_spreadsheet_ids,
+                "drive_folder_url": drive_folder_url
             }
         return {"loaded": False, "demo_mode": False}
     except Exception as e:

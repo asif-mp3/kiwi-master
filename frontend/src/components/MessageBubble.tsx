@@ -592,11 +592,22 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
                     return `${val.toFixed(1)}%`;
                   }
 
-                  // Currency display with Indian number formatting
-                  if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)} Cr`;
-                  if (val >= 100000) return `₹${(val / 100000).toFixed(2)} L`;
-                  if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
-                  return `₹${val.toLocaleString('en-IN')}`;
+                  // Check if this is a currency value (explicitly marked or large sales-type number)
+                  const isCurrency = message.metadata.visualization.data?.is_currency === true;
+
+                  // Currency display with Indian number formatting (only if marked as currency)
+                  if (isCurrency) {
+                    if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)} Cr`;
+                    if (val >= 100000) return `₹${(val / 100000).toFixed(2)} L`;
+                    if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
+                    return `₹${val.toLocaleString('en-IN')}`;
+                  }
+
+                  // Non-currency numbers (counts, quantities, etc.)
+                  if (val >= 10000000) return `${(val / 10000000).toFixed(1)} Cr`;
+                  if (val >= 100000) return `${(val / 100000).toFixed(1)} L`;
+                  if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
+                  return val.toLocaleString('en-IN');
                 })()}
               </div>
               {message.metadata.visualization.data?.supporting_text && (

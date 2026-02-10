@@ -11,7 +11,7 @@ This is ADDITIVE code - does not modify existing Google Sheets functionality.
 
 import os
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 import pandas as pd
 import requests
@@ -29,8 +29,8 @@ class CSVConnector(BaseConnector):
     - GitHub raw URLs: https://raw.githubusercontent.com/...
     """
 
-    def __init__(self, url: str):
-        super().__init__(url)
+    def __init__(self, url: str, credentials: Optional[Dict] = None):
+        super().__init__(url, credentials)
         self._df: pd.DataFrame = None
 
     @classmethod

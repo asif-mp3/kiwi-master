@@ -78,6 +78,7 @@ import { Input } from "@/components/ui/input";
 import { ChatTab } from '@/lib/types';
 // DatasetConnection removed - using demo mode only
 import { DatasetInfoPopover, DatasetInfo } from './DatasetInfoPopover';
+import { DataSourcesPanel } from './DataSourcesPanel';
 import {
   VOICE_RECORDING_TIMEOUT,
   VOICE_MODE_TIMEOUT,
@@ -935,6 +936,9 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
   // Demo mode state - when true, show info button instead of connection dialog
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [demoDatasetInfo, setDemoDatasetInfo] = useState<DatasetInfo | null>(null);
+
+  // Data Sources Panel state
+  const [isDataSourcesPanelOpen, setIsDataSourcesPanelOpen] = useState(false);
 
   // Fullscreen call mode - hides header for immersive phone-call experience on mobile
   const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
@@ -2250,10 +2254,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
             </div>
 
             <div className="flex items-center gap-2 sm:gap-3">
-              {/* Info Button - Shows dataset stats */}
+              {/* Data Sources Button - Shows connected sources */}
               <DatasetInfoPopover
                 datasetInfo={demoDatasetInfo || activeChat?.datasetStats || null}
                 isConnected={isConnectionVerified}
+                onClick={() => setIsDataSourcesPanelOpen(true)}
               />
 
               <Button
@@ -2821,6 +2826,36 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Data Sources Panel */}
+      <DataSourcesPanel
+        isOpen={isDataSourcesPanelOpen}
+        onClose={() => setIsDataSourcesPanelOpen(false)}
+        onAddSource={() => {
+          // For now, just show a toast - could open a connection dialog
+          toast.info("Add more data sources", {
+            description: "Use the backend /api/load-source endpoint to add CSV, Excel, or Drive files."
+          });
+        }}
+        onRefresh={() => {
+          // Refresh dataset status
+          api.getDatasetStatus().then((status) => {
+            if (status.loaded) {
+              setIsConnectionVerified(true);
+              if (status.detected_tables) {
+                setDemoDatasetInfo({
+                  totalTables: status.total_tables || 0,
+                  totalRecords: status.total_records || 0,
+                  sheetCount: status.original_sheets?.length || 0,
+                  sheets: status.original_sheets || [],
+                  detectedTables: status.detected_tables || [],
+                });
+              }
+              toast.success("Data refreshed");
+            }
+          });
+        }}
+      />
     </div>
   );
 }

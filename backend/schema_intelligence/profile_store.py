@@ -3,6 +3,7 @@ Profile Store - Manages table profiles with caching and persistence.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
@@ -36,11 +37,13 @@ class ProfileStore:
             self._profiles = {}
 
     def save_profiles(self):
-        """Persist profiles to disk"""
+        """Persist profiles to disk with guaranteed write"""
         try:
             Path(self._profiles_path).parent.mkdir(parents=True, exist_ok=True)
             with open(self._profiles_path, 'w', encoding='utf-8') as f:
                 json.dump(self._profiles, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure write completes before returning
             print(f"  Saved {len(self._profiles)} table profiles to disk")
         except Exception as e:
             print(f"  Warning: Could not save profiles: {e}")

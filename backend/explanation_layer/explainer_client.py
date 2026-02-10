@@ -585,27 +585,65 @@ def _fallback_explanation(result_df, context):
         
         return explanation
     
-    # For non-aggregation queries
+    # Check if this is a SQL aggregation result (has 'result' column from sql_compiler)
+    if 'result' in result_df.columns and len(result_df) == 1:
+        result_value = result_df['result'].iloc[0]
+        actual_row_count = result_df.get('row_count', [0]).iloc[0] if 'row_count' in result_df.columns else 0
+
+        # Try to determine what was queried from context
+        query_type = context.get("query_type", "")
+        table_name = context.get("table", "the data")
+        agg_func = context.get("aggregation_function", "COUNT")
+
+        # Format the result naturally
+        if agg_func == "COUNT" or str(result_value).isdigit():
+            count_val = int(result_value) if result_value else 0
+            if count_val == 0:
+                return "I couldn't find any matching records for that."
+            elif count_val == 1:
+                return f"There is 1 record that matches."
+            else:
+                return f"There are {count_val} records that match."
+        else:
+            # Non-count aggregation
+            return f"The result is {result_value}."
+
+    # For non-aggregation queries (list/lookup)
     row_count = len(result_df)
-    
+
     if row_count == 1:
-        # Single row result
-        parts = []
-        for col in result_df.columns:
-            value = result_df[col].iloc[0]
-            parts.append(f"{col} = {value}")
-        return ", ".join(parts)
+        # Single row result - present key values naturally
+        # Filter out internal columns
+        internal_cols = {'row_count', 'min_value', 'max_value', 'result'}
+        display_cols = [col for col in result_df.columns if col.lower() not in internal_cols]
+
+        if display_cols:
+            parts = []
+            for col in display_cols[:5]:  # Limit to 5 columns
+                value = result_df[col].iloc[0]
+                # Humanize column name
+                col_name = col.replace('_', ' ').title()
+                parts.append(f"{col_name}: {value}")
+            return "Here's what I found: " + ", ".join(parts)
+        else:
+            # Fallback if only internal columns
+            result_val = result_df['result'].iloc[0] if 'result' in result_df.columns else result_df.iloc[0, 0]
+            return f"The result is {result_val}."
     else:
-        # Multiple rows
-        return f"Found {row_count} results with columns: {', '.join(result_df.columns)}"
+        # Multiple rows - summarize
+        return f"Found {row_count} results."
 
 
 def _fallback_advanced_explanation(context):
     """
     Fallback explanation for advanced query types (comparison, percentage, trend).
+    Uses dynamic metric names extracted from context - works with ANY dataset.
     """
     analysis = context.get("analysis", {})
     query_type = context.get("query_type")
+
+    # Extract metric name dynamically from context (dataset-agnostic)
+    metric_name = _extract_metric_name(context)
 
     if "error" in analysis:
         return f"Could not complete the analysis: {analysis['error']}"
@@ -624,11 +662,11 @@ def _fallback_advanced_explanation(context):
         formatted_b = _format_number_indian(value_b)
 
         if direction == "increased":
-            return f"{emoji} Sales increased from {formatted_a} ({period_a}) to {formatted_b} ({period_b}) - a {abs(pct_change):.0f}% increase"
+            return f"{emoji} {metric_name} increased from {formatted_a} ({period_a}) to {formatted_b} ({period_b}) - a {abs(pct_change):.0f}% increase"
         elif direction == "decreased":
-            return f"{emoji} Sales decreased from {formatted_a} ({period_a}) to {formatted_b} ({period_b}) - a {abs(pct_change):.0f}% decrease"
+            return f"{emoji} {metric_name} decreased from {formatted_a} ({period_a}) to {formatted_b} ({period_b}) - a {abs(pct_change):.0f}% decrease"
         else:
-            return f"Sales remained stable between {period_a} ({formatted_a}) and {period_b} ({formatted_b})"
+            return f"{metric_name} remained stable between {period_a} ({formatted_a}) and {period_b} ({formatted_b})"
 
     elif query_type == "percentage":
         percentage = analysis.get("percentage", 0)
@@ -662,13 +700,55 @@ def _fallback_advanced_explanation(context):
                 spike_info = f" There was an unusual spike in {max_date} reaching {formatted_max}!"
 
         if direction == "increasing":
-            return f"{emoji} Sales are trending upward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
+            return f"{emoji} {metric_name} is trending upward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
         elif direction == "decreasing":
-            return f"{emoji} Sales are trending downward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
+            return f"{emoji} {metric_name} is trending downward - from {formatted_start} to {formatted_end} ({pct_change:.0f}% total change).{spike_info}"
         else:
-            return f"{emoji} Sales are relatively stable - from {formatted_start} to {formatted_end}.{spike_info}"
+            return f"{emoji} {metric_name} is relatively stable - from {formatted_start} to {formatted_end}.{spike_info}"
 
     return "Analysis completed but no specific insights available."
+
+
+def _extract_metric_name(context: dict) -> str:
+    """
+    Extract human-readable metric name from context.
+    Works with ANY dataset by looking at aggregation column, table name, or column names.
+    """
+    # Priority 1: Aggregation column (most specific)
+    agg_col = context.get("aggregation_column") or context.get("aggregation_col")
+    if agg_col:
+        return _humanize_name(agg_col)
+
+    # Priority 2: First numeric column from data
+    columns = context.get("columns", [])
+    for col in columns:
+        col_lower = col.lower()
+        # Skip internal/system columns
+        if col_lower in ('row_count', 'result', 'min_value', 'max_value', 'count'):
+            continue
+        # Check if it's a likely value column
+        if any(kw in col_lower for kw in ['value', 'amount', 'total', 'sum', 'count', 'qty', 'quantity']):
+            return _humanize_name(col)
+
+    # Priority 3: Table name as fallback
+    table = context.get("table")
+    if table:
+        # Extract meaningful part of table name
+        clean_table = table.replace('Dataset_', '').replace('_', ' ')
+        return f"the {clean_table} values"
+
+    # Default fallback
+    return "The values"
+
+
+def _humanize_name(name: str) -> str:
+    """Convert column/metric name to human-readable format."""
+    if not name:
+        return "Value"
+    # Remove common prefixes/suffixes
+    clean = name.replace('_', ' ').replace('-', ' ')
+    # Capitalize each word
+    return ' '.join(word.capitalize() for word in clean.split())
 
 
 def generate_off_topic_response(user_message: str, is_tamil: bool = False) -> str:
@@ -702,7 +782,7 @@ def generate_off_topic_response(user_message: str, is_tamil: bool = False) -> st
 **YOUR IDENTITY:**
 - Your name is Thara
 - You are a friendly AI data assistant
-- You help users explore their spreadsheet data (sales, trends, profits, etc.)
+- You help users explore their data (totals, trends, comparisons, insights)
 - You speak both English and Tamil naturally
 
 **YOUR PERSONALITY:**
@@ -725,7 +805,7 @@ For IDENTITY questions (what's your name, who are you):
 
 For CAPABILITY questions (what can you do, what questions can I ask):
 - Explain briefly what you can do with examples
-- "You can ask me things like: What were total sales last month? Show me top 5 products. Compare Chennai vs Bangalore. Which branch has highest profit?"
+- "You can ask me things like: What's the total for last month? Show me top 5 items. Compare trends. Which category has the highest value?"
 
 For PERSONAL questions (how are you, did you eat):
 - Answer naturally, then redirect to data
@@ -760,6 +840,6 @@ Generate a natural, conversational response:"""
         print(f"[WARN] Off-topic LLM failed ({e}), using fallback [{elapsed:.0f}ms]")
 
         if is_tamil:
-            return "Haha interesting! Naan data expert - sales, trends pathi kelu! Enna paakanum?"
+            return "Haha interesting! Naan data expert - data pathi kelu! Enna paakanum?"
         else:
-            return "Haha, that's fun! But my superpower is data - ask me about sales, trends, or insights!"
+            return "Haha, that's fun! But my superpower is data - ask me anything about your data!"

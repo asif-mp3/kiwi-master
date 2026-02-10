@@ -1,4 +1,4 @@
-import { LoadDataResponse, ProcessQueryResponse, DetectedTable } from '../lib/types';
+import { LoadDataResponse, ProcessQueryResponse, DetectedTable, DataSourcesResponse, DataSource, DataSourceType } from '../lib/types';
 import { getApiBaseUrl, getElevenLabsVoiceId } from '../lib/constants';
 
 // ============================================================================
@@ -541,6 +541,7 @@ export const api = {
     detected_tables?: DetectedTable[];
     loaded_spreadsheets?: string[];
     error?: string;
+    drive_folder_url?: string;
   }> => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/dataset-status`, {
@@ -558,6 +559,253 @@ export const api = {
       console.error('[API] getDatasetStatus error:', e);
       return { loaded: false, demo_mode: false };
     }
+  },
+
+  // ============================================================================
+  // Plug-and-Play Data Source Methods
+  // ============================================================================
+
+  /**
+   * Load data from any supported source (plug-and-play).
+   * Backend endpoint: POST /api/load-source
+   *
+   * Supported sources:
+   * - Google Sheets URL
+   * - Google Drive file URL
+   * - CSV/Excel URL
+   * - Dropbox link
+   * - OneDrive link
+   * - Local file path
+   *
+   * @param url - Source URL or path
+   * @param append - If true, adds to existing data
+   */
+  loadSource: async (url: string, append: boolean = false): Promise<LoadDataResponse> => {
+    console.log('[API] loadSource called with URL:', url, 'append:', append);
+
+    const response = await handleResponse(
+      await fetchWithTimeout(
+        `${API_BASE_URL}/api/load-source`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({ url, append }),
+        },
+        60000
+      )
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('[API] loadSource HTTP error:', response.status, error);
+      throw new Error(error.detail || 'Failed to load data source');
+    }
+
+    const result = await response.json();
+    console.log('[API] loadSource response:', result);
+
+    if (!result.success) {
+      throw new Error(result.error || result.message || 'Failed to load data source');
+    }
+
+    return result;
+  },
+
+  /**
+   * Upload a local file (CSV, Excel, PDF) directly.
+   * Backend endpoint: POST /api/upload-file
+   *
+   * @param file - The file to upload
+   * @param append - If true, adds to existing data
+   */
+  uploadFile: async (file: File, append: boolean = false): Promise<LoadDataResponse> => {
+    console.log('[API] uploadFile called with file:', file.name, 'append:', append);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    // Build URL with query params
+    const url = new URL(`${API_BASE_URL}/api/upload-file`);
+    url.searchParams.set('append', String(append));
+
+    const response = await handleResponse(
+      await fetchWithTimeout(
+        url.toString(),
+        {
+          method: 'POST',
+          headers: {
+            ...getAuthHeaders(),
+            // Don't set Content-Type - browser will set it with boundary for FormData
+          },
+          body: formData,
+        },
+        120000  // 2 minute timeout for file upload
+      )
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('[API] uploadFile HTTP error:', response.status, error);
+      throw new Error(error.detail || 'Failed to upload file');
+    }
+
+    const result = await response.json();
+    console.log('[API] uploadFile response:', result);
+
+    if (!result.success) {
+      throw new Error(result.error || result.message || 'Failed to upload file');
+    }
+
+    return result;
+  },
+
+  /**
+   * Sync all files from a Google Drive folder.
+   * Backend endpoint: POST /api/sync-folder
+   *
+   * @param folderUrl - Google Drive folder URL
+   * @param append - If true, adds to existing data
+   */
+  syncDriveFolder: async (folderUrl: string, append: boolean = false): Promise<LoadDataResponse> => {
+    console.log('[API] syncDriveFolder called with URL:', folderUrl);
+
+    const response = await handleResponse(
+      await fetchWithTimeout(
+        `${API_BASE_URL}/api/sync-folder`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+          },
+          body: JSON.stringify({ url: folderUrl, append }),
+        },
+        120000  // 2 minute timeout for folder sync
+      )
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to sync folder');
+    }
+
+    const result = await response.json();
+    if (!result.success) {
+      throw new Error(result.error || 'Folder sync failed');
+    }
+
+    return result;
+  },
+
+  /**
+   * Get all connected data sources with their status.
+   * Constructs source info from dataset-status endpoint.
+   */
+  getDataSources: async (): Promise<DataSourcesResponse> => {
+    try {
+      const status = await api.getDatasetStatus();
+
+      if (!status.loaded) {
+        return {
+          success: true,
+          sources: [],
+          totalTables: 0,
+          totalRecords: 0,
+          demoMode: status.demo_mode,
+        };
+      }
+
+      // Build sources from loaded data
+      const sources: DataSource[] = [];
+
+      // If demo mode with drive folder
+      if (status.demo_mode && status.drive_folder_url) {
+        sources.push({
+          id: 'demo-drive-folder',
+          type: 'google_drive_folder',
+          name: 'Auto-Synced Drive Folder',
+          url: status.drive_folder_url,
+          status: 'connected',
+          lastSync: new Date().toISOString(),
+          tableCount: status.total_tables || 0,
+          recordCount: status.total_records || 0,
+          isAutoSync: true,
+          tables: status.tables,
+        });
+      }
+
+      // Add individual spreadsheets if any
+      if (status.loaded_spreadsheets && status.loaded_spreadsheets.length > 0) {
+        status.loaded_spreadsheets.forEach((sheetId, idx) => {
+          if (sheetId !== 'demo-drive-folder') {
+            sources.push({
+              id: `sheet-${idx}`,
+              type: 'google_sheets',
+              name: `Google Sheet ${idx + 1}`,
+              url: `https://docs.google.com/spreadsheets/d/${sheetId}`,
+              status: 'connected',
+              tableCount: 0,  // Would need per-source breakdown
+              recordCount: 0,
+            });
+          }
+        });
+      }
+
+      // If no specific sources but data is loaded, show as generic
+      if (sources.length === 0 && status.loaded) {
+        sources.push({
+          id: 'default',
+          type: 'google_sheets',
+          name: 'Connected Dataset',
+          url: '',
+          status: 'connected',
+          tableCount: status.total_tables || 0,
+          recordCount: status.total_records || 0,
+          tables: status.tables,
+        });
+      }
+
+      return {
+        success: true,
+        sources,
+        totalTables: status.total_tables || 0,
+        totalRecords: status.total_records || 0,
+        demoMode: status.demo_mode,
+        demoFolderUrl: status.drive_folder_url,
+      };
+    } catch (e) {
+      console.error('[API] getDataSources error:', e);
+      return {
+        success: false,
+        sources: [],
+        totalTables: 0,
+        totalRecords: 0,
+        demoMode: false,
+      };
+    }
+  },
+
+  /**
+   * Detect source type from URL.
+   */
+  detectSourceType: (url: string): DataSourceType => {
+    if (!url) return 'csv';
+
+    const urlLower = url.toLowerCase();
+
+    if (urlLower.includes('docs.google.com/spreadsheets')) return 'google_sheets';
+    if (urlLower.includes('drive.google.com/drive/folders')) return 'google_drive_folder';
+    if (urlLower.includes('drive.google.com')) return 'google_drive_file';
+    if (urlLower.includes('dropbox.com')) return 'dropbox';
+    if (urlLower.includes('1drv.ms') || urlLower.includes('onedrive') || urlLower.includes('sharepoint')) return 'onedrive';
+    if (urlLower.endsWith('.xlsx') || urlLower.endsWith('.xls')) return 'excel';
+    if (urlLower.endsWith('.csv')) return 'csv';
+    if (urlLower.startsWith('c:') || urlLower.startsWith('/') || urlLower.startsWith('file:')) return 'local';
+
+    return 'csv';
   },
 
 };

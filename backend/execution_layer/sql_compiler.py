@@ -536,5 +536,56 @@ FROM (
     {limit_clause}
 ) subset
     """
-    
+
+    return sql.strip()
+
+
+def compile_detail_query(plan: dict, limit: int = 100) -> str:
+    """
+    Compile a query to get the underlying matching rows (without aggregation).
+
+    This is used to show the actual data in the data table when the main query
+    is an aggregation (like COUNT). Users want to see WHAT was counted, not just the count.
+
+    Args:
+        plan: The query plan
+        limit: Maximum rows to return (default 100)
+
+    Returns:
+        SQL query string to fetch the matching rows, or None if not applicable
+    """
+    query_type = plan.get("query_type")
+
+    # Only applicable for aggregation queries
+    if query_type != "aggregation_on_subset":
+        return None
+
+    table = quote_identifier(plan.get("table", ""))
+    if not table:
+        return None
+
+    # Build WHERE clause from subset_filters
+    subset_filters = plan.get("subset_filters", [])
+    where_clause = _build_where_clause(subset_filters)
+
+    # Build ORDER BY clause
+    subset_order_by = plan.get("subset_order_by", [])
+    order_clause = ""
+    if subset_order_by:
+        order_parts = [f"{quote_identifier(col)} {direction}" for col, direction in subset_order_by]
+        order_clause = "ORDER BY " + ", ".join(order_parts)
+
+    # Use the original subset_limit if it's smaller than our display limit
+    subset_limit = plan.get("subset_limit")
+    if subset_limit is not None and subset_limit < limit:
+        limit = subset_limit
+
+    sql = f"""
+SELECT *
+FROM {table}
+{where_clause}
+{order_clause}
+LIMIT {limit}
+    """
+
     return sql.strip()

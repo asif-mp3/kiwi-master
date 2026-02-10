@@ -1055,6 +1055,40 @@ def is_non_query_conversational(text: str) -> bool:
     if has_data_keyword:
         return False  # It's likely a data query
 
+    # Check for generic data query patterns (domain-agnostic)
+    generic_query_patterns = [
+        r'what\s+\w+\s+are\s+(available|there)',  # "what X are available/there"
+        r'what\s+(are|is)\s+the\s+\w+',  # "what are/is the X"
+        r'list\s+(all|the)',  # "list all/the"
+        r'show\s+(all|the|me)',  # "show all/the/me"
+        r'get\s+(all|the|me)',  # "get all/the/me"
+        r'how\s+many\s+\w+',  # "how many X"
+        r'available\s+\w+',  # "available X"
+        r'\w+\s+available',  # "X available"
+    ]
+    if any(re.search(p, text_lower, re.IGNORECASE) for p in generic_query_patterns):
+        return False  # Looks like a data query
+
+    # Dynamic check: see if question mentions loaded table names or columns
+    try:
+        from api.services import app_state
+        if app_state and app_state._profile_store:
+            profiles = app_state._profile_store.get_all_profiles()
+            for table_name, profile in profiles.items():
+                # Check table name words
+                table_words = table_name.lower().replace('_', ' ').split()
+                if any(tw in text_lower for tw in table_words if len(tw) > 3):
+                    return False  # Question mentions a loaded table
+                # Check column names
+                columns = profile.get('columns', [])
+                for col in columns:
+                    col_name = col.get('name', '') if isinstance(col, dict) else str(col)
+                    col_words = col_name.lower().replace('_', ' ').split()
+                    if any(cw in text_lower for cw in col_words if len(cw) > 3):
+                        return False  # Question mentions a column
+    except Exception:
+        pass  # If import fails or no profiles, continue with other checks
+
     # Check for question marks or question patterns
     # Questions about data should go to the query pipeline
     if text.strip().endswith('?'):
