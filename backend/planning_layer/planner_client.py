@@ -428,6 +428,30 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
             hint_parts.append(f"- Metric focus: {entities['metric']}")
         if entities.get('cross_table_intent'):
             hint_parts.append("- User wants data ACROSS multiple time periods (trend analysis)")
+        # Handle "today", "yesterday" etc. - convert to actual dates
+        if entities.get('time_period'):
+            from datetime import datetime, timedelta
+            time_period = entities['time_period'].lower()
+            now = datetime.now()
+
+            if time_period == 'today':
+                date_str = now.strftime('%Y-%m-%d')
+                next_date_str = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+                hint_parts.append(f"- **TODAY ({date_str})**: MUST filter Date >= '{date_str}' AND Date < '{next_date_str}'")
+            elif time_period == 'yesterday':
+                yesterday = now - timedelta(days=1)
+                date_str = yesterday.strftime('%Y-%m-%d')
+                next_date_str = now.strftime('%Y-%m-%d')
+                hint_parts.append(f"- **YESTERDAY ({date_str})**: MUST filter Date >= '{date_str}' AND Date < '{next_date_str}'")
+            elif time_period == 'this_week':
+                # Start of week (Monday)
+                start_of_week = now - timedelta(days=now.weekday())
+                hint_parts.append(f"- **THIS WEEK**: Filter Date >= '{start_of_week.strftime('%Y-%m-%d')}'")
+            elif time_period == 'last_week':
+                start_of_last_week = now - timedelta(days=now.weekday() + 7)
+                end_of_last_week = start_of_last_week + timedelta(days=7)
+                hint_parts.append(f"- **LAST WEEK**: Filter Date >= '{start_of_last_week.strftime('%Y-%m-%d')}' AND Date < '{end_of_last_week.strftime('%Y-%m-%d')}'")
+
         # CRITICAL: Pass specific date for date filtering (Tamil dates like "இருபத்தி நான்காம் தேதி")
         if entities.get('date_specific'):
             from datetime import datetime, timedelta

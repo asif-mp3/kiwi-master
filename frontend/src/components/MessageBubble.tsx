@@ -34,6 +34,81 @@ interface MessageBubbleProps {
 const ROWS_PER_PAGE = 20;
 
 /**
+ * Generate a descriptive export title from message metadata.
+ * Uses visualization title, or generates from plan details.
+ * Examples:
+ *   - "Average Sales" (from visualization.title)
+ *   - "December Sales Comparison" (generated from plan)
+ *   - "Monthly Revenue Trend" (generated from plan)
+ */
+function generateExportTitle(message: Message): string {
+  const metadata = message.metadata as Record<string, unknown> | undefined;
+
+  // Priority 1: Use visualization title if available
+  const viz = metadata?.visualization as Record<string, unknown> | undefined;
+  if (viz?.title && typeof viz.title === 'string') {
+    return viz.title;
+  }
+
+  // Priority 2: Generate from plan
+  const plan = metadata?.plan as Record<string, unknown> | undefined;
+  if (plan) {
+    const parts: string[] = [];
+
+    // Add aggregation function
+    const aggFunc = plan.aggregation_function as string | undefined;
+    if (aggFunc) {
+      const funcMap: Record<string, string> = {
+        'SUM': 'Total',
+        'AVG': 'Average',
+        'COUNT': 'Count of',
+        'MAX': 'Maximum',
+        'MIN': 'Minimum'
+      };
+      parts.push(funcMap[aggFunc.toUpperCase()] || aggFunc);
+    }
+
+    // Add aggregation column
+    const aggCol = plan.aggregation_column as string | undefined;
+    if (aggCol) {
+      parts.push(aggCol.replace(/_/g, ' '));
+    }
+
+    // Add filter context (e.g., "in December")
+    const filters = plan.subset_filters as Array<Record<string, unknown>> | undefined;
+    if (filters && filters.length > 0) {
+      const filter = filters[0];
+      if (filter.value && filter.column) {
+        parts.push(`in ${filter.value}`);
+      }
+    }
+
+    // Add query type suffix
+    const queryType = plan.query_type as string | undefined;
+    if (queryType === 'trend') {
+      parts.push('Trend');
+    } else if (queryType === 'comparison') {
+      parts.push('Comparison');
+    } else if (queryType === 'rank') {
+      parts.push('Ranking');
+    }
+
+    if (parts.length > 0) {
+      return parts.join(' ');
+    }
+  }
+
+  // Priority 3: Extract from response text (first meaningful phrase)
+  const content = message.content;
+  const firstLine = content.split('\n')[0];
+  if (firstLine.length > 10 && firstLine.length < 60) {
+    return firstLine;
+  }
+
+  return 'Data Export';
+}
+
+/**
  * Format raw column names from DuckDB into human-readable labels.
  * Examples:
  *   - "Total_Sales" → "Total Sales"
@@ -149,7 +224,12 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
   // Check if this message has data to display
   const hasData = message.metadata?.data && Array.isArray(message.metadata.data) && message.metadata.data.length > 0;
   const dataRows = message.metadata?.data || [];
-  const dataColumns = hasData ? Object.keys(dataRows[0]) : [];
+
+  // Filter out technical/debugging columns that aren't useful to end users
+  const technicalColumns = ['row_count', 'min_value', 'max_value', 'numerator', 'denominator', 'count'];
+  const dataColumns = hasData
+    ? Object.keys(dataRows[0]).filter(col => !technicalColumns.includes(col.toLowerCase()))
+    : [];
 
   // Auto-show data table for "list" type queries (user asked to "list" or "show all")
   const queryType = message.metadata?.plan?.query_type;
@@ -200,9 +280,12 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
     [dataColumns]
   );
 
-  // Export to Excel function with formatted headers and values
+  // Export to Excel function with formatted headers, title, and values
   const handleExportExcel = useCallback(() => {
     if (!hasData) return;
+
+    // Generate descriptive title from query context
+    const exportTitle = generateExportTitle(message);
 
     // Create formatted data with human-readable column names
     const formattedData = dataRows.map(row => {
@@ -214,31 +297,46 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
       return formattedRow;
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(formattedData);
+    // Create worksheet with descriptive title
+    const worksheet = XLSX.utils.json_to_sheet([]);
+
+    // Add descriptive header at top
+    XLSX.utils.sheet_add_aoa(worksheet, [
+      [`Thara.ai - ${exportTitle}`],
+      [`Generated: ${new Date().toLocaleString()}`],
+      [], // Empty row
+    ], { origin: 'A1' });
+
+    // Add data starting at row 4
+    XLSX.utils.sheet_add_json(worksheet, formattedData, { origin: 'A4' });
 
     // Auto-size columns based on content
     const colWidths = formattedColumns.map(col => ({
-      wch: Math.max(col.display.length, 12)
+      wch: Math.max(col.display.length, 15)
     }));
     worksheet['!cols'] = colWidths;
 
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Data');
+    XLSX.utils.book_append_sheet(workbook, worksheet, exportTitle.slice(0, 31)); // Excel sheet names max 31 chars
 
-    // Generate filename with timestamp
+    // Generate filename with descriptive name and timestamp
     const timestamp = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(workbook, `thara_export_${timestamp}.xlsx`);
-  }, [hasData, dataRows, dataColumns, formattedColumns]);
+    const safeTitle = exportTitle.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30);
+    XLSX.writeFile(workbook, `thara_${safeTitle}_${timestamp}.xlsx`);
+  }, [hasData, dataRows, dataColumns, formattedColumns, message]);
 
   // Export to PDF function with formatted headers and values
   const handleExportPDF = useCallback(() => {
     if (!hasData) return;
 
+    // Generate descriptive title from query context
+    const exportTitle = generateExportTitle(message);
+
     const doc = new jsPDF();
 
-    // Add title
+    // Add descriptive title
     doc.setFontSize(16);
-    doc.text('Thara.ai - Data Export', 14, 15);
+    doc.text(`Thara.ai - ${exportTitle}`, 14, 15);
 
     // Add timestamp
     doc.setFontSize(10);
@@ -264,10 +362,11 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
       }
     });
 
-    // Generate filename with timestamp
+    // Generate filename with descriptive name and timestamp
     const timestamp = new Date().toISOString().slice(0, 10);
-    doc.save(`thara_export_${timestamp}.pdf`);
-  }, [hasData, dataRows, dataColumns, formattedColumns]);
+    const safeTitle = exportTitle.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30);
+    doc.save(`thara_${safeTitle}_${timestamp}.pdf`);
+  }, [hasData, dataRows, dataColumns, formattedColumns, message]);
 
   if (isSystem) {
     return (
@@ -479,16 +578,26 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
                 {message.metadata.visualization.title}
               </div>
               <div className="text-4xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
-                {message.metadata.visualization.data?.is_percentage
-                  ? `${Number(message.metadata.visualization.data?.value || 0).toFixed(1)}%`
-                  : (() => {
-                      const val = Number(message.metadata.visualization.data?.value || 0);
-                      if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)} Cr`;
-                      if (val >= 100000) return `₹${(val / 100000).toFixed(2)} L`;
-                      if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
-                      return `₹${val.toLocaleString('en-IN')}`;
-                    })()
-                }
+                {(() => {
+                  const rawValue = message.metadata.visualization.data?.value;
+                  const val = Number(rawValue);
+
+                  // Handle NaN or invalid values - show the raw value as text
+                  if (isNaN(val) || rawValue === null || rawValue === undefined) {
+                    return typeof rawValue === 'string' ? rawValue : '-';
+                  }
+
+                  // Percentage display
+                  if (message.metadata.visualization.data?.is_percentage) {
+                    return `${val.toFixed(1)}%`;
+                  }
+
+                  // Currency display with Indian number formatting
+                  if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)} Cr`;
+                  if (val >= 100000) return `₹${(val / 100000).toFixed(2)} L`;
+                  if (val >= 1000) return `₹${(val / 1000).toFixed(1)}K`;
+                  return `₹${val.toLocaleString('en-IN')}`;
+                })()}
               </div>
               {message.metadata.visualization.data?.supporting_text && (
                 <div className="text-xs text-muted-foreground mt-2">

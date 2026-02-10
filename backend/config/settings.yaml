@@ -1,6 +1,4 @@
 cache:
-  query_cache_max_size: 200
-  query_cache_ttl_seconds: 600
   schema_cache_ttl_seconds: 3600
   tts_cache_max_size_mb: 500
   tts_cache_ttl_hours: 24
@@ -23,16 +21,16 @@ google_sheets:
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
-  explainer_max_tokens: 150
+  explainer_max_tokens: 300
   max_retries: 2
   model: gemini-2.0-flash
   model_complex: gemini-2.0-flash
   planner_max_tokens: 1500
   provider: gemini
   request_timeout_seconds: 20
-  temperature: 0.0
+  temperature: 0.7
 project:
-  environment: local
+  environment: development  # Single source of truth (was duplicated in .env)
   name: thara_ai
 query:
   default_limit: 100

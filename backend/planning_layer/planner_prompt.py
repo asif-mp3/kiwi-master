@@ -62,7 +62,7 @@ You must output ONLY valid JSON matching this exact schema:
 - **extrema_lookup**: Find the SINGLE row with min/max value. Use for "Who is the highest/lowest?", "Which employee has the most/least?", "What is the top/bottom item?". Returns ONE specific entity (person, item, row). Requires "order_by" and "limit": 1. DO NOT group by any column - return the actual row data.
 - **rank**: Return MULTIPLE rows ordered by a value. Use for "top 10 categories", "rank all departments", "list areas by sales". Returns a ranked list. Requires "order_by". Often uses "group_by" for aggregated rankings.
 - **list**: Show all rows. No special requirements.
-- **aggregation_on_subset**: Calculate aggregation (AVG, SUM, etc.) on a filtered or ranked subset. Requires "aggregation_function", "aggregation_column". Use "subset_filters" for filtering, "subset_order_by" for ranking, and "subset_limit" ONLY when the question explicitly asks for "top N", "first N", "bottom N", etc. If aggregating ALL matching data, set "subset_limit" to null or omit it.
+- **aggregation_on_subset**: Calculate aggregation (AVG, SUM, MIN, MAX, COUNT) on data. **USE THIS for simple aggregation questions like "What is the average X?", "What is total Y?", "What is the minimum Z?"**. Requires "aggregation_function", "aggregation_column". Use "subset_filters" for filtering (e.g., "average profit in Chennai"), "subset_order_by" for ranking, and "subset_limit" ONLY when the question explicitly asks for "top N", "first N", "bottom N", etc. **If aggregating ALL data (no top/bottom limit), set "subset_limit" to null.**
 - **comparison**: Compare two time periods or values. Use for questions like "How did X compare to Y?", "Did sales go up or down?", "August vs December". Requires "comparison" object with period_a, period_b, and compare_type.
   - **CRITICAL: Use EXACT column names from schema context** - Don't guess column names like "Cost_Amount" or "Revenue". Look at the schema context and use the EXACT column names (e.g., "Cost", "Sale_Amount", "Total_Revenue"). If a column doesn't exist, the comparison will fail!
 - **percentage**: Calculate percentage contribution. Use for questions like "What percentage comes from X?", "What % of total is Y?". Requires "percentage" object with numerator and denominator.
@@ -88,14 +88,49 @@ You must output ONLY valid JSON matching this exact schema:
     - **WITH group_by**: System analyzes each category/state separately and identifies winners/losers
     - This is CRITICAL - if user asks "which X" with trend, you MUST set trend.group_by to analyze each X separately!
 - **multi_step**: Execute multiple sequential queries across different tables. Use when a question requires data from MULTIPLE DIFFERENT tables that need to be combined.
-  - **KEYWORDS**: "who worked on", "staff present during", "attendance on peak sales", "employees on highest sales day"
-  - **Pattern**: Query requires data from one table (e.g., Sales) to be used as a filter for another table (e.g., Attendance)
-  - **Example**: "Who worked on peak sales dates in Chennai?" requires:
-    1. Step 1: Find peak sales date from Sales table
-    2. Step 2: Find staff from Attendance table on that date
+
+  **🚨 CRITICAL WARNING - Cross-Table Column Mismatch:**
+  - **ALWAYS CHECK** that columns in step 2 filters ACTUALLY EXIST in step 2's table!
+  - Common mistake: Filtering attendance by "Branch" when attendance table has NO location columns
+  - **SOLUTION**: Only use the date/ID variable from step 1, do NOT copy location/category filters to step 2 unless you VERIFY those columns exist in step 2's schema
+  - Example WRONG: Step 1 finds "peak sales date in Chennai" → Step 2 filters attendance by Date AND Branch (Branch doesn't exist in attendance!)
+  - Example CORRECT: Step 1 finds "peak sales date in Chennai" → Step 2 filters attendance ONLY by Date (attendance has no location data)
+
+  **CRITICAL: WHEN TO USE multi_step (ANY phrasing that requires cross-table lookup):**
+
+  1. **People/Staff + Business Metrics Pattern**
+     - ANY question asking about people/staff BASED ON business data (sales, performance, etc.)
+     - Examples (all should use multi_step):
+       - "Who worked on peak sales date?"
+       - "Staff present during highest sales"
+       - "Show employees on best sales day"
+       - "Which staff were there when sales was highest?"
+       - "Find attendance on top revenue date"
+       - "Get staff list for maximum profit day"
+       - "Who was working on the date with most sales?"
+       - "Staff on duty during peak performance"
+     - **How to detect**: Question mentions BOTH staff/people/attendance/employees AND sales/revenue/performance metrics
+
+  2. **Two-Step Filtering Pattern**
+     - Question asks for data from Table B filtered by a value that must be found in Table A
+     - Examples:
+       - "Products sold to top customer" (find top customer first, then their products)
+       - "Sales on employee's birthday" (find birthday first, then sales on that date)
+       - "Performance in peak month" (find peak month first, then filter performance)
+
+  3. **Cross-Dataset Correlation**
+     - Question explicitly mentions data from two different datasets/sheets
+     - "Compare attendance with sales trends"
+     - "Link employee data with branch performance"
+
+  **HOW TO BUILD multi_step QUERY:**
   - **steps array**: Each step has its own query_type, table, filters. Steps execute sequentially.
   - **Variable passing**: Use "output_variable" in step 1 to store a value (e.g., "peak_date"), then use "${peak_date}" in step 2 filters.
-  - Example plan:
+  - **Step 1**: Usually extrema_lookup, filter, or metric to find the reference value
+  - **Step 2**: Use the extracted variable to filter the second table
+  **Example Plans for Different Phrasings:**
+
+  Example 1: "Who worked on peak sales date in Chennai?"
     ```json
     {
       "query_type": "multi_step",
@@ -103,10 +138,10 @@ You must output ONLY valid JSON matching this exact schema:
       "steps": [
         {
           "step_id": 1,
-          "description": "Find peak sales date in Chennai",
+          "description": "Find the date with peak sales in Chennai",
           "query_type": "extrema_lookup",
-          "table": "Sales_Data",
-          "filters": [{"column": "Branch", "operator": "LIKE", "value": "%Chennai%"}],
+          "table": "Dataset_1_Sales_Daily_Sales_Transactions",
+          "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}],
           "order_by": [["Sale_Amount", "DESC"]],
           "limit": 1,
           "output_variable": "peak_date",
@@ -114,17 +149,79 @@ You must output ONLY valid JSON matching this exact schema:
         },
         {
           "step_id": 2,
-          "description": "Find staff on that date",
+          "description": "Find all staff who worked on that date (Note: Attendance records don't have Branch/location data)",
           "query_type": "filter",
-          "table": "Attendance",
+          "table": "Dataset_2_Attendance_Attendance_Records",
           "filters": [
-            {"column": "Date", "operator": "=", "value": "${peak_date}"},
-            {"column": "Branch", "operator": "LIKE", "value": "%Chennai%"}
+            {"column": "Date", "operator": "=", "value": "${peak_date}"}
           ]
         }
       ]
     }
     ```
+
+  Example 2: "Staff present during highest sales" (no location specified)
+    ```json
+    {
+      "query_type": "multi_step",
+      "steps": [
+        {
+          "step_id": 1,
+          "query_type": "extrema_lookup",
+          "table": "Dataset_1_Sales_Daily_Sales_Transactions",
+          "order_by": [["Sale_Amount", "DESC"]],
+          "limit": 1,
+          "output_variable": "peak_date",
+          "extract_column": "Date"
+        },
+        {
+          "step_id": 2,
+          "query_type": "filter",
+          "table": "Dataset_2_Attendance_Attendance_Records",
+          "filters": [{"column": "Date", "operator": "=", "value": "${peak_date}"}]
+        }
+      ]
+    }
+    ```
+
+  Example 3: "Who worked on the day with maximum profit?"
+    ```json
+    {
+      "query_type": "multi_step",
+      "steps": [
+        {
+          "step_id": 1,
+          "query_type": "extrema_lookup",
+          "table": "Dataset_1_Sales_Daily_Sales_Transactions",
+          "order_by": [["Profit", "DESC"]],
+          "limit": 1,
+          "output_variable": "max_profit_date",
+          "extract_column": "Date"
+        },
+        {
+          "step_id": 2,
+          "query_type": "filter",
+          "table": "Dataset_2_Attendance_Attendance_Records",
+          "filters": [{"column": "Date", "operator": "=", "value": "${max_profit_date}"}]
+        }
+      ]
+    }
+    ```
+
+  **CRITICAL RULES:**
+  - Use EXACT table names from schema context (e.g., "Dataset_1_Sales_Daily_Sales_Transactions", not "Sales_Data")
+  - Use EXACT column names from schema (e.g., "Branch_Name", not "Branch" - check schema!)
+  - **CRITICAL - Column Existence Check**: Before adding filters to step 2, verify that the columns exist in the target table!
+    - Example: Attendance tables typically have Date, Emp_ID, Department, Status - but NO Branch/location columns
+    - Sales tables typically have Date, Branch_Name, Category, Sale_Amount
+    - ONLY use the date variable from step 1 - do NOT carry over location/category filters that don't exist in step 2 table
+  - **Cross-Table Filtering Rule**: In step 2, ONLY filter by:
+    1. The variable extracted from step 1 (e.g., "${peak_date}")
+    2. Columns that ACTUALLY EXIST in step 2's table (check the schema context!)
+    - Do NOT replicate location/category filters from step 1 unless step 2's table has those columns
+  - output_variable can be any name (peak_date, max_date, top_date, etc.)
+  - Variable name in step 2 must match: "${peak_date}" if output_variable was "peak_date"
+  - Each step can have its own filters, order_by, and limit
 
 ## Table Selection
 
@@ -347,7 +444,7 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Freshggies – Shopify Sales on Fulfillments – November",
 "select_columns": ["*"],
 "filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
-"limit": 100
+"limit": null
 }
 
 **Question:** "What is the average gross sales of the top 5 days in December?"
@@ -376,6 +473,32 @@ When multiple tables with similar schemas are available in the schema context:
 "subset_limit": null
 }
 
+**Question:** "What is the average profit?"
+**Schema context:** Table "Sales_Data" with columns ["Date", "Branch", "Sale_Amount", "Profit_Amount", "Cost"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Sales_Data",
+"aggregation_function": "AVG",
+"aggregation_column": "Profit_Amount",
+"subset_filters": [],
+"subset_order_by": [],
+"subset_limit": null
+}
+
+**Question:** "What is the average revenue in Chennai?"
+**Schema context:** Table "Sales_Branch_Details" with columns ["Branch_Name", "State", "Total_Revenue", "Total_Profit"]
+**Output:**
+{
+"query_type": "aggregation_on_subset",
+"table": "Sales_Branch_Details",
+"aggregation_function": "AVG",
+"aggregation_column": "Total_Revenue",
+"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}],
+"subset_order_by": [],
+"subset_limit": null
+}
+
 **Question:** "Show items with quantity equal to 5"
 **Schema context:** Table "Freshggies – Item-wise Monthly Sales Quantity" with columns ["Lineitem name", "August", "September"]
 **Output:**
@@ -384,7 +507,7 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Freshggies – Item-wise Monthly Sales Quantity",
 "select_columns": ["Lineitem name"],
 "filters": [{"column": "August", "operator": "=", "value": 5}],
-"limit": 100
+"limit": null
 }
 
 **Question:** "What is the total profit for November?"
@@ -636,7 +759,7 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Daily_Sales",
 "select_columns": ["Date", "Sale_Amount", "Category"],
 "filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
-"limit": 100
+"limit": null
 }
 
 **Question:** "Show all transactions from August 2025"
@@ -647,7 +770,7 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Daily_Sales",
 "select_columns": ["Date", "Sale_Amount", "Category"],
 "filters": [{"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}],
-"limit": 100
+"limit": null
 }
 
 **Question:** "What was the total sales in August 2025?"
@@ -683,7 +806,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "list",
 "table": "Payment_Mode_Analysis",
 "select_columns": ["Payment_Mode", "Transaction_Count", "Total_Revenue"],
-"limit": 100
+"limit": null
 }
 
 **Question:** "What categories are available?"
@@ -693,7 +816,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "list",
 "table": "Category_Performance",
 "select_columns": ["Category"],
-"limit": 100
+"limit": null
 }
 
 **Question:** "Which area has the highest total sales?"

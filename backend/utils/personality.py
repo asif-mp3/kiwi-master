@@ -7,6 +7,22 @@ import random
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
+# Import shared utilities to reduce duplication
+from utils.formatting import format_indian_number, format_percentage, humanize_metric_name
+from utils.conversation_templates import (
+    get_conversation_starter,
+    get_response_opening,
+    get_error_template,
+    GREETINGS_ENGLISH,
+    GREETINGS_TAMIL,
+    FOLLOWUP_SUGGESTIONS_ENGLISH,
+    FOLLOWUP_SUGGESTIONS_TAMIL,
+    ACKNOWLEDGMENTS_ENGLISH,
+    ACKNOWLEDGMENTS_TAMIL,
+    COMPARISON_PROMPTS_ENGLISH,
+    COMPARISON_PROMPTS_TAMIL
+)
+
 
 class TharaPersonality:
     """
@@ -22,161 +38,60 @@ class TharaPersonality:
     - Handles questions gracefully (data questions and general queries)
     """
 
-    # Greetings for first interaction - professional and friendly
-    GREETINGS = [
-        "Hi there! I'm Thara, your data assistant. How can I help you today?",
-        "Hello! I'm Thara. I'm here to help you explore your data. What would you like to know?",
-        "Hi! I'm Thara - ready to help you find the insights you need. What can I do for you?",
-        "Hello! Thara here. Let me know what data you'd like to explore.",
-        "Hi there! I'm Thara, happy to assist with your data questions. What's on your mind?",
-        "Hello! I'm Thara. Ready to help you get the most from your data."
-    ]
+    # Use shared conversation templates (imported from conversation_templates.py)
+    # This eliminates duplication across personality.py and explanation_prompt.py
+    GREETINGS = GREETINGS_ENGLISH
+    TAMIL_GREETINGS = GREETINGS_TAMIL
+    FOLLOW_UP_SUGGESTIONS = FOLLOWUP_SUGGESTIONS_ENGLISH
+    TAMIL_FOLLOW_UP_SUGGESTIONS = FOLLOWUP_SUGGESTIONS_TAMIL
+    ACKNOWLEDGMENTS = ACKNOWLEDGMENTS_ENGLISH
+    TAMIL_ACKNOWLEDGMENTS = ACKNOWLEDGMENTS_TAMIL
+    COMPARISON_PROMPTS = COMPARISON_PROMPTS_ENGLISH
 
-    # Positive response openings (good news, high numbers, improvements) - Professional & Positive
-    POSITIVE_OPENINGS = [
-        "Good news, {name}!",
-        "Great results here, {name}:",
-        "{name}, the numbers look strong:",
-        "Here's some positive news, {name}:",
-        "{name}, this is looking good:",
-        "Excellent results, {name}:",
-        "{name}, here's what I found - and it's good:"
-    ]
+    # Response openings - use helper function to get from shared templates
+    @staticmethod
+    def get_openings(sentiment="neutral", language="english"):
+        """Get response openings from shared templates"""
+        return get_response_opening(sentiment, language)
 
-    # Neutral response openings (just presenting data) - Professional & Clear
-    NEUTRAL_OPENINGS = [
-        "Here's what I found, {name}:",
-        "{name}, here are the results:",
-        "Looking at the data, {name}:",
-        "Here's the breakdown, {name}:",
-        "{name}, I've pulled the numbers:",
-        "Based on the data, {name}:",
-        "{name}, here's what the data shows:"
-    ]
+    # Conversation starters - use helper function
+    @staticmethod
+    def get_starters(language="english"):
+        """Get conversation starters from shared templates"""
+        return get_conversation_starter(language)
 
-    # Negative/Concerning response openings (low numbers, declines) - Professional & Supportive
-    CONCERN_OPENINGS = [
-        "{name}, here's something worth noting:",
-        "{name}, I noticed something that may need attention:",
-        "Just a heads up, {name}:",
-        "{name}, here's an area to watch:",
-        "{name}, the data shows something to consider:",
-        "Worth mentioning, {name}:"
-    ]
+    # For backwards compatibility, define as properties that call the helper
+    @property
+    def POSITIVE_OPENINGS(self):
+        return get_response_opening("positive", "english")
 
-    # Follow-up suggestions - Helpful & Professional
-    FOLLOW_UP_SUGGESTIONS = [
-        "Would you like me to dig deeper into this?",
-        "Want me to compare this with another time period?",
-        "I can show you the trend if you're interested.",
-        "Would you like to explore a specific category?",
-        "Let me know if you'd like more details.",
-        "I can break this down further if needed.",
-        "There's more to explore here if you'd like.",
-        "Would you like to see this from a different angle?"
-    ]
+    @property
+    def NEUTRAL_OPENINGS(self):
+        return get_response_opening("neutral", "english")
 
-    # Comparison prompts - Professional
-    COMPARISON_PROMPTS = [
-        "Would you like to compare with {period}?",
-        "Want to see how {period} compares?",
-        "I can show you {period} for comparison."
-    ]
+    @property
+    def CONCERN_OPENINGS(self):
+        return get_response_opening("concern", "english")
 
-    # Acknowledgments for understood requests - Professional & Friendly
-    ACKNOWLEDGMENTS = [
-        "Got it! Let me check.",
-        "On it!",
-        "Sure, one moment.",
-        "Good question. Let me look...",
-        "Absolutely, checking now.",
-        "Interesting question. Let me see...",
-        "Sure thing, checking now..."
-    ]
+    @property
+    def CONVERSATIONAL_OPENINGS(self):
+        return get_conversation_starter("english")
 
-    # Tamil equivalents (for bilingual support) - Professional & Friendly
-    TAMIL_GREETINGS = [
-        "வணக்கம்! நான் தாரா - உங்க data assistant. என்ன help வேணும்?",
-        "Hello! நான் தாரா. உங்க data questions-க்கு help பண்ண ready.",
-        "Hi! Thara here - unga data explore panna help pannuren. Enna venum?",
-        "வணக்கம்! Thara ready - sollunga enna paakanum.",
-        "Hello! Naan Thara - unga data assistant. Enna help pannanum?",
-        "Hi! Thara here - ready to help. Enna venum?"
-    ]
+    @property
+    def TAMIL_CONVERSATIONAL_OPENINGS(self):
+        return get_conversation_starter("tamil")
 
-    # Tamil positive openings - Professional & Positive
-    TAMIL_POSITIVE_OPENINGS = [
-        "Good news {name}!",
-        "{name}, numbers nalla irukku:",
-        "{name}, positive results:",
-        "Nalla results {name}:",
-        "{name}, idhu good ah irukku:",
-        "Great results {name}:"
-    ]
+    @property
+    def TAMIL_POSITIVE_OPENINGS(self):
+        return get_response_opening("positive", "tamil")
 
-    # Tamil neutral openings - Professional & Clear
-    TAMIL_NEUTRAL_OPENINGS = [
-        "Seri {name}, idho results:",
-        "{name}, idho data:",
-        "{name}, check panniten - idho:",
-        "{name}, data paarthen:",
-        "{name}, idho parunga:",
-        "{name}, results idho:"
-    ]
+    @property
+    def TAMIL_NEUTRAL_OPENINGS(self):
+        return get_response_opening("neutral", "tamil")
 
-    # Tamil concern openings - Professional & Supportive
-    TAMIL_CONCERN_OPENINGS = [
-        "{name}, oru vishayam sollanam:",
-        "{name}, idha note pannunga:",
-        "{name}, oru heads up:",
-        "{name}, idha parunga:",
-        "{name}, attention kudukanum:",
-        "{name}, idha consider pannunga:"
-    ]
-
-    # Tamil follow-up suggestions - Helpful & Professional
-    TAMIL_FOLLOW_UP_SUGGESTIONS = [
-        "Innum detail ah paakanum?",
-        "Vera time period compare pannalama?",
-        "Trend paakkanum na sollunga.",
-        "Vera category explore pannalama?",
-        "Vera enna venum?",
-        "Innum detail venum na sollunga.",
-        "Vera questions irundha kelu."
-    ]
-
-    # Tamil acknowledgments - Professional & Friendly
-    TAMIL_ACKNOWLEDGMENTS = [
-        "Seri, check pannuren.",
-        "Okay, ipo paakuren.",
-        "Good question. Paakuren...",
-        "Sure, one moment.",
-        "Okay, checking now.",
-        "Seri, paakuren..."
-    ]
-
-    # Conversational/Warm openings - Natural, human-like flow
-    CONVERSATIONAL_OPENINGS = [
-        "Ohh okay {name}, so...",
-        "Hmm let me see... {name},",
-        "Ah right, so {name}...",
-        "Yeah so {name},",
-        "Okay {name}, looking at this...",
-        "So {name}, here's what I see...",
-        "Alright {name}, checking...",
-        "Hmm {name}, interesting..."
-    ]
-
-    # Tamil Conversational openings - Warm and natural
-    TAMIL_CONVERSATIONAL_OPENINGS = [
-        "Seri {name}, paakalam...",
-        "Ah okay {name}...",
-        "Hmm seri {name}...",
-        "Okay {name}, idho parunga...",
-        "Seri seri {name}...",
-        "Hmm {name}, paakuren...",
-        "Okay {name}, checking..."
-    ]
+    @property
+    def TAMIL_CONCERN_OPENINGS(self):
+        return get_response_opening("concern", "tamil")
 
     # Name confirmation responses - Warm and friendly
     NAME_CONFIRMATIONS = [
@@ -196,8 +111,12 @@ class TharaPersonality:
     ]
 
     def __init__(self, user_name: Optional[str] = None, language: str = 'en'):
-        # Don't use placeholder names like "there" - just use empty if not set
-        self.user_name = user_name if user_name and user_name.lower() != "there" else ""
+        # Default to "Boss" as friendly fallback name
+        # Don't use placeholder names like "there"
+        if user_name and user_name.lower() not in ["there"]:
+            self.user_name = user_name
+        else:
+            self.user_name = ""  # Will be set to "Boss" in services.py if still empty
         self.language = language  # 'en' or 'ta'
         self._response_count = 0
         self._last_sentiment = 'neutral'
@@ -285,8 +204,8 @@ class TharaPersonality:
         self._response_count += 1
         self._last_sentiment = sentiment
 
-        # 40% chance to use conversational opening for natural flow (when name is set)
-        use_conversational = conversational or (name and random.random() < 0.4)
+        # 80% chance to use conversational opening for natural flow (when name is set)
+        use_conversational = conversational or (name and random.random() < 0.8)
 
         # Select opening based on style, sentiment AND language
         if use_conversational:

@@ -33,26 +33,29 @@ def _humanize_column_name(col_name: str) -> str:
     return name
 
 
-def _build_supporting_text(row: dict, primary_col: str) -> str:
-    """Build supporting context text for metric card."""
-    parts = []
+def _build_supporting_text(row: dict, primary_col: str, query_type: str = '') -> str:
+    """
+    Build user-friendly supporting text for metric card.
 
-    # Add row count context
-    if 'row_count' in row:
-        count = row['row_count']
-        if count > 0:
-            parts.append(f"from {count:,} records")
+    For aggregations (SUM, AVG, etc.), no supporting text needed - the value speaks for itself.
+    Only add context when it provides meaningful insight to the user.
+    """
+    # For simple aggregations, no supporting text needed
+    # Technical details like "from X records" or "range: min-max" are confusing
+    if query_type in ['metric', 'aggregation_on_subset', 'extrema_lookup']:
+        return ""
 
-    # Add range context
-    if 'min_value' in row and 'max_value' in row:
-        try:
-            min_val = float(row['min_value'])
-            max_val = float(row['max_value'])
-            parts.append(f"range: {min_val:,.0f} - {max_val:,.0f}")
-        except (ValueError, TypeError):
-            pass
+    # For percentage queries, might want to show what it's a percentage of
+    if query_type == 'percentage':
+        if 'numerator' in row and 'denominator' in row:
+            try:
+                num = int(row['numerator'])
+                denom = int(row['denominator'])
+                return f"{num:,} out of {denom:,}"
+            except (ValueError, TypeError):
+                pass
 
-    return " | ".join(parts) if parts else ""
+    return ""
 
 
 # Keywords that indicate a projection/forecast query
@@ -105,7 +108,7 @@ def determine_visualization(
     query_type = query_plan.get('query_type', '')
 
     # Query types that are better as tables only
-    table_only_types = ['lookup', 'filter', 'list']
+    table_only_types = ['lookup', 'filter', 'list', 'multi_step']
     if query_type in table_only_types:
         return None
 
@@ -118,12 +121,30 @@ def determine_visualization(
             row = result_data[0]
             # Find the primary value column (exclude supporting columns)
             exclude_cols = {'row_count', 'min_value', 'max_value', 'count', 'numerator', 'denominator'}
-            metric_cols = [c for c in row.keys() if c.lower() not in exclude_cols]
+            all_cols = [c for c in row.keys() if c.lower() not in exclude_cols]
 
-            if metric_cols:
-                value_col = metric_cols[0]
+            # Priority 1: Use aggregation_column from plan if available
+            agg_col = query_plan.get('aggregation_column')
+            if agg_col and agg_col in row:
+                value_col = agg_col
                 value = row.get(value_col, 0)
+            else:
+                # Priority 2: Find the first NUMERIC column (not text like "Category")
+                value_col = None
+                value = None
+                for col in all_cols:
+                    col_value = row.get(col)
+                    if isinstance(col_value, (int, float)) and col_value is not None:
+                        value_col = col
+                        value = col_value
+                        break
 
+                # Priority 3: Fall back to first column if no numeric found
+                if value_col is None and all_cols:
+                    value_col = all_cols[0]
+                    value = row.get(value_col, 0)
+
+            if value_col:
                 # Determine if this is a percentage
                 is_percentage = query_type == 'percentage' or 'percent' in value_col.lower()
 
@@ -135,7 +156,7 @@ def determine_visualization(
                     'data': {
                         'value': value,
                         'is_percentage': is_percentage,
-                        'supporting_text': _build_supporting_text(row, value_col)
+                        'supporting_text': _build_supporting_text(row, value_col, query_type)
                     }
                 }
         return None
@@ -163,6 +184,52 @@ def _build_chart_config(
 
     columns = list(data[0].keys())
     print(f"[Viz] Query type: {query_type}, Columns: {columns}, Rows: {len(data)}")
+
+    # Special handling for trend queries from advanced executor
+    # Data format: [{"date": "2025-01-01", "value": 123}, ...]
+    if query_type == 'trend' and len(data) >= 2:
+        if 'date' in columns and 'value' in columns:
+            chart_data = []
+            for row in data:
+                date_val = row.get('date', '')
+                value = row.get('value', 0)
+                # Format date for display
+                name = str(date_val) if date_val else 'Unknown'
+                chart_data.append({'name': name, 'value': value})
+
+            if len(chart_data) >= 2:
+                colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
+                print(f"[Viz] SUCCESS - Trend chart data: {len(chart_data)} points")
+                return {
+                    'type': 'line',
+                    'title': _generate_title(plan, query_type),
+                    'data': chart_data,
+                    'xKey': 'name',
+                    'yKey': 'value',
+                    'colors': colors
+                }
+
+    # Special handling for grouped trend queries
+    # Data format: [{"group": "State A", "direction": "increasing", "slope": 0.5, ...}, ...]
+    if query_type == 'trend' and len(data) >= 2:
+        if 'group' in columns and 'slope' in columns:
+            chart_data = []
+            for row in data:
+                group_name = row.get('group', '')
+                slope = row.get('slope', 0) or row.get('normalized_slope', 0)
+                chart_data.append({'name': str(group_name), 'value': slope})
+
+            if len(chart_data) >= 2:
+                colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
+                print(f"[Viz] SUCCESS - Grouped trend chart: {len(chart_data)} groups")
+                return {
+                    'type': 'horizontal_bar',
+                    'title': 'Trend by ' + plan.get('trend', {}).get('group_by', 'Group'),
+                    'data': chart_data,
+                    'xKey': 'name',
+                    'yKey': 'value',
+                    'colors': colors
+                }
 
     # Special handling for comparison queries where label IS the key
     # Data format: [{"August": 9700000}, {"December": 10000000}]
@@ -333,6 +400,7 @@ def _detect_columns(columns: List[str], data: List[Dict], plan: Dict[str, Any]):
 
 def _analyze_column(col_name: str, data: List[Dict]) -> str:
     """Analyze a column's data type across all rows. Returns 'string', 'numeric', or 'invalid'."""
+    from datetime import datetime, date
 
     if not data:
         return 'invalid'
@@ -360,9 +428,17 @@ def _analyze_column(col_name: str, data: List[Dict]) -> str:
                 all_string = False  # It's a numeric string
             except ValueError:
                 all_numeric = False  # It's a real string
-        else:
+        elif isinstance(value, (datetime, date)):
+            # Datetime objects are treated as string labels (will be converted to string for display)
             all_numeric = False
-            all_string = False
+        else:
+            # Try to check if it's a pandas Timestamp or similar
+            type_name = type(value).__name__.lower()
+            if 'timestamp' in type_name or 'datetime' in type_name or 'date' in type_name:
+                all_numeric = False  # Treat as string label
+            else:
+                all_numeric = False
+                all_string = False
 
     if not has_valid_values:
         return 'invalid'
@@ -449,6 +525,7 @@ def _format_data(
     labels: Optional[List[str]] = None
 ) -> List[Dict]:
     """Format data for Recharts."""
+    from datetime import datetime, date
 
     formatted = []
 
@@ -460,6 +537,16 @@ def _format_data(
             name = labels[i]
         else:
             name = f"Item {i + 1}"
+
+        # Convert datetime/date objects to readable strings
+        if isinstance(name, (datetime, date)):
+            name = name.strftime('%b %Y') if hasattr(name, 'strftime') else str(name)
+        elif hasattr(name, '__class__') and 'timestamp' in name.__class__.__name__.lower():
+            # Handle pandas Timestamp
+            try:
+                name = name.strftime('%b %Y')
+            except:
+                name = str(name)
 
         # Get the value
         value = row.get(metric_col, 0)

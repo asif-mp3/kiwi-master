@@ -109,11 +109,11 @@ app = FastAPI(
 
 # Configure CORS for frontend
 ALLOWED_ORIGINS = [
-    # Local development (commented - using deployed URLs)
-    # "http://localhost:3000",
-    # "http://127.0.0.1:3000",
-    # "http://localhost:3001",
-    # "http://127.0.0.1:3001",
+    # Local development
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     # Production (Vercel)
     "https://thara-ai.vercel.app",
     "https://www.thara-ai.vercel.app",

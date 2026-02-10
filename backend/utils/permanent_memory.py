@@ -193,31 +193,32 @@ def format_memory_for_prompt() -> str:
 
     Returns:
         String to inject into system prompt, or empty string if no memory.
+
+    NOTE: User name (address_as) is handled by session-based personality,
+    not permanent memory. Each new session starts with "Boss" as default.
     """
     memory = load_memory()
 
     constraints = []
 
-    # User preferences
-    user_prefs = memory.get("user_preferences", {})
-    if user_prefs.get("address_as"):
-        safe_name = _sanitize_for_prompt(user_prefs['address_as'])
-        constraints.append(f"- Address the user as \"{safe_name}\"")
+    # NOTE: address_as is NOT loaded from permanent memory
+    # Name comes from session-based personality (defaults to "Boss")
+    # This ensures each new session starts fresh
 
-    # Bot identity
+    # Bot identity (still persisted if needed)
     bot_identity = memory.get("bot_identity", {})
     if bot_identity.get("name"):
         safe_bot_name = _sanitize_for_prompt(bot_identity['name'])
         constraints.append(f"- Your name is \"{safe_bot_name}\"")
-    
+
     if not constraints:
         return ""
-    
+
     # Format as prompt section
     prompt_section = "\n\nIMPORTANT BEHAVIORAL CONSTRAINTS FROM USER MEMORY:\n"
     prompt_section += "\n".join(constraints)
     prompt_section += "\n"
-    
+
     return prompt_section
 
 

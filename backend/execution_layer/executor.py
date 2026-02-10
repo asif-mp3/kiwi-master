@@ -106,9 +106,12 @@ def execute_multi_step_plan(plan: dict):
 
         # Get final data from result
         data = result.get("data", [])
+
+        # CRITICAL: Create a FRESH DataFrame to avoid metadata bleeding
+        # This ensures no cached metadata from previous queries
         df = pd.DataFrame(data) if data else pd.DataFrame()
 
-        # Attach metadata to DataFrame
+        # Attach metadata to DataFrame - these are FRESH for THIS query
         df.attrs['query_type'] = plan.get("query_type", "multi_step")
         df.attrs['analysis'] = result.get("analysis", {})
         df.attrs['is_multi_step'] = True

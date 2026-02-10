@@ -96,7 +96,6 @@ from utils.query_context import QueryContext, QueryTurn, ConversationManager, Pe
 from utils.personality import TharaPersonality
 from utils.visualization import determine_visualization
 from utils.onboarding import OnboardingManager, get_user_name
-from utils.query_cache import get_query_cache, cache_query_result, get_cached_query_result, invalidate_spreadsheet_cache
 from utils.config_loader import get_config
 from analytics_engine.duckdb_manager import DuckDBManager
 import yaml
@@ -655,10 +654,6 @@ def load_dataset_service(url: str, user_id: str = None, append: bool = False) ->
         from datetime import datetime
         app_state.last_sync_time = datetime.now().isoformat()
         print(f"[Dataset] Sync time recorded: {app_state.last_sync_time}")
-
-        # Invalidate query cache for this spreadsheet (data has changed)
-        invalidate_spreadsheet_cache(spreadsheet_id)
-        print(f"[Cache] Invalidated query cache for new dataset")
 
         # Get data summary from onboarding
         profiles = app_state.profile_store.get_all_profiles()
@@ -2968,6 +2963,18 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             ctx.set_user_name(user_name)
             print(f"  [OK] Session name applied: {user_name}")
 
+        # Sync name from personality to context (in case context was reset)
+        # This fixes the bug where name is forgotten after 2 questions
+        if app_state.personality.user_name and not ctx.user_name:
+            ctx.set_user_name(app_state.personality.user_name)
+            print(f"  [Name] Synced from personality: {app_state.personality.user_name}")
+
+        # Set default name to "Boss" if no name is provided
+        if not ctx.user_name and not app_state.personality.user_name:
+            app_state.personality.set_name("Boss")
+            ctx.set_user_name("Boss")
+            print(f"  [Name] Using default name: Boss")
+
         # === VALIDATE INPUT ===
         # Reject empty, too short, or obvious noise (transcription artifacts)
         # BUT: Allow short inputs (like "1", "2", "3") if there's a pending clarification
@@ -3194,20 +3201,14 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             value = memory_result["value"]
             print(f"    Category: {category}, Key: {key}, Value: {value}")
 
-            # Handle "Call me X" - SAVE TO PERMANENT STORAGE
+            # Handle "Call me X" - SESSION ONLY (no persistent storage)
             if key == "address_as":
                 app_state.personality.set_name(value)
                 ctx.set_user_name(value)
-                
-                # Save to permanent storage
-                from utils.permanent_memory import update_memory
-                success = update_memory("user_preferences", "address_as", value)
-                if success:
-                    print(f"  [OK] Name '{value}' saved permanently to persistent_memory.json")
-                else:
-                    print(f"  [WARN] Failed to save name to permanent storage")
-                
-                print(f"  [OK] Session name set to: {value}")
+
+                # NOTE: Name is stored in session only, NOT persisted across sessions
+                # Each new session starts fresh with "Boss" as default
+                print(f"  [OK] Session name set to: {value} (session only, not persisted)")
 
                 # CRITICAL: Invalidate cached LLM models so they pick up the new name
                 from planning_layer.planner_client import invalidate_planner_model
@@ -3332,47 +3333,6 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             except (AttributeError, KeyError, FileNotFoundError):
                 spreadsheet_id = ""
 
-        # Check cache with ORIGINAL question (before translation)
-        early_cache_checked = False
-        if spreadsheet_id:
-            cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
-            early_cache_checked = True
-
-            if cache_hit and cached_result and isinstance(cached_result, dict):
-                print(f"  [FAST] EARLY CACHE HIT - skipping translation/entity extraction")
-                _log_timing("early_cache_check", _step_start)
-
-                # Translate cached explanation if Tamil input
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
-                cached_explanation = cached_result.get('explanation', '')
-                if is_tamil and cached_explanation:
-                    cached_explanation = translate_to_tamil(cached_explanation)
-
-                _total_time = (_time.time() - _query_start) * 1000
-                print(f"\n  [TIME]  TIMING SUMMARY (EARLY CACHE HIT):")
-                print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
-                print("=" * 60 + "\n")
-
-                return {
-                    'success': True,
-                    'explanation': cached_explanation,
-                    'data': cached_result.get('data'),
-                    'plan': cached_result.get('plan'),
-                    'table_used': cached_result.get('table_used'),
-                    'routing_confidence': cached_result.get('routing_confidence'),
-                    'was_followup': False,
-                    'entities_extracted': cached_result.get('entities_extracted', {}),
-                    'data_refreshed': False,
-                    'from_cache': True,
-                    'no_results': cached_result.get('no_results', False),
-                    'visualization': cached_result.get('visualization')
-                }
-            else:
-                print("  [FAIL] Cache miss - continuing with full pipeline")
-        else:
-            print("  [FAIL] No spreadsheet_id - skipping cache check")
-        _log_timing("early_cache_check", _step_start)
-
         # === PARALLEL: TRANSLATION + ENTITY EXTRACTION (SAVES 200-400ms) ===
         _step_start = _time.time()
         print("\n[STEP 4-5/8] PARALLEL: TRANSLATION + ENTITY EXTRACTION...")
@@ -3419,6 +3379,9 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         entity_summary = app_state.entity_extractor.get_entities_summary(entities)
         print(f"  [OK] Entities extracted: {entity_summary}")
+        # DEBUG: Specifically log time_period for date validation tracking
+        print(f"  [DEBUG] time_period entity: '{entities.get('time_period', 'NOT SET')}'")
+        print(f"  [DEBUG] All date-related entities: time_period={entities.get('time_period')}, month={entities.get('month')}, date_specific={entities.get('date_specific')}")
 
         # Check for follow-up
         is_followup = ctx.is_followup(processing_query)
@@ -3446,40 +3409,6 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             except (AttributeError, KeyError, FileNotFoundError):
                 spreadsheet_id = ""
         data_was_refreshed = check_and_refresh_data()
-        if data_was_refreshed:
-            print(f"  ! Data was refreshed - invalidating stale cache")
-            invalidate_spreadsheet_cache(spreadsheet_id)
-
-        # === CHECK CACHE (SKIP IF EARLY CHECK ALREADY RAN) ===
-        # Early cache check happens before translation - this is backup for edge cases
-        if not early_cache_checked:
-            cache_hit, cached_result = get_cached_query_result(question, spreadsheet_id)
-
-            if cache_hit and cached_result and isinstance(cached_result, dict):
-                print(f"  [OK] CACHE HIT - returning cached result")
-                print("=" * 60 + "\n")
-                cached_explanation = cached_result.get('explanation', '')
-                if is_tamil:
-                    cached_explanation = translate_to_tamil(cached_explanation)
-
-                return {
-                    'success': True,
-                    'explanation': cached_explanation,
-                    'data': cached_result.get('data'),
-                    'plan': cached_result.get('plan'),
-                    'table_used': cached_result.get('table_used'),
-                    'routing_confidence': cached_result.get('routing_confidence'),
-                    'was_followup': is_followup,
-                    'entities_extracted': cached_result.get('entities_extracted', {}),
-                    'data_refreshed': data_was_refreshed,
-                    'from_cache': True,
-                    'no_results': cached_result.get('no_results', False)
-                }
-            else:
-                print("  [FAIL] Cache miss - proceeding with full query")
-        else:
-            print("  [OK] Early cache check already performed - skipping")
-        _log_timing("cache_check", _step_start)
 
         # === CHECK DATA LOADED ===
         profiles = app_state.profile_store.get_all_profiles() if app_state.profile_store else {}
@@ -3569,9 +3498,19 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             schema_context = app_state.table_router.get_table_schema(best_table)
             print(f"  [OK] Using focused schema for: {best_table}")
         elif routing_result.should_fallback:
-            # Very low confidence - use top 5 candidate tables
-            schema_context = app_state.table_router.get_fallback_schema(processing_query, top_k=5)
-            print(f"  ! Very low confidence - using fallback schema (top 5 candidates)")
+            # Very low confidence - try INTELLIGENT LLM FALLBACK first!
+            print(f"  ! Very low confidence - trying LLM-based intelligent table selection...")
+            llm_suggested_table = app_state.table_router.get_llm_fallback_table(processing_query)
+
+            if llm_suggested_table:
+                # LLM successfully picked a table - use it!
+                schema_context = app_state.table_router.get_table_schema(llm_suggested_table)
+                best_table = llm_suggested_table  # Update best_table for execution
+                print(f"  [OK] LLM Fallback SUCCESS - using: {llm_suggested_table}")
+            else:
+                # LLM couldn't pick - fall back to top 5 candidates
+                schema_context = app_state.table_router.get_fallback_schema(processing_query, top_k=5)
+                print(f"  ! LLM Fallback failed - using top 5 candidates")
         else:
             # Medium confidence - use the best match
             schema_context = app_state.table_router.get_table_schema(best_table)
@@ -3582,6 +3521,98 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             context_prompt = ctx.get_context_prompt()
             if context_prompt:
                 schema_context = f"{context_prompt}\n\n---\n\n{schema_context}"
+
+        # === CRITICAL: PRE-VALIDATE DATE FOR "TODAY/YESTERDAY" QUERIES ===
+        # Check BEFORE planning to avoid hallucination with wrong data
+        time_period = entities.get('time_period', '').lower() if entities else ''
+
+        # FALLBACK: Also check raw question for today/yesterday keywords (belt and suspenders)
+        query_lower = processing_query.lower()
+        if not time_period:
+            if 'today' in query_lower or "today's" in query_lower:
+                time_period = 'today'
+                print(f"  [DEBUG] Detected 'today' from query text (entity extraction missed it)")
+            elif 'yesterday' in query_lower or "yesterday's" in query_lower:
+                time_period = 'yesterday'
+                print(f"  [DEBUG] Detected 'yesterday' from query text (entity extraction missed it)")
+
+        print(f"  [DEBUG] Date validation check: time_period='{time_period}', entities keys={list(entities.keys()) if entities else 'None'}")
+        if time_period in ['today', 'yesterday', 'this_week', 'last_week'] and best_table:
+            from datetime import datetime, timedelta
+            from schema_intelligence.profile_store import ProfileStore
+
+            try:
+                # Use app_state's profile_store if available, else create new one
+                profile_store = app_state.profile_store if app_state.profile_store else ProfileStore()
+                profile = profile_store.get_profile(best_table)
+                print(f"  [DEBUG] Profile for {best_table}: date_range={profile.get('date_range') if profile else 'No profile'}")
+                if not profile:
+                    # Try case-insensitive lookup
+                    all_tables = profile_store.get_table_names()
+                    print(f"  [DEBUG] Available tables in profile_store: {all_tables}")
+                    for t in all_tables:
+                        if t.lower() == best_table.lower():
+                            profile = profile_store.get_profile(t)
+                            print(f"  [DEBUG] Found profile via case-insensitive match: {t}")
+                            break
+
+                if profile and profile.get('date_range'):
+                    date_range = profile['date_range']
+                    # CRITICAL: Properly handle None values - don't convert None to 'None' string
+                    raw_min = date_range.get('min')
+                    raw_max = date_range.get('max')
+                    min_date = str(raw_min)[:10] if raw_min is not None else None
+                    max_date = str(raw_max)[:10] if raw_max is not None else None
+                    print(f"  [DEBUG] Date range: min={min_date}, max={max_date} (raw: {raw_min}, {raw_max})")
+
+                    # Calculate the requested date
+                    now = datetime.now()
+                    if time_period == 'today':
+                        requested_date = now.strftime('%Y-%m-%d')
+                        date_label = f"Today ({requested_date})"
+                    elif time_period == 'yesterday':
+                        requested_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+                        date_label = f"Yesterday ({requested_date})"
+                    else:
+                        requested_date = now.strftime('%Y-%m-%d')
+                        date_label = time_period.replace('_', ' ').title()
+
+                    print(f"  [DEBUG] Requested date: {requested_date}, label: {date_label}")
+
+                    # Check if requested date is outside the data range
+                    # Only validate if we have valid date range (not None)
+                    if min_date and max_date and min_date != 'None' and max_date != 'None':
+                        if requested_date < min_date or requested_date > max_date:
+                            error_msg = f"Boss, {date_label} is outside the available data range. The dataset only has data from {min_date} to {max_date}. Try asking about a date within that range!"
+                            print(f"  [WARN] DATE VALIDATION FAILED: {error_msg}")
+
+                            _total_time = (_time.time() - _query_start) * 1000
+                            print(f"\n  [TIME]  TIMING SUMMARY (DATE OUT OF RANGE):")
+                            for step, ms in _timings.items():
+                                print(f"      {step}: {ms:.0f}ms")
+                            print(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                            print("=" * 60 + "\n")
+
+                            return {
+                                'success': True,
+                                'explanation': error_msg,
+                                'data': None,
+                                'plan': None,
+                                'table_used': best_table,
+                                'date_out_of_range': True,
+                                'available_range': {'min': min_date, 'max': max_date},
+                                'requested_date': requested_date
+                            }
+                        else:
+                            print(f"  [DEBUG] Date {requested_date} is within range [{min_date} to {max_date}]")
+                    else:
+                        print(f"  [DEBUG] Skipping date validation - no valid date range (min={min_date}, max={max_date})")
+                else:
+                    print(f"  [DEBUG] No date_range in profile for {best_table}")
+            except Exception as e:
+                print(f"  [WARN] Could not validate date range: {e}")
+                import traceback
+                traceback.print_exc()
 
         # === PLANNING ===
         _step_start = _time.time()
@@ -3672,10 +3703,52 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         # === DETECT EMPTY RESULTS ===
         no_results = False
+        date_out_of_range_msg = None
         row_count = len(result) if result is not None and hasattr(result, '__len__') else 0
         if result is None or row_count == 0:
             no_results = True
             print(f"  ! Query returned 0 rows")
+
+            # Check if this is a "today/yesterday" query with date outside data range
+            time_period = entities.get('time_period', '').lower() if entities else ''
+            # Fallback: check raw query for today/yesterday
+            if not time_period:
+                query_lower_check = processing_query.lower()
+                if 'today' in query_lower_check:
+                    time_period = 'today'
+                elif 'yesterday' in query_lower_check:
+                    time_period = 'yesterday'
+
+            if time_period in ['today', 'yesterday', 'this_week', 'last_week']:
+                from datetime import datetime, timedelta
+                from schema_intelligence.profile_store import ProfileStore
+                try:
+                    profile_store = app_state.profile_store if app_state.profile_store else ProfileStore()
+                    table_to_check = plan.get('table') or best_table
+                    profile = profile_store.get_profile(table_to_check)
+                    if profile and profile.get('date_range'):
+                        date_range = profile['date_range']
+                        # Properly handle None values
+                        raw_min = date_range.get('min')
+                        raw_max = date_range.get('max')
+                        min_date = str(raw_min)[:10] if raw_min is not None else None
+                        max_date = str(raw_max)[:10] if raw_max is not None else None
+
+                        # Calculate correct date based on time_period
+                        now = datetime.now()
+                        if time_period == 'yesterday':
+                            check_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+                            date_label = f"Yesterday ({check_date})"
+                        else:
+                            check_date = now.strftime('%Y-%m-%d')
+                            date_label = f"Today ({check_date})"
+
+                        if min_date and max_date and min_date != 'None' and max_date != 'None':
+                            if check_date < min_date or check_date > max_date:
+                                date_out_of_range_msg = f"{date_label} is outside the available data range ({min_date} to {max_date}). The dataset doesn't have data for {time_period}."
+                                print(f"  [WARN] {date_out_of_range_msg}")
+                except Exception as e:
+                    print(f"  [WARN] Could not check date range: {e}")
         else:
             print(f"  [OK] Query returned {row_count} rows")
         _log_timing("sql_execution", _step_start)
@@ -3683,13 +3756,18 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         # === EXPLANATION WITH PERSONALITY ===
         _step_start = _time.time()
         print("\n[RESPONSE] Generating explanation...")
-        explanation = explain_results(
-            result,
-            query_plan=plan,
-            original_question=processing_query,
-            raw_user_message=question,  # Original message with emotional tone
-            user_name=app_state.personality.user_name
-        )
+
+        # If date is out of range, provide specific explanation
+        if date_out_of_range_msg:
+            explanation = f"Boss, {date_out_of_range_msg}"
+        else:
+            explanation = explain_results(
+                result,
+                query_plan=plan,
+                original_question=processing_query,
+                raw_user_message=question,  # Original message with emotional tone
+                user_name=app_state.personality.user_name
+            )
 
         # NOTE: explain_results() already handles empty results with friendly messages
         # No need to append additional no_data_hint - that caused DOUBLE responses
@@ -3794,20 +3872,6 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         # Sanitize entire response to handle numpy types in plan, entities, etc.
         response = _sanitize_for_json(response)
-
-        # === CACHE RESULT (CACHING FLOW FROM ARCHITECTURE) ===
-        # Store for 5 minutes (configurable via settings.yaml)
-        # Use ORIGINAL question (before translation) to match GET key
-        try:
-            cache_query_result(
-                question,  # Use original question, not processing_query
-                spreadsheet_id,
-                response
-                # Don't include table_name/filters - they're not available at GET time
-            )
-            print(f"[Cache] Stored result for: {question[:50]}...")
-        except Exception as cache_err:
-            print(f"[Cache] Warning: Could not cache result: {cache_err}")
 
         return response
 
@@ -3980,23 +4044,17 @@ def get_table_profiles_service() -> Dict[str, Any]:
 
 def clear_context_service(conversation_id: str = None) -> Dict[str, Any]:
     """
-    Clear conversation context and all cached data.
+    Clear conversation context.
     Called when user clears chat.
     """
     # Clear conversation context
     app_state.conversation_manager.clear_context(conversation_id)
 
-    # Clear query cache
-    cache = get_query_cache()
-    cache_stats = cache.get_stats()
-    cache.clear()
-
-    print(f"[CACHE] Cleared {cache_stats['current_size']} cached queries")
+    print(f"[CONTEXT] Cleared conversation context")
 
     return {
         'success': True,
-        'message': 'Context and cache cleared',
-        'cleared_queries': cache_stats['current_size']
+        'message': 'Context cleared'
     }
 
 

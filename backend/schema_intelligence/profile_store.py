@@ -8,7 +8,9 @@ from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 
 
-PROFILES_PATH = "data_sources/table_profiles.json"
+# Use path relative to this module's location, not current working directory
+_MODULE_DIR = Path(__file__).parent.parent  # backend directory
+PROFILES_PATH = str(_MODULE_DIR / "data_sources" / "table_profiles.json")
 
 
 class ProfileStore:

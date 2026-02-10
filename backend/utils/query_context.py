@@ -287,6 +287,18 @@ class QueryContext:
                 not any(phrase in q_lower for phrase in ['same', 'also', 'too', 'as well', 'and'])):
                 return False
 
+            # Entity lookup queries are NEW queries - don't inherit location context
+            # "Who worked on X", "Which employee", "Find person" should search ALL locations
+            entity_lookup_keywords = ['who', 'which employee', 'find person', 'search for', 'locate',
+                                      'யார்', 'எந்த ஊழியர்']  # Tamil: who, which employee
+            is_entity_lookup = any(kw in q_lower for kw in entity_lookup_keywords)
+            if is_entity_lookup and self.active_entities.get('location'):
+                # User asking about a person - don't inherit location from previous query
+                print(f"    [QueryContext] Entity lookup detected - clearing location inheritance")
+                if 'location' in self.active_entities:
+                    del self.active_entities['location']
+                return False
+
         return False
 
     def merge_entities(self, new_entities: Dict[str, Any]) -> Dict[str, Any]:
@@ -301,6 +313,15 @@ class QueryContext:
 
         # Keys that should be inherited from previous context
         inheritable_keys = ['month', 'metric', 'category', 'location', 'aggregation', 'date_specific']
+
+        # CRITICAL: Don't inherit location for entity lookup queries
+        # This prevents "Rajesh Kumar" query from inheriting "Bangalore" from previous query
+        q_lower = new_entities.get('raw_question', '').lower()
+        entity_lookup_keywords = ['who', 'which employee', 'find', 'search', 'யார்', 'எந்த']
+        is_entity_lookup = any(kw in q_lower for kw in entity_lookup_keywords)
+        if is_entity_lookup:
+            inheritable_keys = [k for k in inheritable_keys if k != 'location']
+            print(f"    [QueryContext] Entity lookup - skipping location inheritance")
 
         for key in inheritable_keys:
             new_val = new_entities.get(key)

@@ -155,9 +155,12 @@ def _compile_filter(plan):
         columns = ", ".join([quote_identifier(col) for col in columns])
     
     where = _build_where_clause(plan["filters"])
-    limit = plan.get("limit", 100)
-    
-    return f"SELECT {columns} FROM {table} {where} LIMIT {limit}".strip()
+    limit = plan.get("limit")  # None = no limit (return all rows)
+
+    if limit is not None:
+        return f"SELECT {columns} FROM {table} {where} LIMIT {limit}".strip()
+    else:
+        return f"SELECT {columns} FROM {table} {where}".strip()
 
 
 
@@ -466,9 +469,12 @@ def _compile_list(plan):
             select_columns = [select_columns]
         columns = ", ".join([quote_identifier(col) for col in select_columns])
 
-    limit = plan.get("limit", 100)
+    limit = plan.get("limit")  # None = no limit (return all rows)
 
-    return f"SELECT {columns} FROM {table} LIMIT {limit}".strip()
+    if limit is not None:
+        return f"SELECT {columns} FROM {table} LIMIT {limit}".strip()
+    else:
+        return f"SELECT {columns} FROM {table}".strip()
 
 
 def _compile_aggregation_on_subset(plan):

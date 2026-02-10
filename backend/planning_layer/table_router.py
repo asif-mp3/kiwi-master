@@ -15,8 +15,8 @@ from schema_intelligence.profile_store import ProfileStore
 from planning_layer.entity_extractor import EntityExtractor
 
 # Configuration for LLM-based selection
-USE_LLM_SELECTION = True  # Set to False to disable LLM and use only rule-based
-LLM_SELECTION_TIMEOUT = 8  # Seconds to wait for LLM response
+USE_LLM_SELECTION = False  # DISABLED: Rule-based scoring is faster and works for 95%+ queries
+LLM_SELECTION_TIMEOUT = 5  # Seconds to wait for LLM response (if enabled)
 
 
 def _get_actual_duckdb_tables() -> List[str]:
@@ -63,11 +63,15 @@ class TableRouter:
 
         Use RoutingResult properties:
         - is_confident: True if confidence >= 0.6 (use single table)
-        - needs_clarification: True if 0.3 <= confidence < 0.6 with multiple alternatives
-        - should_fallback: True if confidence < 0.3 or no table found
+        - needs_clarification: True if 0.15 <= confidence < 0.6 with multiple alternatives
+        - should_fallback: True if confidence < 0.15 or no table found (RARE - only when backend fails)
         """
         # Extract entities from question
         entities = self.entity_extractor.extract(question)
+
+        # CACHE: Get actual DuckDB tables ONCE at start (avoid multiple DB calls)
+        actual_tables = _get_actual_duckdb_tables()
+        actual_tables_lower = {t.lower(): t for t in actual_tables} if actual_tables else {}
 
         # Check if this is a follow-up question
         is_followup = previous_context and self.entity_extractor.is_followup_question(question, True)
@@ -101,8 +105,7 @@ class TableRouter:
             is_short_followup = len(question.split()) < 8 and is_followup
 
             if is_projection or is_short_followup:
-                # Validate that previous table still exists
-                actual_tables = _get_actual_duckdb_tables()
+                # Validate that previous table still exists (uses cached actual_tables from start)
                 if not actual_tables or prev_table in actual_tables:
                     print(f"[TableRouter] [OK] PROJECTION QUERY - using previous table: {prev_table}")
                     self._last_routing_debug = {
@@ -122,10 +125,8 @@ class TableRouter:
         if entities.get('explicit_table'):
             explicit_match = self._find_explicit_table(entities['explicit_table'])
             if explicit_match:
-                # Validate that table actually exists in DuckDB
-                actual_tables = _get_actual_duckdb_tables()
+                # Validate that table actually exists in DuckDB (uses cached actual_tables)
                 if actual_tables:
-                    actual_tables_lower = {t.lower(): t for t in actual_tables}
                     if explicit_match not in actual_tables:
                         # Try case-insensitive match
                         if explicit_match.lower() in actual_tables_lower:
@@ -199,46 +200,33 @@ class TableRouter:
             except Exception as e:
                 print(f"[TableRouter] LLM selection failed, falling back to scoring: {e}")
 
-        # NEW: Try RAG-based semantic search as secondary method
-        try:
-            from schema_intelligence.chromadb_client import SchemaVectorStore
-            vector_store = SchemaVectorStore()
-            rag_tables = vector_store.get_relevant_tables(question, top_k=3)
-
-            if rag_tables and rag_tables[0][1] > 0.3:  # Confidence threshold
-                rag_best_table, rag_score = rag_tables[0]
-                actual_tables = _get_actual_duckdb_tables()
-
-                # Validate table exists
-                if not actual_tables or rag_best_table in actual_tables:
-                    # Use RAG result if confidence is good
-                    if rag_score > 0.5:
-                        print(f"[TableRouter] RAG semantic search found: {rag_best_table} (score: {rag_score:.2f})")
-                        self._last_routing_debug = {
-                            'method': 'rag_semantic_search',
-                            'table': rag_best_table,
-                            'confidence': rag_score,
-                            'rag_results': rag_tables[:3]
-                        }
+        # RAG-based semantic search - DISABLED for performance
+        # ChromaDB initialization adds 10+ seconds latency even when failing
+        # Enable only if you have ChromaDB properly configured with embeddings
+        USE_RAG_SEARCH = False
+        if USE_RAG_SEARCH:
+            try:
+                from schema_intelligence.chromadb_client import SchemaVectorStore
+                vector_store = SchemaVectorStore()
+                rag_tables = vector_store.get_relevant_tables(question, top_k=3)
+                if rag_tables and rag_tables[0][1] > 0.5:
+                    rag_best_table, rag_score = rag_tables[0]
+                    if not actual_tables or rag_best_table in actual_tables:
+                        print(f"[TableRouter] RAG found: {rag_best_table} ({rag_score:.0%})")
                         return RoutingResult(
-                            table=rag_best_table,
-                            entities=entities,
+                            table=rag_best_table, entities=entities,
                             confidence=rag_score,
                             alternatives=[(t, int(s * 100)) for t, s in rag_tables[:3]]
                         )
-        except Exception as e:
-            print(f"[TableRouter] RAG search skipped: {e}")
+            except Exception as e:
+                print(f"[TableRouter] RAG skipped: {e}")
 
-        # FALLBACK: Get candidate tables with rule-based scoring
+        # FALLBACK: Get candidate tables with rule-based scoring (FAST - no LLM)
         candidates = self.profile_store.find_best_table_for_query(entities)
 
-        # CRITICAL: Filter candidates to only include tables that actually exist in DuckDB
-        # This prevents errors from stale profiles referencing non-existent tables
-        actual_tables = _get_actual_duckdb_tables()
+        # Filter candidates to only include tables that actually exist in DuckDB
+        # Uses cached actual_tables from start of route() to avoid redundant DB calls
         if actual_tables:
-            # Build case-insensitive lookup map
-            actual_tables_lower = {t.lower(): t for t in actual_tables}
-
             validated_candidates = []
             for table_name, score in candidates:
                 # Try exact match first
@@ -488,10 +476,23 @@ class TableRouter:
         if date_cols:
             schema_parts.append(f"Date columns: {', '.join(date_cols)}")
 
-        # Metric columns
-        metric_cols = [col for col, info in columns.items() if info.get('role') == 'metric']
+        # Metric columns with synonyms from profile (generalized - uses RAG profile data)
+        metric_cols = [(col, info) for col, info in columns.items() if info.get('role') == 'metric']
         if metric_cols:
-            schema_parts.append(f"Metric columns: {', '.join(metric_cols[:10])}")  # Limit to 10
+            metric_parts = []
+            for col, info in metric_cols[:10]:
+                synonyms = info.get('synonyms', [])
+                # Include synonyms from profile - filter out generic terms that don't help mapping
+                if synonyms:
+                    generic_terms = {'number', 'total', 'sum', 'count', 'value'}  # Too generic to be useful
+                    meaningful = [s for s in synonyms if s.lower() not in generic_terms][:3]
+                    if meaningful:
+                        metric_parts.append(f"{col} (aka: {', '.join(meaningful)})")
+                    else:
+                        metric_parts.append(col)
+                else:
+                    metric_parts.append(col)
+            schema_parts.append(f"Metric columns: {', '.join(metric_parts)}")
             if len(metric_cols) > 10:
                 schema_parts.append(f"  ... and {len(metric_cols) - 10} more metrics")
 
@@ -522,6 +523,90 @@ class TableRouter:
             schema_parts.append(f"Description: {description}")
 
         return "\n".join(schema_parts)
+
+    def get_llm_fallback_table(self, question: str) -> Optional[str]:
+        """
+        INTELLIGENT FALLBACK: Use LLM (Gemini) to intelligently pick the right table
+        when traditional routing fails.
+
+        This searches through ALL available tables and uses LLM intelligence
+        to understand which table best matches the user's question.
+
+        Returns:
+            table_name: The best matching table, or None if LLM can't determine
+        """
+        import google.generativeai as genai
+        import os
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
+        try:
+            # Get ALL available tables with their basic info
+            all_tables = self.profile_store.get_table_names()
+            if not all_tables:
+                print("[LLM Fallback] No tables available")
+                return None
+
+            # Build a concise summary of all tables
+            table_summaries = []
+            for table_name in all_tables:
+                profile = self.profile_store.get_profile(table_name)
+                if profile:
+                    # Get column names and types
+                    columns = profile.columns if hasattr(profile, 'columns') else []
+                    col_summary = ", ".join([f"{col.name} ({col.dtype})" for col in columns[:8]])  # First 8 cols
+                    table_summaries.append(f"- {table_name}: {col_summary}")
+                else:
+                    table_summaries.append(f"- {table_name}")
+
+            # Create prompt for LLM
+            prompt = f"""You are a data assistant. The user asked: "{question}"
+
+Available tables in the dataset:
+{chr(10).join(table_summaries)}
+
+Based on the user's question, which table should be used to answer it?
+Respond with ONLY the exact table name, nothing else. If none match, respond with "NONE".
+
+Table name:"""
+
+            # Call Gemini
+            api_key = os.getenv('GEMINI_API_KEY')
+            if not api_key:
+                print("[LLM Fallback] No GEMINI_API_KEY found")
+                return None
+
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-2.0-flash')
+
+            print(f"[LLM Fallback] Asking Gemini to pick best table from {len(all_tables)} options...")
+            response = model.generate_content(prompt)
+            suggested_table = response.text.strip()
+
+            # Validate the suggested table exists
+            if suggested_table == "NONE":
+                print("[LLM Fallback] LLM couldn't determine appropriate table")
+                return None
+
+            if suggested_table in all_tables:
+                print(f"[LLM Fallback] ✓ LLM selected: {suggested_table}")
+                return suggested_table
+            else:
+                # Try fuzzy match (LLM might have formatting differences)
+                for table in all_tables:
+                    if suggested_table.lower() in table.lower() or table.lower() in suggested_table.lower():
+                        print(f"[LLM Fallback] ✓ LLM selected (fuzzy match): {table}")
+                        return table
+
+                print(f"[LLM Fallback] ! LLM suggested '{suggested_table}' but it doesn't exist")
+                return None
+
+        except Exception as e:
+            print(f"[LLM Fallback] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def get_fallback_schema(self, question: str, top_k: int = 5) -> str:
         """
@@ -721,8 +806,8 @@ class RoutingResult:
 
     @property
     def should_fallback(self) -> bool:
-        """Check if we should use fallback multi-table approach"""
-        return self.confidence < 0.3 or self.table is None
+        """Check if we should use fallback multi-table approach (RARE - only when backend model completely fails)"""
+        return self.confidence < 0.15 or self.table is None
 
     def get_clarification_options(self) -> List[str]:
         """Get table options for user clarification"""

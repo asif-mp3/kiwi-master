@@ -9,29 +9,43 @@ Embedding Model: sentence-transformers/all-MiniLM-L6-v2
 - No Visual C++ dependencies
 - No ONNX runtime required
 - Streamlit-safe and Windows-safe
+
+NOTE: RAG search is DISABLED in table_router.py (USE_RAG_SEARCH = False).
+When CHROMADB_ENABLED = False, all methods become no-ops to save resources.
 """
 
-import chromadb
-from chromadb.config import Settings
-from chromadb.api.types import EmbeddingFunction
-from schema_intelligence.embedding_builder import build_schema_documents
-from typing import List
+# MASTER SWITCH: Set to False to disable ChromaDB entirely (saves memory & startup time)
+# RAG search is disabled in table_router.py anyway, so this saves wasted computation
+CHROMADB_ENABLED = False
+
 import os
+from typing import List
+
+# Only import heavy dependencies if enabled
+if CHROMADB_ENABLED:
+    import chromadb
+    from chromadb.config import Settings
+    from chromadb.api.types import EmbeddingFunction
+    from schema_intelligence.embedding_builder import build_schema_documents
 
 
-class CustomSentenceTransformerEmbedding(EmbeddingFunction):
+class CustomSentenceTransformerEmbedding:
     """
     Custom embedding function using sentence-transformers directly.
     This avoids ChromaDB's built-in wrapper which has PyTorch compatibility issues.
+
+    NOTE: Only instantiated when CHROMADB_ENABLED = True
     """
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        if not CHROMADB_ENABLED:
+            return
         try:
             from sentence_transformers import SentenceTransformer
             import torch
-            
+
             # Set environment variable to avoid tokenizers parallelism warning
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            
+
             # Load model with explicit device configuration
             self.model = SentenceTransformer(model_name, device='cpu')
         except Exception as e:
@@ -39,9 +53,11 @@ class CustomSentenceTransformerEmbedding(EmbeddingFunction):
                 f"Failed to initialize SentenceTransformer model. "
                 f"Error: {e}"
             )
-    
+
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Generate embeddings for input texts."""
+        if not CHROMADB_ENABLED:
+            return []
         embeddings = self.model.encode(input, convert_to_numpy=True)
         return embeddings.tolist()
 
@@ -49,18 +65,26 @@ class CustomSentenceTransformerEmbedding(EmbeddingFunction):
 class SchemaVectorStore:
     """
     Vector store for schema-level semantic search.
-    
+
     IMPORTANT: This class explicitly uses Hugging Face embeddings to avoid ONNX.
     ChromaDB's default embedding function (ONNX) causes DLL errors on Windows/Streamlit.
+
+    NOTE: When CHROMADB_ENABLED = False, all methods are no-ops.
+    RAG search is disabled in table_router.py so this saves resources.
     """
-    
+
     def __init__(self, persist_dir="schema_store"):
         """
         Initialize ChromaDB with explicit Hugging Face embeddings.
-        
+
         GUARDRAIL: This constructor NEVER allows ChromaDB to use default embeddings.
         If embedding initialization fails, the system will fail fast with a clear error.
         """
+        self.enabled = CHROMADB_ENABLED
+        if not self.enabled:
+            print("  [ChromaDB] DISABLED - all operations are no-ops (saves memory & startup time)")
+            return
+
         # Use PersistentClient for proper disk persistence with settings
         settings = Settings(
             allow_reset=True,
@@ -68,7 +92,7 @@ class SchemaVectorStore:
         )
         self.client = chromadb.PersistentClient(path=persist_dir, settings=settings)
         self.collection_name = "schema"
-        
+
         # CRITICAL: Create Hugging Face embedding function explicitly
         # This prevents ChromaDB from defaulting to ONNX embeddings
         try:
@@ -81,7 +105,7 @@ class SchemaVectorStore:
                 f"Ensure sentence-transformers is installed: pip install sentence-transformers\n"
                 f"Error: {e}"
             )
-        
+
         # Verify we're not using ONNX (runtime guardrail)
         embedding_type = type(self.embedding_function).__name__
         if "onnx" in embedding_type.lower():
@@ -95,6 +119,9 @@ class SchemaVectorStore:
         Clear all schema embeddings from the collection.
         Used during full reset to remove old schema references.
         """
+        if not self.enabled:
+            return  # No-op when disabled
+
         try:
             # Delete the collection
             self.client.delete_collection(self.collection_name)
@@ -106,16 +133,19 @@ class SchemaVectorStore:
     def delete_by_source_id(self, source_id: str):
         """
         Delete all documents (schema and row embeddings) for a given source_id.
-        
+
         This is used for atomic sheet-level rebuilds: when a sheet changes,
         ALL embeddings derived from that sheet are deleted before rebuilding.
-        
+
         Args:
             source_id: Source identifier (spreadsheet_id#sheet_name)
-        
+
         Returns:
             Number of documents deleted
         """
+        if not self.enabled:
+            return 0  # No-op when disabled
+
         try:
             # Get or create collection
             try:
@@ -153,14 +183,17 @@ class SchemaVectorStore:
     def rebuild(self, source_ids=None):
         """
         Rebuild schema vector store from scratch or for specific source_ids.
-        
+
         IMPORTANT: Always passes explicit embedding function to prevent ONNX fallback.
-        
+
         Args:
             source_ids: Optional list of source_ids to rebuild.
                        If None: Full rebuild (delete all, rebuild all)
                        If provided: Delete only documents matching these source_ids, then rebuild
         """
+        if not self.enabled:
+            return  # No-op when disabled
+
         if source_ids is None:
             # FULL REBUILD: Delete entire collection and rebuild from scratch
             print("   Performing FULL ChromaDB rebuild...")
@@ -236,6 +269,9 @@ class SchemaVectorStore:
 
     def count(self):
         """Get the number of documents in the collection."""
+        if not self.enabled:
+            return 0  # No-op when disabled
+
         # Get collection WITH EXPLICIT EMBEDDING FUNCTION
         collection = self.client.get_collection(
             name=self.collection_name,
@@ -260,6 +296,9 @@ class SchemaVectorStore:
             - metadata: Dict with table, type, metric info
             - distance: Similarity distance (lower = more similar)
         """
+        if not self.enabled:
+            return []  # No-op when disabled
+
         try:
             # Get collection
             try:
@@ -308,6 +347,9 @@ class SchemaVectorStore:
         Returns:
             List of (table_name, relevance_score) tuples, sorted by relevance
         """
+        if not self.enabled:
+            return []  # No-op when disabled
+
         results = self.query(question, top_k=top_k * 2)  # Get more results to dedupe tables
 
         # Aggregate scores by table

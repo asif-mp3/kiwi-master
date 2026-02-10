@@ -26,8 +26,8 @@ class OrderByModel(BaseModel):
 
 class QueryPlan(BaseModel):
     """Query plan schema matching frontend QueryPlan interface"""
-    query_type: Literal['metric', 'lookup', 'filter', 'extrema_lookup', 'rank', 'list', 'aggregation_on_subset', 'comparison', 'percentage', 'trend', 'projection']
-    table: str
+    query_type: Literal['metric', 'lookup', 'filter', 'extrema_lookup', 'rank', 'list', 'aggregation_on_subset', 'comparison', 'percentage', 'trend', 'projection', 'multi_step']
+    table: Optional[str] = None  # Optional for multi-step queries
     select_columns: Optional[List[str]] = None
     metrics: Optional[List[str]] = None
     filters: Optional[List[FilterModel]] = None
@@ -44,6 +44,9 @@ class QueryPlan(BaseModel):
     percentage: Optional[dict] = None  # For percentage queries
     trend: Optional[dict] = None  # For trend queries
     projection: Optional[dict] = None  # For projection/forecast queries
+    # Multi-step query config
+    steps: Optional[List[dict]] = None  # For multi-step queries
+    is_multi_step: Optional[bool] = None  # Flag for multi-step queries
 
 
 # ============================================================================

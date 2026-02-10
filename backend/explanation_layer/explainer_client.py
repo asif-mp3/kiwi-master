@@ -268,27 +268,105 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
                     question_language = "Tamil"
         except (ImportError, Exception):
             pass  # Language detection is optional
+
+    # Detect question emotion for appropriate conversation starter
+    from utils.conversation_templates import detect_question_emotion, get_conversation_starter
+    question_for_emotion = raw_user_message or original_question or ""
+    detected_emotion = detect_question_emotion(question_for_emotion)
+    print(f"[Emotion] Detected: {detected_emotion} from question: {question_for_emotion[:50]}...")
+
+    # Get appropriate conversation starters for this emotion
+    lang_key = "tamil" if question_language == "Tamil" else "english"
+    emotion_starters = get_conversation_starter(lang_key, detected_emotion)
     
     if result_df.empty:
-        # Provide helpful message in Thara's charming personality
-        # NOTE: Pure Tamil for Tamil responses, pure English for English responses
-        # This ensures proper TTS pronunciation (no Tanglish mixing)
-        if question_language == "Tamil":
-            no_data_responses = [
-                "ஹ்ம்ம், இதற்கு தகவல் கிடைக்கவில்லை! வேறு விதமாக கேட்கலாமா?",
-                "அச்சச்சோ! இதற்கு எந்த தகவலும் இல்லை போல. வேறு தேதி அல்லது பெயர் முயற்சிக்கலாமா?",
-                "ஓ! இதற்கு ஒன்றும் கிடைக்கவில்லை. வேறு வழியில் தேடலாமா?",
-                "அட! இந்த தேடலுக்கு தகவல் இல்லை. வேறு எதாவது முயற்சிக்கலாமா?",
-            ]
-        else:
-            no_data_responses = [
-                "Hmm, I couldn't find any data for that! Want to try a different filter or spelling?",
-                "Oops! Looks like there's no data matching that. Maybe try a different date range or check the spelling?",
-                "Aww, nothing came up for that search! Let's try tweaking the criteria - what do you think?",
-                "No luck with that one! The data might be under a different name - want me to help you explore?",
-            ]
-        import random
-        return random.choice(no_data_responses)
+        # IMPORTANT: Use Gemini LLM to generate helpful "no data" responses
+        # This makes responses contextual and intelligent instead of generic
+
+        # Build context for empty result
+        empty_context = {
+            "result": "no_data_found",
+            "row_count": 0
+        }
+
+        # Add query context if available
+        if query_plan:
+            empty_context["query_type"] = query_plan.get("query_type")
+            empty_context["table"] = query_plan.get("table")
+            empty_context["filters"] = query_plan.get("filters", [])
+
+        # Get emotion-appropriate starters for no-data response
+        starter_examples = ', '.join(['"' + s.format(name=user_name or 'Boss') + '"' for s in emotion_starters[:3]])
+
+        # Build prompt for Gemini to generate helpful no-data message with analysis
+        no_data_prompt = f"""The user asked: "{original_question}"
+
+The query returned NO data (empty result).
+
+Query Details: {json.dumps(empty_context, indent=2, default=str)}
+
+IMPORTANT: Analyze WHY there's no data and explain it clearly:
+- Was a multi-step query? Check if intermediate steps succeeded but final step had no matches
+- Date mismatches? Explain if the date from one table doesn't exist in another
+- Filter too strict? Explain if the combination of filters excludes all records
+- Data gap? Mention if the requested data period isn't covered
+- Wrong status/category? Explain if the requested status value doesn't exist
+
+Generate a natural, helpful response in {question_language} language that:
+1. Starts with one of these {detected_emotion} openers: {starter_examples}
+2. Explains WHAT you found (e.g., "peak sales day was October 12th")
+3. Explains WHY there's no final result (e.g., "but attendance records don't have that date")
+4. Suggests what to try (e.g., "Want me to check a different date?")
+
+Guidelines:
+- Be calm, thoughtful, and analytical
+- Use pauses and natural flow: "Hmm...", "So...", "Actually..."
+- Keep response under 300 characters
+- Match the user's language (pure {question_language})
+- Sound like you're thinking through the problem with them
+
+Response:"""
+
+        try:
+            # Use Gemini to generate contextual no-data response
+            model = get_explainer_model()
+            response = model.generate_content(no_data_prompt)
+            explanation = response.text.strip()
+
+            # Ensure response is not too long
+            if len(explanation) > 300:
+                explanation = explanation[:297] + "..."
+
+            print(f"[Explainer] Gemini generated no-data response: {explanation[:50]}...")
+            return explanation
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            print(f"[Explainer] Error generating no-data response: {e}")
+
+            # Enhanced fallback with context-aware messages
+            is_multi_step = empty_context.get("is_multi_step", False)
+
+            # Check if it's a rate limit error (429)
+            if "429" in error_msg or "resource exhausted" in error_msg or "quota" in error_msg:
+                print("[Explainer] Rate limit hit - using smart fallback")
+
+                # For multi-step queries, provide more context
+                if is_multi_step:
+                    variables = empty_context.get("variables", {})
+                    if variables:
+                        # Extract what we found in earlier steps
+                        var_summary = ", ".join([f"{k}={v}" for k, v in variables.items()])
+                        if question_language == "Tamil":
+                            return f"Hmm {user_name}, paakalam... First step found: {var_summary}. But second step-la data illa. Date mismatch irukkalaam."
+                        else:
+                            return f"Hmm {user_name}, let me check... I found {var_summary} in the first step, but couldn't find matching records in the second step. Could be a date gap in the data."
+
+            # Generic fallback
+            if question_language == "Tamil":
+                return f"Hmm {user_name}, paakalam... Data kidaikala. Vera date or filter try pannunga?"
+            else:
+                return f"Hmm {user_name}, I couldn't find data for that. Want to try a different date or filter?"
     
     # Build context for the LLM
     context = {
@@ -342,15 +420,33 @@ Context:
 
     # Build name instruction for personalization
     name_instruction = ""
-    if user_name:
+    if user_name and user_name.strip():
         name_instruction = f"""
-4. **CRITICAL - Use the user's name "{user_name}"**: Start warmly with their name like:
-   - "Okay {user_name}, so..."
-   - "Alright {user_name}, looking at this..."
-   - "Hmm {user_name}, here's what I see..."
-   - "So {user_name},"
-   - "Yeah {user_name}, the data shows..."
-   Make it feel like you're talking to a friend. ALWAYS include their name in the opener!
+4. **CRITICAL - ALWAYS use the user's name "{user_name}"**:
+   - The user told you their name - remember it!
+   - Start with their name in most responses: "Okay {user_name}, so..."
+   - Make it feel personal and warm
+   - Use their name like you're talking to a friend
+
+   EXAMPLES (English):
+   - "Okay {user_name}, let me check this..."
+   - "Hmm {user_name}, looking at the data..."
+   - "Alright {user_name}, here's what I found..."
+
+   EXAMPLES (Tamil):
+   - "Seri {user_name}, paakalam..."
+   - "Hmm {user_name}, data paarthaa..."
+   - "Okay {user_name}, idho results..."
+"""
+    else:
+        print("[WARN] User name not available for personalization")
+
+    # Build emotion-specific starter guidance
+    emotion_guidance = f"""
+3. **CONVERSATION STARTER - Match the emotion!**:
+   - Question emotion detected: **{detected_emotion.upper()}**
+   - Use one of these {detected_emotion} openers: {', '.join(['"' + s.format(name=user_name or 'Boss') + '"' for s in emotion_starters[:3]])}
+   - Pick the one that feels most natural for this response
 """
 
     prompt += f"""
@@ -364,8 +460,7 @@ Instructions:
    - 45,000 -> "around 45 thousand"
    - 12.47% -> "about 12 percent"
    - Round to 1-2 significant digits. Nobody says exact decimals in conversation.
-3. **Be casual & crispy**: Start with "So...", "Looking at this...", "Alright..."
-{name_instruction}5. **2-3 sentences MAX**: One key insight + one supporting detail
+{emotion_guidance}{name_instruction}5. **2-3 sentences MAX**: One key insight + one supporting detail
 6. **Sound human**: Use contractions (it's, that's), natural pauses, confident endings
 
 **INDIAN NUMBER SYSTEM RULES:**

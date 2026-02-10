@@ -85,8 +85,13 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
     }
     """
     import time
+    import copy
     start_time = time.time()
-    
+
+    # CRITICAL: Deep copy plan to prevent modifications from bleeding back to caller
+    # This protects against in-place modifications during variable substitution
+    plan = copy.deepcopy(plan)
+
     steps = plan.get("steps", [])
     if not steps:
         return {
@@ -126,11 +131,20 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
             if step_result.get('error'):
                 error_msg = step_result.get('error')
                 print(f"  [FAIL] Step {step_id} failed: {error_msg}")
+
+                # Build helpful error message
+                helpful_msg = f"Cross-table query failed at step {step_id} ({description}): {error_msg}"
+                if "no such table" in error_msg.lower():
+                    helpful_msg += f"\n\nTip: Check that the table name '{step.get('table')}' exists in your data."
+                elif "no such column" in error_msg.lower():
+                    helpful_msg += f"\n\nTip: Check that the column names in filters exist in table '{step.get('table')}'."
+
                 return {
                     "data": [],
                     "analysis": {
-                        "error": f"Step {step_id} failed: {error_msg}",
-                        "failed_step": step_id
+                        "error": helpful_msg,
+                        "failed_step": step_id,
+                        "step_description": description
                     },
                     "success": False,
                     "steps_executed": executed_steps
@@ -144,8 +158,58 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
                 if extracted_value is not None:
                     variables[output_var] = extracted_value
                     print(f"  [OK] Extracted ${{{output_var}}} = {extracted_value}")
+
+                    # Validate extracted date exists in target table's date range
+                    # This prevents cross-table queries from failing silently
+                    if 'date' in output_var.lower() and i < len(steps):
+                        next_step = steps[i]  # i is already 1-indexed
+                        next_table = next_step.get("table")
+                        if next_table:
+                            try:
+                                from schema_intelligence.profile_store import ProfileStore
+                                profile_store = ProfileStore()
+                                profile = profile_store.get_profile(next_table)
+                                if profile and profile.get('date_range'):
+                                    date_range = profile['date_range']
+                                    date_min = date_range.get('min', '')
+                                    date_max = date_range.get('max', '')
+                                    if date_min and date_max:
+                                        # Extract just the date part for comparison
+                                        extracted_str = str(extracted_value)[:10]  # YYYY-MM-DD
+                                        min_str = date_min[:10] if isinstance(date_min, str) else str(date_min)[:10]
+                                        max_str = date_max[:10] if isinstance(date_max, str) else str(date_max)[:10]
+                                        if extracted_str < min_str or extracted_str > max_str:
+                                            warning_msg = (
+                                                f"The date {extracted_str} doesn't have data in {next_table}. "
+                                                f"Available range: {min_str} to {max_str}"
+                                            )
+                                            print(f"  [WARN] {warning_msg}")
+                                            return {
+                                                "data": [],
+                                                "analysis": {
+                                                    "error": warning_msg,
+                                                    "date_mismatch": True
+                                                },
+                                                "success": False,
+                                                "steps_executed": executed_steps
+                                            }
+                            except Exception as e:
+                                print(f"  [WARN] Could not validate date range: {e}")
                 else:
-                    print(f"  [WARN] Could not extract ${{{output_var}}}")
+                    # Variable extraction failed - this is critical for multi-step queries
+                    warning_msg = f"Could not extract variable ${{{output_var}}} from column '{extract_col}'"
+                    print(f"  [WARN] {warning_msg}")
+                    print(f"  [INFO] Step returned {len(step_result.get('data', []))} rows")
+                    if len(step_result.get('data', [])) == 0:
+                        return {
+                            "data": [],
+                            "analysis": {
+                                "error": f"Step {step_id} returned no data to extract ${{{output_var}}} from. This means the first query found no matching records.",
+                                "failed_step": step_id
+                            },
+                            "success": False,
+                            "steps_executed": executed_steps
+                        }
             
             step_elapsed = (time.time() - step_start) * 1000
             print(f"  [TIME] Step completed in {step_elapsed:.0f}ms")
@@ -199,9 +263,12 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
 def _substitute_variables(step: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
     """
     Substitute ${variable_name} placeholders with actual values.
-    
+
     Works recursively through the step dict, replacing placeholders
     in all string values (including nested in filters, etc.)
+
+    IMPORTANT: This function returns a NEW dict - the input 'step' is never modified.
+    The JSON round-trip (dumps → replace → loads) creates a deep copy.
     """
     # Convert to JSON for easy recursive substitution
     step_json = json.dumps(step)

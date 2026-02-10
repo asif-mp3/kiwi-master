@@ -185,7 +185,7 @@ function VoiceModeInput({
   return (
     <div className="group relative">
       <div className={cn(
-        "flex items-center gap-2 sm:gap-3 h-11 sm:h-14 px-4 sm:px-6 rounded-full border backdrop-blur-xl shadow-lg shadow-black/20 transition-all duration-300",
+        "flex items-center gap-2 sm:gap-3 h-11 sm:h-14 px-4 sm:px-6 rounded-full border backdrop-blur-xl shadow-lg shadow-black/20 transition-colors duration-300",
         isFocused
           ? "bg-zinc-800/90 border-violet-500/50"
           : "bg-zinc-900/80 border-zinc-700/50 hover:border-violet-500/30 cursor-text"
@@ -199,7 +199,7 @@ function VoiceModeInput({
       >
         <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400 shrink-0" />
 
-        <div className="flex-1 overflow-hidden relative">
+        <div className="flex-1 overflow-hidden relative min-w-0 h-full flex items-center">
           {isFocused ? (
             <input
               ref={inputRef}
@@ -214,34 +214,28 @@ function VoiceModeInput({
               autoFocus
             />
           ) : (
-            <span className="text-zinc-400 text-xs sm:text-sm font-medium">
+            <span className="text-zinc-400 text-xs sm:text-sm font-medium block truncate w-full">
               {displayText}
-              <motion.span
-                animate={{ opacity: [1, 0] }}
-                transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
-                className="inline-block w-0.5 h-3 sm:h-4 bg-violet-400 ml-0.5 align-middle"
-              />
+              <span className="inline-block w-0.5 h-3 sm:h-4 bg-violet-400 ml-0.5 align-middle animate-pulse" />
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 w-24 sm:w-28 justify-end h-full">
           {isFocused ? (
-            <motion.button
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
+            <button
               onClick={(e) => {
                 e.stopPropagation();
                 handleSend();
               }}
-              className="p-2 rounded-full bg-violet-500 hover:bg-violet-400 transition-colors"
+              className="p-2 rounded-full bg-violet-500 hover:bg-violet-400 transition-colors flex-shrink-0"
             >
               <Send className="w-4 h-4 text-white" />
-            </motion.button>
+            </button>
           ) : (
             <>
-              <span className="text-xs text-zinc-500 hidden sm:inline">Click to type</span>
-              <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-violet-400 transition-all" />
+              <span className="text-xs text-zinc-500 hidden sm:inline whitespace-nowrap">Click to type</span>
+              <ChevronRight className="w-4 h-4 text-zinc-500 flex-shrink-0" />
             </>
           )}
         </div>
@@ -584,18 +578,10 @@ function VisualizationPanel({
       animate={{ opacity: 1, x: 0 }}
       className="hidden lg:flex flex-col items-start justify-center h-full pl-8 max-w-sm"
     >
-      <AnimatePresence mode="wait">
-        {displayViz ? (
-          <motion.div
-            key={displayViz.title}
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className="w-full max-w-[320px]"
-          >
-            {/* Chart header with icon */}
-            <div className="flex items-center gap-2 mb-3">
+      {displayViz ? (
+        <div className="w-full max-w-[320px]">
+          {/* Chart header with icon */}
+          <div className="flex items-center gap-2 mb-3 h-10 flex-shrink-0">
               <div className="p-1.5 rounded-lg bg-violet-500/20">
                 {displayViz.type === 'line' ? (
                   <TrendingUp className="w-4 h-4 text-violet-400" />
@@ -614,7 +600,7 @@ function VisualizationPanel({
             </div>
 
             {/* Mini chart preview with values */}
-            <div className="relative p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800/50 backdrop-blur-sm">
+            <div className="relative p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800/50 backdrop-blur-sm h-[200px] overflow-hidden flex items-center justify-center">
               {displayViz.type === 'metric_card' ? (
                 // Metric card display
                 <div className="text-center py-2">
@@ -640,12 +626,12 @@ function VisualizationPanel({
                         <span className="text-violet-400 font-medium">{formatValue(item.value)}</span>
                       </div>
                       <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${Math.min((item.value / Math.max(...displayViz.data.map((d: any) => d.value))) * 100, 100)}%` }}
-                          transition={{ duration: 0.8, delay: idx * 0.1 }}
-                          className="h-full rounded-full"
-                          style={{ backgroundColor: displayViz.colors?.[idx % 5] || '#8B5CF6' }}
+                        <div
+                          className="h-full rounded-full transition-none"
+                          style={{
+                            width: `${Math.min((item.value / Math.max(...displayViz.data.map((d: any) => d.value))) * 100, 100)}%`,
+                            backgroundColor: displayViz.colors?.[idx % 5] || '#8B5CF6'
+                          }}
                         />
                       </div>
                     </div>
@@ -686,12 +672,10 @@ function VisualizationPanel({
                       const maxVal = Math.max(...displayViz.data.map((d: any) => d.value));
                       const height = maxVal > 0 ? (item.value / maxVal) * 100 : 0;
                       return (
-                        <motion.div
+                        <div
                           key={idx}
-                          initial={{ height: 0 }}
-                          animate={{ height: `${height}%` }}
-                          transition={{ duration: 0.5, delay: idx * 0.05 }}
-                          className="flex-1 bg-gradient-to-t from-violet-600 to-violet-400 rounded-t"
+                          className="flex-1 bg-gradient-to-t from-violet-600 to-violet-400 rounded-t transition-none"
+                          style={{ height: `${height}%` }}
                         />
                       );
                     })}
@@ -723,25 +707,20 @@ function VisualizationPanel({
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-violet-500/5 to-transparent pointer-events-none" />
             </div>
 
-            <p className="text-[10px] text-zinc-600 text-center mt-2">
+            <p className="text-[10px] text-zinc-600 text-center mt-2 flex-shrink-0">
               Click Chat for detailed view
             </p>
-          </motion.div>
+          </div>
         ) : (
           // Empty state
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-left"
-          >
+          <div className="text-left w-full max-w-[320px]">
             <div className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/30 mb-2">
               <BarChart3 className="w-6 h-6 text-zinc-700 mx-auto" />
             </div>
             <p className="text-xs text-zinc-600 mb-1">Visualizations</p>
             <p className="text-[10px] text-zinc-700">appear here</p>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
     </motion.div>
   );
 }
@@ -2593,11 +2572,11 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                     </motion.div>
                   </div>
 
-                  {/* RIGHT: Visualization Panel */}
-                  <VisualizationPanel
+                  {/* RIGHT: Visualization Panel - REMOVED */}
+                  {/* <VisualizationPanel
                     visualization={lastVisualization}
                     messages={messages}
-                  />
+                  /> */}
                 </div>
               </motion.div>
             ) : (
@@ -2730,7 +2709,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                 {/* Input Box with Voice and Send */}
                 <div className="absolute bottom-3 sm:bottom-6 left-0 right-0 px-3 sm:px-6 pointer-events-none">
                   <div className="max-w-4xl mx-auto pointer-events-auto">
-                    <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-xl sm:rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl">
+                    <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-xl sm:rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl h-[48px] sm:h-[56px] overflow-hidden">
                       <Input
                         value={inputMessage}
                         onChange={(e) => setInputMessage(e.target.value)}

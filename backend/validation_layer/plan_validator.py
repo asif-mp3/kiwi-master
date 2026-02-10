@@ -676,14 +676,22 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     if plan.get("subset_order_by") is None:
         plan["subset_order_by"] = []
     
-    # Handle numeric fields
-    if plan.get("limit") is None:
-        # Set default limit based on query type
-        query_type = plan.get("query_type", "metric")
-        if query_type in ["lookup", "extrema_lookup"]:
-            plan["limit"] = 1
-        else:
-            plan["limit"] = 100
+    # Handle numeric fields - FORCE correct limits based on query type
+    query_type = plan.get("query_type", "metric")
+
+    # These query types MUST have limit 1 (single row lookups)
+    if query_type in ["lookup", "extrema_lookup"]:
+        plan["limit"] = 1
+    # These query types should have NO limit - override any LLM-set limit
+    elif query_type in ["filter", "list", "multi_step", "metric", "percentage", "aggregation_on_subset"]:
+        plan["limit"] = None  # No limit - return ALL rows
+    # For rank queries, keep explicit limit if set, otherwise default to 10
+    elif query_type == "rank":
+        if plan.get("limit") is None:
+            plan["limit"] = 10
+    # All other query types - no limit
+    else:
+        plan["limit"] = None
     
     # Handle string fields - convert None to empty string
     if plan.get("aggregation_column") is None:
@@ -700,6 +708,17 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
     for filter_item in plan.get("subset_filters", []):
         if filter_item.get("value") is None:
             filter_item["value"] = ""
+
+    # Normalize None values in multi-step steps (fixes "None is not of type 'string'" error)
+    for step in plan.get("steps", []):
+        if step.get("output_variable") is None:
+            step["output_variable"] = ""
+        if step.get("extract_column") is None:
+            step["extract_column"] = ""
+        # Also normalize nested filters in steps
+        for filter_item in step.get("filters", []):
+            if filter_item.get("value") is None:
+                filter_item["value"] = ""
 
     # Load JSON schema
     with open(schema_path) as f:

@@ -101,10 +101,10 @@ Output ONLY JSON. No explanations."""
 def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
     """
     Detect if user question contains memory storage intent.
-    
+
     Args:
         question: User's question/statement
-        
+
     Returns:
         Dict with detection result, or None if detection fails
         {
@@ -115,6 +115,35 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
             "confidence": float  # if has_memory_intent
         }
     """
+    # QUICK PATTERN CHECK: Skip Gemini call for obvious data queries
+    # This saves ~1 second for 95%+ of queries
+    q_lower = question.lower()
+
+    # Data query keywords - definitely NOT memory intents
+    data_keywords = [
+        'show', 'list', 'total', 'how many', 'what is', 'who worked',
+        'sales', 'attendance', 'employee', 'average', 'sum', 'count',
+        'highest', 'lowest', 'peak', 'maximum', 'minimum', 'compare',
+        'trend', 'month', 'january', 'february', 'march', 'april', 'may',
+        'june', 'july', 'august', 'september', 'october', 'november', 'december',
+        'காட்டு', 'மொத்தம்', 'எத்தனை', 'யார்'  # Tamil: show, total, how many, who
+    ]
+
+    # Memory keywords - might be memory intents (need LLM to verify)
+    memory_keywords = ['call me', 'my name', 'i am', "i'm", 'address me', 'from now on',
+                       'என் பேரு', 'enna', 'koopdu']  # Tamil patterns
+
+    # If query has data keywords and NO memory keywords, skip Gemini
+    has_data_keyword = any(kw in q_lower for kw in data_keywords)
+    has_memory_keyword = any(kw in q_lower for kw in memory_keywords)
+
+    if has_data_keyword and not has_memory_keyword:
+        return {"has_memory_intent": False}
+
+    # Short queries without memory patterns - skip
+    if len(question) < 15 and not has_memory_keyword:
+        return {"has_memory_intent": False}
+
     try:
         # Get API key (strip whitespace from HF Spaces)
         api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
