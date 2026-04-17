@@ -23,6 +23,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("pdf_connector")
 
 # Try to import pdfplumber, make it optional
 try:
@@ -112,7 +115,7 @@ class PDFConnector(BaseConnector):
             tables = self._extract_tables(pdf_path)
 
             if not tables:
-                print(f"[PDFConnector] No tables found, attempting text extraction")
+                logger.info("No tables found, attempting text extraction")
                 tables = self._extract_text_as_table(pdf_path)
 
             return self.validate_dataframes(tables)
@@ -167,7 +170,7 @@ class PDFConnector(BaseConnector):
                 tmp.write(response.content)
                 self._temp_path = tmp.name
 
-            print(f"[PDFConnector] Downloaded PDF to temp: {self._temp_path}")
+            logger.debug("Downloaded PDF to temp: %s", self._temp_path)
             return self._temp_path
 
         except requests.RequestException as e:
@@ -187,7 +190,7 @@ class PDFConnector(BaseConnector):
         source_name = self.get_source_name()
 
         with pdfplumber.open(pdf_path) as pdf:
-            print(f"[PDFConnector] Processing {len(pdf.pages)} pages")
+            logger.info("Processing %d pages", len(pdf.pages))
 
             for page_idx, page in enumerate(pdf.pages):
                 page_num = page_idx + 1
@@ -234,17 +237,17 @@ class PDFConnector(BaseConnector):
                             if not df.empty:
                                 table_name = f"{source_name}_Page{page_num}_Table{table_idx + 1}"
                                 tables[table_name] = [df]
-                                print(f"[PDFConnector] Extracted {table_name}: {len(df)} rows")
+                                logger.info("Extracted %s: %d rows", table_name, len(df))
 
                         except Exception as e:
-                            print(f"[PDFConnector] Error creating DataFrame: {e}")
+                            logger.error("Error creating DataFrame: %s", e)
                             continue
 
                 except Exception as e:
-                    print(f"[PDFConnector] Error on page {page_num}: {e}")
+                    logger.error("Error on page %d: %s", page_num, e)
                     continue
 
-        print(f"[PDFConnector] Total tables extracted: {len(tables)}")
+        logger.info("Total tables extracted: %d", len(tables))
         return tables
 
     def _extract_text_as_table(self, pdf_path: str) -> Dict[str, List[pd.DataFrame]]:
@@ -314,10 +317,10 @@ class PDFConnector(BaseConnector):
 
             if not df.empty:
                 tables[f"{source_name}_Text"] = [df]
-                print(f"[PDFConnector] Extracted text table: {len(df)} rows")
+                logger.info("Extracted text table: %d rows", len(df))
 
         except Exception as e:
-            print(f"[PDFConnector] Text extraction failed: {e}")
+            logger.error("Text extraction failed: %s", e)
 
         return tables
 

@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, parse_qs
 
+from utils.logger import get_logger
+
+logger = get_logger("source_registry")
+
 
 # Path to registry state file
 _MODULE_DIR = Path(__file__).parent
@@ -182,9 +186,9 @@ class SourceRegistry:
                     self.sources = {
                         k: SourceState.from_dict(v) for k, v in data.items()
                     }
-                print(f"[SourceRegistry] Loaded {len(self.sources)} sources from {self.registry_path}")
+                logger.info("Loaded %d sources from %s", len(self.sources), self.registry_path)
             except Exception as e:
-                print(f"[SourceRegistry] Error loading registry: {e}")
+                logger.error("Error loading registry: %s", e)
                 self.sources = {}
         else:
             self.sources = {}
@@ -199,7 +203,7 @@ class SourceRegistry:
             with open(self.registry_path, 'w') as f:
                 json.dump(data, f, indent=2, default=str)
         except Exception as e:
-            print(f"[SourceRegistry] Error saving registry: {e}")
+            logger.error("Error saving registry: %s", e)
 
     def get(self, source_id: str) -> Optional[SourceState]:
         """Get source state by ID."""
@@ -229,7 +233,7 @@ class SourceRegistry:
 
         self.sources[state.source_id] = state
         self._save()
-        print(f"[SourceRegistry] Created source: {state.source_id}")
+        logger.info("Created source: %s", state.source_id)
         return state
 
     def update(self, source_id: str, **updates) -> Optional[SourceState]:
@@ -267,7 +271,7 @@ class SourceRegistry:
         if source_id in self.sources:
             del self.sources[source_id]
             self._save()
-            print(f"[SourceRegistry] Deleted source: {source_id}")
+            logger.info("Deleted source: %s", source_id)
             return True
         return False
 

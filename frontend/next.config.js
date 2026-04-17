@@ -2,14 +2,13 @@
 const nextConfig = {
   images: {
     remotePatterns: [
-      { protocol: 'https', hostname: '**' },
-      { protocol: 'http', hostname: '**' },
+      { protocol: 'https', hostname: '*.googleusercontent.com' },
+      { protocol: 'https', hostname: '*.googleapis.com' },
+      { protocol: 'https', hostname: '*.google.com' },
+      { protocol: 'https', hostname: '*.vercel.app' },
     ],
   },
 
-  typescript: {
-    ignoreBuildErrors: true,
-  },
 };
 
 module.exports = nextConfig;

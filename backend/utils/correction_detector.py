@@ -18,6 +18,9 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
+from utils.logger import get_logger
+
+logger = get_logger("correction_detector")
 
 
 class CorrectionType(Enum):
@@ -84,8 +87,9 @@ CORRECTION_PATTERNS = {
     'table_type_hint': [
         # "use the summary table", "check the raw data"
         r'\b(use|check|show|give)\s+(the\s+)?(summary|detailed|raw|transaction|transactional|category|daily|monthly|aggregate)\s*(table|data|one|sheet)?\b',
-        # "the summary one", "the detailed version"
-        r'\b(the\s+)?(summary|detailed|raw|transaction|transactional|category|daily|monthly|aggregate)\s*(table|one|version|data)?\b',
+        # "the summary one", "the detailed version" — require "the" OR explicit suffix to avoid false positives on "attendance summary"
+        r'\bthe\s+(summary|detailed|raw|transaction|transactional|category|daily|monthly|aggregate)\s*(table|one|version|data)?\b',
+        r'\b(summary|detailed|raw|transaction|transactional|category|daily|monthly|aggregate)\s+(table|one|version|data)\b',
         # "other table", "another table", "different table"
         r'\b(the\s+)?(other|another|different)\s+(table|one|sheet|data)\b',
         # "not this table", "not this one"
@@ -94,16 +98,16 @@ CORRECTION_PATTERNS = {
 
     # FILTER REMOVAL - User wants to REMOVE a filter (consider all months, all categories, etc.)
     'filter_removal': [
-        # "consider all months", "for all months", "across all months"
-        r'\b(consider|for|across|include|check|show)\s+(all|every|entire|the\s+whole)\s+(month|months|time|period|data|year|years)\b',
-        # "don't limit to November", "not just November", "not only for November"
-        r'\b(don\'?t|do\s+not|not)\s+(just|only|limit\s+to|restrict\s+to)\s+(for\s+)?(november|december|january|february|march|april|may|june|july|august|september|october)\b',
-        # "remove the month filter", "without the month filter"
-        r'\b(remove|without|drop|ignore)\s+(the\s+)?(month|date|time)\s*(filter|restriction)?\b',
-        # "all months combined", "entire dataset"
-        r'\b(all\s+months?|entire\s+data|whole\s+data|full\s+data|complete\s+data)\s*(combined|together)?\b',
-        # "don't filter by month", "no month filter"
-        r'\b(don\'?t|do\s+not|no)\s+(filter\s+by|restrict\s+by|limit\s+by)\s+(month|date|time)\b',
+        # "consider all months", "for all months", "across all months", "for all states"
+        r'\b(consider|for|across|include|check|show)\s+(all|every|entire|the\s+whole)\s+(month|months|time|period|data|year|years|state|states|location|locations|region|regions|branch|branches|categor\w*)\b',
+        # "don't limit to November", "not just Karnataka", "not only for Tamil Nadu"
+        r'\b(don\'?t|do\s+not|not)\s+(just|only|limit\s+to|restrict\s+to)\s+(for\s+)?([a-zA-Z\s]+)\b',
+        # "remove the month filter", "without the location filter", "remove the state filter"
+        r'\b(remove|without|drop|ignore)\s+(the\s+)?(month|date|time|location|state|region|branch|category)\s*(filter|restriction)?\b',
+        # "all months combined", "entire dataset", "all states", "all locations"
+        r'\b(all\s+months?|all\s+states?|all\s+locations?|all\s+branches?|entire\s+data|whole\s+data|full\s+data|complete\s+data)\s*(combined|together)?\b',
+        # "don't filter by month", "no month filter", "don't filter by state"
+        r'\b(don\'?t|do\s+not|no)\s+(filter\s+by|restrict\s+by|limit\s+by)\s+(month|date|time|location|state|region|branch|category)\b',
         # Tanglish: "ellaa month um", "all month paaru"
         r'\b(ellaa|ella|all)\s*(month|months?)\s*(um|paaru|check|show)?\b',
         # "overall", "total across all", "aggregate all"
@@ -198,11 +202,11 @@ CORRECTION_PATTERNS = {
         # "September மாதம்" (September month)
         r'([a-zA-Z]+)\s+மாதம்',
         # === ANGRY TAMIL CORRECTIONS ===
-        # "என்னடா இது, bangalore பார்" (what is this, check bangalore)
-        r'(என்னடா|என்னட்டா|என்னய்யா|என்ன).*(bangalore|chennai|mumbai|delhi|kolkata|hyderabad|[a-zA-Z]+)\s*(பார்|பாரு|check|காட்டு)',
-        # "bangalore பார்" (check bangalore)
-        r'\b(bangalore|chennai|mumbai|delhi|kolkata|hyderabad|[a-zA-Z]+)\s+(பார்|பாரு|காட்டு|check)',
-        # "இல்ல, bangalore" (no, bangalore)
+        # "என்னடா இது, <value> பார்" (what is this, check <value>)
+        r'(என்னடா|என்னட்டா|என்னய்யா|என்ன).*?([a-zA-Z]{3,})\s*(பார்|பாரு|check|காட்டு)',
+        # "<value> பார்" (check <value>)
+        r'\b([a-zA-Z]{3,})\s+(பார்|பாரு|காட்டு|check)',
+        # "இல்ல, <value>" (no, <value>)
         r'(இல்ல|வேண்டாம்|இல்லை)[,!.\s]+([a-zA-Z0-9_]+)',
     ],
 
@@ -309,7 +313,7 @@ class CorrectionIntentDetector:
                         elif any(cat in col_lower for cat in ['category', 'type', 'product']):
                             self._known_categories.update(str(v).lower() for v in unique_values if v)
         except Exception as e:
-            print(f"Warning: Could not refresh correction detector from profiles: {e}")
+            logger.warning("Could not refresh correction detector from profiles: %s", e)
 
     def detect(self, question: str, previous_turn: Optional[Any] = None) -> Optional[CorrectionIntent]:
         """
@@ -420,30 +424,7 @@ class CorrectionIntentDetector:
         has_anger = any(ind in q_lower for ind in anger_indicators)
 
         if has_anger:
-            # Common locations to check for
-            common_locations = [
-                'bangalore', 'chennai', 'mumbai', 'delhi', 'kolkata', 'hyderabad',
-                'pune', 'ahmedabad', 'jaipur', 'lucknow', 'kanpur', 'nagpur',
-                'coimbatore', 'madurai', 'trichy', 'salem', 'erode', 'tirunelveli',
-                'tamil nadu', 'karnataka', 'maharashtra', 'kerala', 'andhra pradesh',
-                'telangana', 'gujarat', 'rajasthan', 'west bengal', 'uttar pradesh'
-            ]
-
-            # Find location in message
-            for loc in common_locations:
-                if loc in q_lower:
-                    return CorrectionIntent(
-                        correction_type=CorrectionType.FILTER,
-                        confidence=0.85,
-                        filter_corrections=[{
-                            'field': 'location',
-                            'old_value': None,
-                            'new_value': loc.title()
-                        }],
-                        raw_patterns_matched=['angry_location_correction']
-                    )
-
-            # Also check known locations from profiles
+            # Check known locations from profiles (dataset-agnostic)
             for loc in self._known_locations:
                 if loc in q_lower:
                     return CorrectionIntent(
@@ -512,8 +493,8 @@ class CorrectionIntentDetector:
                     g_clean = g.strip().lower()
                     if g_clean in ['check', 'use', 'show', 'try', 'for', 'instead', 'please']:
                         continue
-                    # Check if it's a location
-                    if g_clean in self._known_locations or g_clean in ['bangalore', 'chennai', 'mumbai', 'delhi', 'kolkata', 'hyderabad']:
+                    # Check if it's a known location from profiles
+                    if g_clean in self._known_locations:
                         return CorrectionIntent(
                             correction_type=CorrectionType.FILTER,
                             confidence=0.75,
@@ -625,9 +606,27 @@ class CorrectionIntentDetector:
         if 'categor' in q_lower or 'all categories' in q_lower:
             filter_removals.append('category')
 
-        # Check for location removal
-        if 'location' in q_lower or 'all locations' in q_lower or 'all branches' in q_lower:
+        # Check for location removal — explicit keywords or known location names
+        location_keywords = ['location', 'all locations', 'all branches', 'all states',
+                             'state', 'region', 'branch']
+        if any(kw in q_lower for kw in location_keywords):
             filter_removals.append('location')
+
+        # Also detect removal if a known location name appears with "don't limit to" / "not just"
+        if 'location' not in filter_removals:
+            # Check if any word in the question is a known location
+            for word_combo in [q_lower]:
+                known = self._match_known_value(word_combo.split('limit to ')[-1].split('just ')[-1].split('only ')[-1].strip().split()[0] if any(k in q_lower for k in ['limit to', 'just', 'only']) else '')
+                if known and known[0] == 'location':
+                    filter_removals.append('location')
+                    break
+            # Fallback: scan all words for known locations
+            if 'location' not in filter_removals:
+                for word in q_lower.split():
+                    known = self._match_known_value(word)
+                    if known and known[0] == 'location':
+                        filter_removals.append('location')
+                        break
 
         # Default to month/date if no specific filter mentioned but "all" is present
         if not filter_removals and ('all' in q_lower or 'entire' in q_lower or 'whole' in q_lower):
@@ -654,6 +653,30 @@ class CorrectionIntentDetector:
             raw_patterns_matched=[str(m.re.pattern) for m in matches]
         )
 
+    def _match_known_value(self, value: str) -> Optional[tuple]:
+        """Check if value matches a known location/category/month (supports partial matching).
+        Returns (field, canonical_value) or None."""
+        v_lower = value.strip().lower()
+
+        # Exact month match
+        if v_lower in KNOWN_MONTHS:
+            return ('month', value.strip().capitalize())
+
+        # Exact location match
+        if v_lower in self._known_locations:
+            return ('location', value.strip())
+
+        # Partial location match: "Tamil" → "Tamil Nadu", "Andhra" → "Andhra Pradesh"
+        for loc in self._known_locations:
+            if v_lower in loc or loc in v_lower:
+                return ('location', loc.title() if isinstance(loc, str) else str(loc))
+
+        # Exact category match
+        if v_lower in self._known_categories:
+            return ('category', value.strip())
+
+        return None
+
     def _build_filter_intent(
         self,
         question: str,
@@ -665,62 +688,82 @@ class CorrectionIntentDetector:
 
         filter_corrections = []
 
+        # Connectors that separate "wanted" from "unwanted" values
+        _separator_words = {'not', 'instead', 'rather', 'than'}
+
         for match in matches:
             groups = [g for g in match.groups() if g]
 
-            # Try to identify old and new values
-            old_value = None
-            new_value = None
+            # --- SEMANTIC PARSING ---
+            # For "X not Y" patterns, X = what user wants, Y = what they don't want
+            # For "I meant X not Y", X = wanted, Y = unwanted
+            # For "change X to Y", X = old, Y = new (reversed!)
+            # Detect which pattern type matched to get the order right
+            pattern_str = match.re.pattern
+            is_change_pattern = 'change' in pattern_str or 'replace' in pattern_str
+
+            # Collect values in order, tracking separator position
+            values_before_sep = []  # Values before "not"/"instead"
+            values_after_sep = []   # Values after "not"/"instead"
+            seen_separator = False
             field = None
 
             for g in groups:
                 g_clean = g.strip().lower()
 
-                # Skip connector words
-                if g_clean in ['not', 'instead', 'of', 'rather', 'than', 'for', 'in', 'to', 'with',
-                              'i', 'meant', 'want', 'wanted', 'need', 'said', 'no', 'actually',
-                              'change', 'replace', 'switch', 'இல்ல', 'வேண்டாம்', 'நான்', 'சொன்னது']:
+                # Skip connector/action words
+                if g_clean in ['not', 'instead', 'of', 'rather', 'than']:
+                    seen_separator = True
+                    continue
+                if g_clean in ['for', 'in', 'to', 'with', 'i', 'meant', 'want', 'wanted',
+                              'need', 'said', 'no', 'actually', 'change', 'replace', 'switch',
+                              'check', 'show', 'look', 'get', 'give', 'use', 'try', 'now',
+                              'instead', 'please', 'da', 'bro', 'man', 'dude',
+                              # Tamil action/connector words (NOT values)
+                              'இல்ல', 'வேண்டாம்', 'நான்', 'சொன்னது',
+                              'பார்', 'பாரு', 'காட்டு', 'செக்', 'கொடு',
+                              'என்னடா', 'என்னட்டா', 'என்னய்யா', 'என்ன',
+                              'இது', 'அது', 'மாதம்', 'கேட்டது', 'வேண்டியது']:
                     continue
 
-                # Check if it's a month
-                if g_clean in KNOWN_MONTHS:
-                    if new_value is None:
-                        new_value = g.strip().capitalize()
-                    else:
-                        old_value = new_value
-                        new_value = g.strip().capitalize()
-                    field = 'month'
-                    continue
+                # Identify the value
+                known = self._match_known_value(g_clean)
+                if known:
+                    field = known[0]
+                    canonical = known[1]
+                else:
+                    canonical = g.strip()
 
-                # Check if it's a known location
-                if g_clean in self._known_locations:
-                    if new_value is None:
-                        new_value = g.strip()
-                    else:
-                        old_value = new_value
-                        new_value = g.strip()
-                    field = 'location'
-                    continue
+                if seen_separator:
+                    values_after_sep.append(canonical)
+                else:
+                    values_before_sep.append(canonical)
 
-                # Check if it's a known category
-                if g_clean in self._known_categories:
-                    if new_value is None:
-                        new_value = g.strip()
-                    else:
-                        old_value = new_value
-                        new_value = g.strip()
-                    field = 'category'
-                    continue
+            # Determine new_value and old_value based on pattern semantics
+            new_value = None
+            old_value = None
 
-                # Generic value
-                if new_value is None:
-                    new_value = g.strip()
-                elif old_value is None:
-                    old_value = new_value
-                    new_value = g.strip()
+            if is_change_pattern:
+                # "change X to Y" → X = old, Y = new
+                if values_before_sep:
+                    old_value = values_before_sep[0]
+                if values_after_sep:
+                    new_value = values_after_sep[0]
+                elif len(values_before_sep) >= 2:
+                    new_value = values_before_sep[-1]
+            else:
+                # "I said X not Y" / "X not Y" / "X instead of Y" → X = new, Y = old
+                if values_before_sep:
+                    new_value = values_before_sep[-1]  # Last value before separator = wanted
+                if values_after_sep:
+                    old_value = values_after_sep[0]  # First value after separator = unwanted
+
+                # If no separator found, first value = new (single value correction)
+                if not seen_separator and values_before_sep:
+                    new_value = values_before_sep[-1]
 
             if new_value:
-                # Try to infer old value from previous turn
+                # Try to infer old value from previous turn if not found
                 if old_value is None and previous_turn and hasattr(previous_turn, 'entities'):
                     prev_entities = previous_turn.entities or {}
                     if field == 'month' and prev_entities.get('month'):
@@ -729,6 +772,13 @@ class CorrectionIntentDetector:
                         old_value = prev_entities['location']
                     elif field == 'category' and prev_entities.get('category'):
                         old_value = prev_entities['category']
+                    elif not field:
+                        # Try to infer field from previous turn entities
+                        for key in ['location', 'month', 'category']:
+                            if prev_entities.get(key):
+                                old_value = prev_entities[key]
+                                field = key
+                                break
 
                 filter_corrections.append({
                     'field': field or 'inferred',

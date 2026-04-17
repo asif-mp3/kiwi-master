@@ -4,9 +4,13 @@ Profile Store - Manages table profiles with caching and persistence.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
+from utils.logger import get_logger
+
+logger = get_logger("profile_store")
 
 
 # Use path relative to this module's location, not current working directory
@@ -31,9 +35,9 @@ class ProfileStore:
             if Path(self._profiles_path).exists():
                 with open(self._profiles_path, 'r', encoding='utf-8') as f:
                     self._profiles = json.load(f)
-                print(f"  Loaded {len(self._profiles)} table profiles from disk")
+                logger.info("Loaded %d table profiles from disk", len(self._profiles))
         except Exception as e:
-            print(f"  Warning: Could not load profiles: {e}")
+            logger.warning("Could not load profiles: %s", e)
             self._profiles = {}
 
     def save_profiles(self):
@@ -44,9 +48,9 @@ class ProfileStore:
                 json.dump(self._profiles, f, indent=2, default=str)
                 f.flush()
                 os.fsync(f.fileno())  # Ensure write completes before returning
-            print(f"  Saved {len(self._profiles)} table profiles to disk")
+            logger.info("Saved %d table profiles to disk", len(self._profiles))
         except Exception as e:
-            print(f"  Warning: Could not save profiles: {e}")
+            logger.warning("Could not save profiles: %s", e)
 
     def get_profile(self, table_name: str) -> Optional[dict]:
         """Get profile for a specific table"""
@@ -144,9 +148,26 @@ class ProfileStore:
 
         # Extract keywords from the raw question for table name matching
         raw_question = entities.get('raw_question', '').lower()
+        # Strip parenthetical content — "(like UPI, cash, credit card etc)" is examples, not intent
+        raw_question = re.sub(r'\([^)]*\)', ' ', raw_question).strip()
         # Get significant words (>= 4 chars, exclude common words)
-        stop_words = {'what', 'where', 'when', 'which', 'how', 'tell', 'show', 'give', 'find',
-                     'the', 'and', 'for', 'from', 'with', 'about', 'this', 'that', 'have', 'does'}
+        # EXPANDED: Include generic English words that cause false matches on column names/values
+        stop_words = {
+            # Question/grammar words
+            'what', 'where', 'when', 'which', 'how', 'tell', 'show', 'give', 'find',
+            'the', 'and', 'for', 'from', 'with', 'about', 'this', 'that', 'have', 'does',
+            'will', 'would', 'could', 'should', 'shall', 'were', 'been', 'being',
+            'some', 'many', 'much', 'more', 'most', 'very', 'also', 'just', 'only',
+            'into', 'over', 'under', 'than', 'then', 'each', 'every', 'both',
+            # Meta/abstract words that match column values but aren't data terms
+            'quality', 'general', 'standard', 'special', 'regular', 'basic',
+            'premium', 'normal', 'default', 'custom', 'other', 'unknown',
+            'good', 'look', 'like', 'make', 'take', 'keep', 'know', 'think',
+            'want', 'need', 'help', 'work', 'feel', 'seem', 'call', 'come',
+            'information', 'detail', 'details', 'overview', 'summary',
+            'analysis', 'insight', 'insights', 'interesting', 'something',
+            'performance', 'status', 'result', 'results', 'report',
+        }
 
         # Important short keywords that should ALWAYS be included even if < 4 chars
         # These are domain-specific terms that often appear in table/column names
@@ -161,6 +182,20 @@ class ProfileStore:
                 query_keywords.append(w_lower)
             elif len(w_lower) >= 4 and w_lower not in stop_words:
                 query_keywords.append(w_lower)
+
+        # --- NEGATION-AWARE KEYWORD SUPPRESSION ---
+        # If user says "don't want the branch details", remove "branch" from keywords
+        # so it doesn't boost the Branch_Details table
+        _negation_patterns = [
+            r"(?:don'?t|do\s+not|not|no)\s+(?:want|need|use|show|from)\s+(?:the\s+)?(\w+(?:\s+\w+)?)",
+            r"(?:instead\s+of|rather\s+than)\s+(?:the\s+)?(\w+(?:\s+\w+)?)",
+        ]
+        _negated_words = set()
+        for _np in _negation_patterns:
+            for _m in re.finditer(_np, raw_question):
+                _negated_words.update(_m.group(1).lower().split())
+        if _negated_words:
+            query_keywords = [kw for kw in query_keywords if kw not in _negated_words]
 
         # --- CRITICAL: EXPLICIT TABLE NAME PHRASE MATCHING ---
         # When query contains a phrase like "top 20 branches", it should STRONGLY match
@@ -179,8 +214,21 @@ class ProfileStore:
             if table_name_normalized and len(table_name_normalized) >= 5:
                 # Check if the normalized table name appears as a phrase in the query
                 if table_name_normalized in raw_question:
-                    # VERY strong match - explicit table name reference
-                    table_phrase_scores[table_name] = 300
+                    # Check for negation context: "don't want branch details" means AVOID it
+                    _negation_prefixes = [
+                        "don't want", "dont want", "not the ", "not this ",
+                        "instead of", "not from", "don't need", "dont need",
+                    ]
+                    _match_pos = raw_question.index(table_name_normalized)
+                    _prefix_text = raw_question[max(0, _match_pos - 25):_match_pos]
+                    _is_negated = any(neg in _prefix_text for neg in _negation_prefixes)
+
+                    if _is_negated:
+                        # User explicitly doesn't want this table — penalize instead
+                        table_phrase_scores[table_name] = -200
+                    else:
+                        # VERY strong match - explicit table name reference
+                        table_phrase_scores[table_name] = 300
                 else:
                     # Check word-by-word overlap for partial phrase matching
                     table_words = [w for w in table_name_normalized.split() if len(w) >= 2]
@@ -196,6 +244,7 @@ class ProfileStore:
         for table_name, profile in self._profiles.items():
             score = 0
             match_reasons = []
+            table_type = profile.get('table_type', 'unknown')
 
             # --- APPLY EXPLICIT TABLE NAME PHRASE MATCHING ---
             # This is the HIGHEST priority - if user mentions "top 20 branches",
@@ -208,12 +257,26 @@ class ProfileStore:
             # --- CRITICAL: Table name keyword match ---
             # Strong boost when table name contains keywords from the query
             # e.g., "attendance" in query matches "Attendance Records Table1"
+            # Also handles simple plurals: "categories" matches "category"
             table_name_lower = table_name.lower()
             for keyword in query_keywords:
+                # Try exact substring match first
                 if keyword in table_name_lower:
                     score += 50  # Strong boost for keyword match
                     match_reasons.append(f"table_name_keyword_match:{keyword}")
-                    break  # One keyword match is enough
+                    break
+                # Try stem match: strip common suffixes (s, es, ies→y)
+                stem = keyword
+                if stem.endswith('ies'):
+                    stem = stem[:-3] + 'y'  # categories → category
+                elif stem.endswith('es'):
+                    stem = stem[:-2]  # branches → branch
+                elif stem.endswith('s') and not stem.endswith('ss'):
+                    stem = stem[:-1]  # products → product
+                if stem != keyword and stem in table_name_lower:
+                    score += 50
+                    match_reasons.append(f"table_name_keyword_match:{keyword}~{stem}")
+                    break
 
             # --- PENALTY: Top_N/Partial tables for COUNT queries ---
             # When user asks "how many", "total number", "count of", they need COMPLETE data
@@ -241,14 +304,122 @@ class ProfileStore:
                 score -= 200
                 match_reasons.append("PENALTY:category_table_for_location_query:-200")
 
+            # --- INTENT-BASED TABLE ROUTING ---
+            # For broad/generalized queries, detect the INTENT from raw_question
+            # and boost tables whose names match that intent.
+            # This bypasses stop_words so "summary", "performance", "trend" still match.
+            # ORDERING MATTERS: Specific intents FIRST, generic ones LAST.
+            # All keywords here are UNIVERSAL business terms — no dataset-specific terms.
+            _intent_map = {
+                # --- Specific intents (check first) ---
+                'attendance': (['attendance', 'leave', 'check-in', 'checkin', 'absent', 'present'],
+                               ['attendance', 'department']),
+                'department': (['department', 'departments', 'dept', 'department wise', 'department summary'],
+                               ['department']),
+                'payroll':    (['payroll', 'salary', 'salaries', 'compensation'],
+                               ['payroll']),
+                'hr':         (['employee', 'employees', 'staff', 'workforce'],
+                               ['staff', 'employee', 'attendance']),
+                'sku':        (['sku', 'individual item', 'product level', 'specific product', 'item level'],
+                               ['sku']),
+                'transaction':(['transaction', 'transactions', 'individual sales',
+                                'day-by-day', 'day by day', 'raw data', 'actual entries'],
+                               ['transaction', 'daily']),
+                'cost':       (['cost', 'costs', 'expense', 'expenses'],
+                               ['cost']),
+                'payment':    (['payment', 'pay mode', 'payment mode', 'payment breakdown'],
+                               ['payment']),
+                'product':    (['product', 'products'],
+                               ['category', 'sku']),
+                # --- Generic intents (check last) ---
+                'summary':    (['overall', 'summary', 'overview'],
+                               ['summary', 'overall', 'performance', 'quarterly']),
+                'trend':      (['trend', 'trends', 'trending', 'over time'],
+                               ['trend', 'monthly']),
+            }
+            _detected_intent = None
+            for _intent, (_words, _tbl_keys) in _intent_map.items():
+                if any(w in raw_question for w in _words):
+                    _detected_intent = _intent
+                    for _tk in _tbl_keys:
+                        if _tk in table_name_lower:
+                            score += 120
+                            match_reasons.append(f"INTENT:{_intent}_match:{_tk}")
+                            break
+                    # Also penalize transactional tables when intent is analysis/summary
+                    if table_type == 'transactional' and _intent in (
+                        'payment', 'cost', 'summary', 'trend', 'department', 'payroll'
+                    ):
+                        _analysis_words = ['breakdown', 'analysis', 'overview', 'summary',
+                                           'mode', 'wise', 'combined']
+                        if any(aw in raw_question for aw in _analysis_words):
+                            score -= 50
+                            match_reasons.append(f"PENALTY:transactional_for_{_intent}_analysis")
+                    break  # Only match the first/strongest intent
+
+            # --- DYNAMIC CROSS-DOMAIN PENALTY (dataset-agnostic) ---
+            # Instead of hardcoding "HR keywords" and "Sales keywords", we derive
+            # domain affinity from the actual loaded table profiles.
+            # If a query keyword strongly matches column/table names in OTHER tables
+            # but NOT in this table, this table is likely the wrong domain.
+            if _detected_intent and query_keywords:
+                # Build a set of words from THIS table's column names and table name
+                _this_table_words = set()
+                for _col_name in profile.get('columns', {}).keys():
+                    _this_table_words.update(_col_name.lower().replace('_', ' ').split())
+                _this_table_words.update(table_name_lower.replace('_', ' ').split())
+                # Remove generic words that appear in every table
+                _generic_table_words = {'id', 'name', 'total', 'date', 'type', 'value',
+                                        'dataset', 'table', 'sheet', 'data', 'no', 'number'}
+                _this_table_words -= _generic_table_words
+
+                # Check: do OTHER tables have much stronger column-name affinity?
+                _other_tables_with_keyword = 0
+                _this_table_has_keyword = 0
+                for _qk in query_keywords:
+                    if len(_qk) < 4:
+                        continue
+                    # Check if this keyword appears in THIS table's columns/name
+                    if _qk in _this_table_words:
+                        _this_table_has_keyword += 1
+                    # Check if this keyword appears in any OTHER table's name
+                    for _other_name in self._profiles:
+                        if _other_name == table_name:
+                            continue
+                        if _qk in _other_name.lower():
+                            _other_tables_with_keyword += 1
+
+                # If query keywords match OTHER table names but NOT this table's columns,
+                # this table is likely wrong domain
+                if _other_tables_with_keyword >= 1 and _this_table_has_keyword == 0:
+                    # Check: does the intent keyword itself appear in this table's name?
+                    _intent_in_this_table = any(
+                        tk in table_name_lower for tk in _intent_map.get(_detected_intent, ([], []))[1]
+                    )
+                    if not _intent_in_this_table:
+                        score -= 150
+                        match_reasons.append("CROSS_DOMAIN_PENALTY:keywords_match_other_tables")
+
+            # Penalize large detail/transactional tables for broad overview queries
+            _is_broad = any(w in raw_question for w in [
+                'overall', 'summary', 'overview', 'how is the business',
+                'give me a', 'quick look', 'high level', 'breakdown',
+            ])
+            if _is_broad and table_type == 'transactional':
+                score -= 30
+                match_reasons.append("PENALTY:detail_table_for_broad_query")
+
             # --- DIMENSION COLUMN NAME MATCHING ---
             # Strong boost when query keywords match dimension column names
             # e.g., "payment modes" query should match "Payment_Mode" column
             columns = profile.get('columns', {})
             for keyword in query_keywords:
                 keyword_lower = keyword.lower()
-                # Skip common non-specific words
-                if keyword_lower in {'used', 'data', 'this', 'that', 'show', 'list', 'types'}:
+                # Skip common non-specific words that cause false column name matches
+                if keyword_lower in {'used', 'data', 'this', 'that', 'show', 'list', 'types',
+                                     'like', 'look', 'quality', 'general', 'standard',
+                                     'good', 'make', 'want', 'need', 'help', 'work',
+                                     'interesting', 'something', 'overview', 'summary'}:
                     continue
                 for col_name, col_info in columns.items():
                     col_name_lower = col_name.lower().replace('_', ' ')
@@ -279,9 +450,16 @@ class ProfileStore:
                         score += 120
                         match_reasons.append(f"compound_metric_match:{col_name}:matches={matches}")
                     elif matches == 1 and len(col_parts) <= 2:
-                        # Single keyword match on short column name
-                        score += 40
-                        match_reasons.append(f"metric_keyword_match:{col_name}")
+                        # Check if keyword EXACTLY matches the full column name
+                        exact = any(kw.lower() == col_name_lower for kw in query_keywords)
+                        if exact:
+                            # VERY strong — query keyword is the metric column name
+                            score += 100
+                            match_reasons.append(f"EXACT_metric_match:{col_name}")
+                        else:
+                            # Single keyword match on short column name
+                            score += 40
+                            match_reasons.append(f"metric_keyword_match:{col_name}")
 
             # --- TRANSACTIONAL TABLE PREFERENCE ---
             # When query asks for "across all transactions", prefer transactional tables
@@ -289,10 +467,10 @@ class ProfileStore:
             table_type = profile.get('table_type', 'unknown')
             if 'transaction' in raw_question or 'across all' in raw_question:
                 if table_type == 'transactional':
-                    # Check if table has actual amount/value columns (not just counts)
+                    # Check if table has numeric metric columns (amounts, not just counts)
                     has_amount_col = any(
-                        'amount' in col.lower() or 'value' in col.lower() or 'revenue' in col.lower()
-                        for col, info in columns.items() if info.get('role') == 'metric'
+                        info.get('role') == 'metric' and info.get('dtype') in ('float64', 'int64')
+                        for col, info in columns.items()
                     )
                     if has_amount_col:
                         score += 80
@@ -343,8 +521,14 @@ class ProfileStore:
                 keyword_lower = keyword.lower()
 
                 # Skip common words that shouldn't trigger value matching
-                skip_words = {'the', 'and', 'for', 'what', 'which', 'how', 'does', 'belong', 'state', 'department'}
-                if keyword_lower in skip_words:
+                value_skip_words = {
+                    'the', 'and', 'for', 'what', 'which', 'how', 'does', 'belong',
+                    'state', 'department', 'data', 'used', 'this', 'that', 'show',
+                    'list', 'types', 'like', 'look', 'quality', 'general', 'standard',
+                    'good', 'make', 'want', 'need', 'help', 'work', 'feel',
+                    'interesting', 'something', 'overview', 'summary', 'analysis',
+                }
+                if keyword_lower in value_skip_words:
                     continue
 
                 for col_name, col_info in columns.items():
@@ -371,15 +555,30 @@ class ProfileStore:
                         continue
                     break  # Found match in this column, move to next keyword
 
-            # --- Synonym map keyword match ---
-            # If query mentions "employee", "department", "designation" etc.
-            # and table has these in synonym_map, boost the table
-            hr_keywords = ['employee', 'staff', 'department', 'designation', 'salary', 'payroll']
+            # --- Synonym map keyword match (dataset-agnostic) ---
+            # If query keyword appears as a key in this table's synonym_map,
+            # boost the table. Works for ANY dataset — no hardcoded domain terms.
+            # VALIDATED: Only give full boost if mapped columns include metric columns.
+            # Prevents "hours" → ["Start_Month", "End_Month"] from stealing routing.
             for keyword in query_keywords:
                 keyword_lower = keyword.lower()
-                if keyword_lower in hr_keywords and keyword_lower in synonym_map:
-                    score += 60  # Strong boost for synonym match
-                    match_reasons.append(f"synonym_map_match:{keyword_lower}")
+                if keyword_lower in synonym_map:
+                    mapped_cols = synonym_map[keyword_lower]
+                    if isinstance(mapped_cols, list) and mapped_cols:
+                        has_metric_mapping = any(
+                            columns.get(mc, {}).get('role') == 'metric'
+                            for mc in mapped_cols
+                        )
+                        if has_metric_mapping:
+                            score += 60
+                            match_reasons.append(f"synonym_map_match:{keyword_lower}")
+                        else:
+                            # Synonym maps to non-metric columns — weak boost only
+                            score += 10
+                            match_reasons.append(f"synonym_map_weak:{keyword_lower}->non_metric")
+                    else:
+                        score += 60
+                        match_reasons.append(f"synonym_map_match:{keyword_lower}")
 
             # --- Cross-table intent: Boost tables with aggregate columns ---
             # When user asks for "across all months" or "overall total", prefer tables
@@ -486,10 +685,10 @@ class ProfileStore:
                                     score += 100
                                     match_reasons.append(f"BOOST:date_range_spans_all_months:{date_min[:10]}_to_{date_max[:10]}")
 
-                                    # Extra boost for transactional tables (Daily, Transaction, Sales)
+                                    # Extra boost for transactional tables
                                     # These are IDEAL for month comparisons as they have row-level date data
-                                    transactional_keywords = ['daily', 'transaction', 'sales', 'order']
-                                    if any(kw in table_lower for kw in transactional_keywords):
+                                    # Use table_type from profile instead of hardcoded keywords
+                                    if table_type == 'transactional':
                                         score += 50
                                         match_reasons.append("BOOST:transactional_table_for_comparison")
                     except (ValueError, IndexError):
@@ -521,8 +720,15 @@ class ProfileStore:
                 col_match = False
                 for col_name, col_info in columns.items():
                     if col_info.get('role') == 'metric':
-                        if metric_lower in col_name.lower():
-                            score += 20
+                        col_lower = col_name.lower()
+                        if metric_lower == col_lower:
+                            # Exact entity metric match
+                            score += 80
+                            match_reasons.append(f"metric_direct_exact:{col_name}")
+                            col_match = True
+                            break
+                        elif metric_lower in col_lower:
+                            score += 40
                             match_reasons.append(f"metric_direct:{col_name}")
                             col_match = True
                             break
@@ -603,8 +809,8 @@ class ProfileStore:
                 score += 10
                 match_reasons.append("type:transactional")
             elif table_type == 'summary':
-                # Penalize summary tables unless explicitly asked
-                if entities.get('aggregation') not in ['SUM', 'AVG', 'MAX', 'MIN']:
+                # Penalize summary tables unless query is broad/overview or explicitly asked
+                if entities.get('aggregation') not in ['SUM', 'AVG', 'MAX', 'MIN'] and not _is_broad:
                     score -= 20
                     match_reasons.append("type:summary_penalty")
             elif table_type == 'category_breakdown':
@@ -618,6 +824,13 @@ class ProfileStore:
             if granularity == 'daily':
                 score += 5
                 match_reasons.append("granularity:daily")
+
+            # --- Trend query boost ---
+            # Trend queries (increasing/decreasing/pattern) NEED temporal data (date columns).
+            # Strongly prefer daily/transactional tables over summary/metadata tables.
+            if entities.get('trend_intent') and granularity == 'daily':
+                score += 50
+                match_reasons.append("trend:temporal_data_boost")
 
             # --- Quality bonus ---
             quality = profile.get('data_quality_score', 0)
@@ -842,90 +1055,164 @@ class ProfileStore:
 
     def _format_brief_summary(self, profile: dict, language: str = 'en') -> str:
         """
-        Brief summary with follow-up offer (Interactive approach).
-        Template-based - NO LLM involvement.
+        Conversational brief summary of a single table in Thara's personality.
+        Template-based — NO LLM. Warm, natural, no markdown formatting.
         """
+        import random
+
         name = profile.get('table_name', 'Unknown')
         rows = profile.get('row_count', 0)
         table_type = profile.get('table_type', 'data')
 
+        # Clean display name
+        parts = name.split('_')
+        clean_name = name
+        for i, part in enumerate(parts):
+            if part.lower() not in ('dataset', 'data') and not part.isdigit() and len(part) > 1:
+                clean_name = '_'.join(parts[i:]).replace('_', ' ')
+                break
+
         # Get key columns by role
         cols = profile.get('columns', {})
-        metrics = [c for c, info in cols.items() if info.get('role') == 'metric'][:3]
-        dates = [c for c, info in cols.items() if info.get('role') == 'date'][:1]
-        dimensions = [c for c, info in cols.items() if info.get('role') == 'dimension'][:3]
-
-        # Get date range if available
-        date_range = profile.get('date_range', {})
-        date_info = ""
-        if date_range:
-            month = date_range.get('month', '')
-            if month:
-                date_info = f" ({month})"
+        metrics = [c.replace('_', ' ') for c, info in cols.items() if info.get('role') == 'metric'][:3]
+        dimensions = [c.replace('_', ' ') for c, info in cols.items() if info.get('role') == 'dimension'][:3]
 
         if language == 'ta':
-            metrics_str = ', '.join(metrics) if metrics else 'இல்லை'
-            date_col = dates[0] if dates else 'இல்லை'
-            dims_str = ', '.join(dimensions) if dimensions else 'இல்லை'
+            openers = [
+                f"Adhu unga {clean_name} table!",
+                f"Okay, {clean_name} table paakuren!",
+                f"Seri, {clean_name} pathi solluren!",
+            ]
+            response = random.choice(openers)
+            response += f" Idhu oru {table_type} table, {rows:,} rows irukku."
 
-            return (
-                f"**{name}**{date_info} - {rows:,} வரிசைகள் உள்ளன.\n\n"
-                f"[Metrics] **முக்கிய metrics:** {metrics_str}\n"
-                f"[Date] **Date column:** {date_col}\n"
-                f"[Dims] **Dimensions:** {dims_str}\n\n"
-                f"மேலும் விவரம் வேண்டுமா? 'show all columns' அல்லது 'describe {name} in detail' என்று கேளுங்கள்."
-            )
+            if metrics:
+                response += f" Idhu la {', '.join(metrics)} maathiri metrics track pannuthu"
+            if dimensions:
+                response += f" - {', '.join(dimensions)} vachi break down panalam."
+            else:
+                response += "."
 
-        metrics_str = ', '.join(metrics) if metrics else 'None found'
-        date_col = dates[0] if dates else 'None found'
-        dims_str = ', '.join(dimensions) if dimensions else 'None found'
+            response += " Enna therinjikka want? Numbers ah pull pannalama?"
+        else:
+            openers = [
+                f"That's your {clean_name} table!",
+                f"Alright, here's {clean_name}!",
+                f"Okay, let me tell you about {clean_name}!",
+            ]
+            response = random.choice(openers)
+            response += f" It's a {table_type} table with {rows:,} rows."
 
-        return (
-            f"**{name}**{date_info} is a {table_type} table with {rows:,} rows.\n\n"
-            f"[Metrics] **Key metrics:** {metrics_str}\n"
-            f"[Date] **Date column:** {date_col}\n"
-            f"[Dims] **Dimensions:** {dims_str}\n\n"
-            f"Want more details? Ask 'show all columns' or 'describe {name} in detail'."
-        )
+            if metrics:
+                response += f" It tracks {', '.join(metrics)}"
+            if dimensions:
+                if metrics:
+                    response += f", broken down by {', '.join(dimensions)}."
+                else:
+                    response += f" It's organized by {', '.join(dimensions)}."
+            elif metrics:
+                response += "."
+
+            response += " I can run numbers on any of these."
+
+        return response
 
     def _format_all_tables_summary(self, language: str = 'en') -> str:
         """
-        Summary of all available tables.
-        Template-based - NO LLM involvement.
+        Conversational summary of all tables in Thara's personality.
+        Template-based — NO LLM. Warm, natural, no markdown formatting.
         """
+        import random
+
         profiles = self.get_all_profiles()
         if not profiles:
             if language == 'ta':
-                return "இன்னும் எந்த அட்டவணையும் ஏற்றப்படவில்லை. முதலில் ஒரு dataset இணைக்கவும்."
-            return "No tables loaded yet. Please connect a dataset first."
+                return "Innum data load aagala! Mudhalil oru dataset connect pannunga."
+            return "No data loaded yet! Connect a dataset first and I'll take a look."
 
-        if language == 'ta':
-            lines = ["**கிடைக்கும் அட்டவணைகள்:**\n"]
-        else:
-            lines = ["**Available Tables:**\n"]
+        total = len(profiles)
 
-        for idx, (name, profile) in enumerate(list(profiles.items())[:10]):
-            rows = profile.get('row_count', 0)
-            table_type = profile.get('table_type', 'data')
-            date_range = profile.get('date_range', {})
-            month = date_range.get('month', '')
-            month_info = f" ({month})" if month else ""
+        # Categorize tables by type
+        transactional = []
+        summary_tables = []
+        others = []
+        for name, p in profiles.items():
+            # Clean up display name: remove "Dataset_1_Sales_" prefix etc.
+            parts = name.split('_')
+            # Skip dataset/number prefix parts, keep meaningful name
+            clean = name
+            for i, part in enumerate(parts):
+                if part.lower() not in ('dataset', 'data') and not part.isdigit() and len(part) > 1:
+                    clean = '_'.join(parts[i:]).replace('_', ' ')
+                    break
 
-            lines.append(f"• **{name}**{month_info} - {table_type}, {rows:,} rows")
+            row_count = p.get('row_count', 0)
+            ttype = p.get('table_type', 'data')
 
-        if len(profiles) > 10:
-            remaining = len(profiles) - 10
-            if language == 'ta':
-                lines.append(f"\n...மேலும் {remaining} அட்டவணைகள் உள்ளன.")
+            entry = (clean, row_count, ttype)
+            if ttype == 'transactional':
+                transactional.append(entry)
+            elif ttype == 'summary':
+                summary_tables.append(entry)
             else:
-                lines.append(f"\n...and {remaining} more tables.")
+                others.append(entry)
 
+        # Find biggest table
+        all_entries = transactional + summary_tables + others
+        biggest = max(all_entries, key=lambda x: x[1])
+
+        # Build natural description
         if language == 'ta':
-            lines.append("\nகுறிப்பிட்ட அட்டவணை பற்றி கேளுங்கள்: 'what is [table name]'")
+            openers = [
+                f"Unga data la totally {total} tables irukku!",
+                f"Seri, {total} tables irukku unga kitta!",
+                f"Okay, unga dataset la {total} tables paakuren!",
+            ]
         else:
-            lines.append("\nAsk about any specific table: 'what is [table name]'")
+            openers = [
+                f"You've got {total} tables in your dataset!",
+                f"Alright, there are {total} tables to work with!",
+                f"Nice, I can see {total} tables in your data!",
+            ]
 
-        return "\n".join(lines)
+        parts = [random.choice(openers)]
+
+        # Describe the biggest table
+        if language == 'ta':
+            parts.append(f" Periya table {biggest[0]} — {biggest[1]:,} rows irukku.")
+        else:
+            parts.append(f" The biggest one is {biggest[0]} with {biggest[1]:,} rows.")
+
+        # Mention categories naturally
+        if transactional and summary_tables:
+            t_names = [e[0] for e in transactional[:2]]
+            s_names = [e[0] for e in summary_tables[:3]]
+            if language == 'ta':
+                parts.append(
+                    f" {len(transactional)} detailed transaction tables irukku"
+                    f" ({', '.join(t_names)}) plus {len(summary_tables)} summary tables"
+                    f" like {', '.join(s_names)}."
+                )
+            else:
+                parts.append(
+                    f" You have {len(transactional)} detailed transaction table{'s' if len(transactional) > 1 else ''}"
+                    f" ({', '.join(t_names)}) and {len(summary_tables)} summary tables"
+                    f" like {', '.join(s_names)}."
+                )
+        elif summary_tables:
+            s_names = [e[0] for e in summary_tables[:4]]
+            if language == 'ta':
+                parts.append(f" Summary tables: {', '.join(s_names)}.")
+            else:
+                parts.append(f" These include {', '.join(s_names)}.")
+
+        # Closing
+        if language == 'ta':
+            parts.append(" Ellaa tables um ready, boss.")
+        else:
+            parts.append(" All tables are ready to query.")
+
+        return ''.join(parts)
 
     def _find_profile_by_reference(self, table_ref: str) -> Optional[dict]:
         """
@@ -1013,72 +1300,427 @@ class ProfileStore:
 
     def format_detailed_profile(self, table_name: str, language: str = 'en') -> str:
         """
-        Detailed profile with all columns listed.
-        Template-based - NO LLM involvement.
+        Detailed profile with all columns — conversational Thara style.
+        Template-based — NO LLM.
         """
+        import random
+
         profile = self._find_profile_by_reference(table_name)
         if not profile:
             available = ", ".join(self.get_table_names()[:5])
             if language == 'ta':
-                return f"'{table_name}' என்ற அட்டவணை கிடைக்கவில்லை. கிடைக்கும்: {available}"
-            return f"Table '{table_name}' not found. Available: {available}"
+                return f"Hmm, '{table_name}' table kanomae! Irukkura tables: {available}"
+            return f"Hmm, can't find '{table_name}'! Here's what I have: {available}"
 
         name = profile.get('table_name', 'Unknown')
         rows = profile.get('row_count', 0)
         table_type = profile.get('table_type', 'data')
         columns = profile.get('columns', {})
 
+        # Clean display name
+        parts_list = name.split('_')
+        clean_name = name
+        for i, part in enumerate(parts_list):
+            if part.lower() not in ('dataset', 'data') and not part.isdigit() and len(part) > 1:
+                clean_name = '_'.join(parts_list[i:]).replace('_', ' ')
+                break
+
         # Group columns by role
-        metrics = []
-        dates = []
-        dimensions = []
-        identifiers = []
-        others = []
-
-        for col_name, col_info in columns.items():
-            role = col_info.get('role', 'unknown')
-            dtype = col_info.get('dtype', 'unknown')
-            entry = f"{col_name} ({dtype})"
-
-            if role == 'metric':
-                metrics.append(entry)
-            elif role == 'date':
-                dates.append(entry)
-            elif role == 'dimension':
-                dimensions.append(entry)
-            elif role == 'identifier':
-                identifiers.append(entry)
-            else:
-                others.append(entry)
+        metrics = [c.replace('_', ' ') for c, info in columns.items() if info.get('role') == 'metric']
+        dates = [c.replace('_', ' ') for c, info in columns.items() if info.get('role') == 'date']
+        dimensions = [c.replace('_', ' ') for c, info in columns.items() if info.get('role') == 'dimension']
+        identifiers = [c.replace('_', ' ') for c, info in columns.items() if info.get('role') == 'identifier']
 
         if language == 'ta':
-            lines = [
-                f"## {name} - முழு விவரம்",
-                f"",
-                f"**வகை:** {table_type}",
-                f"**வரிசைகள்:** {rows:,}",
-                f"**மொத்த columns:** {len(columns)}",
-                f"",
+            openers = [
+                f"Seri, {clean_name} table full ah paakuren!",
+                f"Okay, {clean_name} details idho!",
+            ]
+            response = random.choice(openers)
+            response += f" Idhu oru {table_type} table, {rows:,} rows, totally {len(columns)} columns irukku."
+
+            if metrics:
+                response += f" Metrics: {', '.join(metrics)}."
+            if dates:
+                response += f" Date columns: {', '.join(dates)}."
+            if dimensions:
+                response += f" Dimensions: {', '.join(dimensions)}."
+            if identifiers:
+                response += f" Identifiers: {', '.join(identifiers)}."
+
+            response += " Enna query try pannalama?"
+        else:
+            openers = [
+                f"Here's the full breakdown of {clean_name}!",
+                f"Alright, diving deep into {clean_name}!",
+            ]
+            response = random.choice(openers)
+            response += f" It's a {table_type} table with {rows:,} rows and {len(columns)} columns."
+
+            if metrics:
+                response += f" Metrics: {', '.join(metrics)}."
+            if dates:
+                response += f" Date columns: {', '.join(dates)}."
+            if dimensions:
+                response += f" Dimensions: {', '.join(dimensions)}."
+            if identifiers:
+                response += f" Identifiers: {', '.join(identifiers)}."
+
+            response += " Everything's ready to query."
+
+        return response
+
+    def format_quality_report(self, language: str = 'en') -> str:
+        """
+        Generate a conversational data quality summary in Thara's personality.
+        Warm, natural, informative — not a dry report.
+        Template-based — NO LLM.
+        """
+        import random
+
+        profiles = self.get_all_profiles()
+        if not profiles:
+            if language == 'ta':
+                return "Innum data load aagala! Mudhalil oru dataset connect pannunga, naan paakuren."
+            return "No data loaded yet! Connect a dataset first and I'll take a look."
+
+        total_tables = len(profiles)
+        total_rows = sum(p.get('row_count', 0) for p in profiles.values())
+
+        # Quality scores
+        quality_scores = [p.get('data_quality_score', 0) for p in profiles.values()]
+        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
+
+        # Date coverage
+        date_ranges = []
+        for p in profiles.values():
+            dr = p.get('date_range', {})
+            if dr.get('min') and dr.get('max'):
+                date_ranges.append((dr['min'][:10], dr['max'][:10]))
+
+        date_info = ""
+        if date_ranges:
+            min_date = min(d[0] for d in date_ranges)
+            max_date = max(d[1] for d in date_ranges)
+            date_info = f" covering {min_date} to {max_date}"
+
+        # Biggest table
+        biggest = max(profiles.items(), key=lambda x: x[1].get('row_count', 0))
+        biggest_name = biggest[0].split('_')[-1] if '_' in biggest[0] else biggest[0]
+        biggest_rows = biggest[1].get('row_count', 0)
+
+        # Build natural response
+        if avg_quality >= 0.85:
+            if language == 'ta':
+                openers = [
+                    f"Unga data super clean ah irukku!",
+                    f"Data quality excellent ah irukku!",
+                    f"Romba nalla data - quality wise top notch!",
+                ]
+            else:
+                openers = [
+                    f"Your data looks really solid!",
+                    f"Great news - your data quality is excellent!",
+                    f"Looking good! Your data is in great shape.",
+                ]
+        elif avg_quality >= 0.7:
+            if language == 'ta':
+                openers = [
+                    f"Unga data nalla irukku!",
+                    f"Data quality good ah irukku, no worries!",
+                ]
+            else:
+                openers = [
+                    f"Your data is looking good!",
+                    f"Nice - your data quality is solid.",
+                ]
+        elif avg_quality >= 0.5:
+            if language == 'ta':
+                openers = [
+                    f"Data okay ah irukku, but some gaps irukku.",
+                    f"Data usable ah irukku, but perfect illa.",
+                ]
+            else:
+                openers = [
+                    f"Your data is usable, but there are some gaps.",
+                    f"It's decent, though a few tables could use some cleanup.",
+                ]
+        else:
+            if language == 'ta':
+                openers = [
+                    f"Data quality konjam low ah irukku - missing values irukkalam.",
+                ]
+            else:
+                openers = [
+                    f"Heads up - the data quality is on the lower side. There might be missing values.",
+                ]
+
+        opener = random.choice(openers)
+
+        if language == 'ta':
+            details = (
+                f" {total_tables} tables irukku with {total_rows:,} total rows{date_info}."
+                f" Quality score {avg_quality:.0%}."
+                f" Biggest table {biggest_name} - {biggest_rows:,} rows."
+                f" Enna explore pannalam? Sales, trends, comparisons - kelu!"
+            )
+        else:
+            details = (
+                f" You've got {total_tables} tables with {total_rows:,} total rows{date_info}."
+                f" Overall quality score is {avg_quality:.0%}."
+                f" Your biggest table is {biggest_name} with {biggest_rows:,} rows."
+                f" Everything's ready to query."
+            )
+
+        return opener + details
+
+    def format_structure_description(self, language: str = 'en') -> str:
+        """
+        Describes the structure/schema of all tables — columns, types, relationships.
+        For questions like "describe the structure", "what columns do I have".
+        """
+        import random
+
+        profiles = self.get_all_profiles()
+        if not profiles:
+            return "No data loaded yet! Connect a dataset first."
+
+        # Collect structure info per table
+        table_infos = []
+        all_metrics = set()
+        all_dimensions = set()
+        total_cols = 0
+
+        for name, p in profiles.items():
+            # Clean name
+            parts = name.split('_')
+            clean = name
+            for i, part in enumerate(parts):
+                if part.lower() not in ('dataset', 'data') and not part.isdigit() and len(part) > 1:
+                    clean = '_'.join(parts[i:]).replace('_', ' ')
+                    break
+
+            cols = p.get('columns', {})
+            total_cols += len(cols)
+            m = [c.replace('_', ' ') for c, info in cols.items() if info.get('role') == 'metric']
+            d = [c.replace('_', ' ') for c, info in cols.items() if info.get('role') == 'dimension']
+            all_metrics.update(m)
+            all_dimensions.update(d)
+            table_infos.append((clean, len(cols), m[:2], d[:2], p.get('row_count', 0)))
+
+        # Sort by column count descending — most complex first
+        table_infos.sort(key=lambda x: x[1], reverse=True)
+
+        if language == 'ta':
+            openers = [
+                "Seri, unga tables structure paakalam!",
+                "Okay, unga data structure explain pannuren!",
             ]
         else:
-            lines = [
-                f"## {name} - Full Details",
-                f"",
-                f"**Type:** {table_type}",
-                f"**Rows:** {rows:,}",
-                f"**Total columns:** {len(columns)}",
-                f"",
+            openers = [
+                "Let me walk you through the structure!",
+                "Here's how your data is organized!",
+                "Okay, let me break down the structure for you!",
             ]
 
-        if metrics:
-            lines.append(f"**[Metrics] Metrics ({len(metrics)}):** {', '.join(metrics)}")
-        if dates:
-            lines.append(f"**[Date] Date columns ({len(dates)}):** {', '.join(dates)}")
-        if dimensions:
-            lines.append(f"**[Dims] Dimensions ({len(dimensions)}):** {', '.join(dimensions)}")
-        if identifiers:
-            lines.append(f"**[Key] Identifiers ({len(identifiers)}):** {', '.join(identifiers)}")
-        if others:
-            lines.append(f"**[Other] Other ({len(others)}):** {', '.join(others)}")
+        parts_list = [random.choice(openers)]
 
-        return "\n".join(lines)
+        # Overall stats
+        parts_list.append(
+            f" Across {len(profiles)} tables, there are {total_cols} total columns"
+            f" — {len(all_metrics)} unique metrics and {len(all_dimensions)} dimensions."
+        )
+
+        # Top 3 tables with their key columns
+        for clean, ncols, metrics, dims, rows in table_infos[:3]:
+            col_desc = ""
+            if metrics and dims:
+                col_desc = f" tracks {', '.join(metrics)} by {', '.join(dims)}"
+            elif metrics:
+                col_desc = f" tracks {', '.join(metrics)}"
+            elif dims:
+                col_desc = f" organized by {', '.join(dims)}"
+            parts_list.append(f" {clean} ({ncols} cols, {rows:,} rows){col_desc}.")
+
+        if len(table_infos) > 3:
+            remaining = len(table_infos) - 3
+            parts_list.append(f" Plus {remaining} more tables.")
+
+        parts_list.append(" Ask about any specific table for full column details!")
+
+        return ''.join(parts_list)
+
+    def format_data_highlights(self, language: str = 'en') -> str:
+        """
+        Highlights interesting/notable patterns in the data.
+        For questions like "anything interesting?", "anything unusual?".
+        """
+        import random
+
+        profiles = self.get_all_profiles()
+        if not profiles:
+            return "No data loaded yet! Connect a dataset first."
+
+        highlights = []
+
+        # Find size extremes
+        sorted_by_rows = sorted(profiles.items(), key=lambda x: x[1].get('row_count', 0), reverse=True)
+        biggest = sorted_by_rows[0]
+        smallest = sorted_by_rows[-1]
+
+        big_name = self._clean_table_name(biggest[0])
+        small_name = self._clean_table_name(smallest[0])
+        big_rows = biggest[1].get('row_count', 0)
+        small_rows = smallest[1].get('row_count', 0)
+
+        if big_rows > small_rows * 10:
+            highlights.append(
+                f"{big_name} is massive with {big_rows:,} rows while {small_name} has only {small_rows:,}"
+                f" — that's a {big_rows // max(small_rows, 1)}x difference!"
+            )
+
+        # Date coverage
+        date_ranges = []
+        for name, p in profiles.items():
+            dr = p.get('date_range', {})
+            if dr.get('min') and dr.get('max'):
+                date_ranges.append((self._clean_table_name(name), dr['min'][:10], dr['max'][:10]))
+
+        if date_ranges:
+            min_date = min(d[1] for d in date_ranges)
+            max_date = max(d[2] for d in date_ranges)
+            highlights.append(f"Your data spans from {min_date} to {max_date}.")
+
+        # Quality variation
+        quality_scores = [(self._clean_table_name(n), p.get('data_quality_score', 0))
+                         for n, p in profiles.items() if p.get('data_quality_score')]
+        if quality_scores:
+            best_q = max(quality_scores, key=lambda x: x[1])
+            worst_q = min(quality_scores, key=lambda x: x[1])
+            if best_q[1] - worst_q[1] > 0.15:
+                highlights.append(
+                    f"Quality varies — {best_q[0]} scores {best_q[1]:.0%} "
+                    f"while {worst_q[0]} is at {worst_q[1]:.0%}."
+                )
+
+        # Tables with many metrics (feature-rich)
+        metric_rich = []
+        for name, p in profiles.items():
+            cols = p.get('columns', {})
+            m_count = sum(1 for info in cols.values() if info.get('role') == 'metric')
+            if m_count >= 4:
+                metric_rich.append((self._clean_table_name(name), m_count))
+        if metric_rich:
+            metric_rich.sort(key=lambda x: x[1], reverse=True)
+            top = metric_rich[0]
+            highlights.append(f"{top[0]} is the richest table with {top[1]} trackable metrics.")
+
+        # Table type distribution
+        types = {}
+        for p in profiles.values():
+            t = p.get('table_type', 'data')
+            types[t] = types.get(t, 0) + 1
+        if len(types) > 1:
+            type_desc = ', '.join(f"{count} {t}" for t, count in types.items())
+            highlights.append(f"Mix of table types: {type_desc}.")
+
+        if language == 'ta':
+            openers = [
+                "Interesting ah irukku unga data!",
+                "Sila notable things paathein!",
+                "Unga data la konjam observations sollurenl!",
+            ]
+        else:
+            openers = [
+                "Here's what stands out in your data!",
+                "A few interesting things I noticed!",
+                "Let me share what caught my eye!",
+            ]
+
+        response = random.choice(openers)
+        if highlights:
+            response += " " + " ".join(highlights)
+        else:
+            response += f" You have {len(profiles)} clean tables ready to explore. No obvious red flags!"
+
+        response += " I can dig into any of these tables."
+        return response
+
+    def format_analysis_capabilities(self, language: str = 'en') -> str:
+        """
+        Describes what kind of analysis is possible based on the data.
+        For questions like "what kind of analysis can I do?", "what insights can I get?".
+        """
+        import random
+
+        profiles = self.get_all_profiles()
+        if not profiles:
+            return "No data loaded yet! Connect a dataset first."
+
+        # Discover available analysis types from actual data
+        capabilities = []
+        has_dates = False
+        has_metrics = False
+        has_dimensions = False
+        has_multiple_tables = len(profiles) > 1
+        metric_names = set()
+        dimension_names = set()
+
+        for p in profiles.values():
+            cols = p.get('columns', {})
+            for col_name, info in cols.items():
+                role = info.get('role', '')
+                clean = col_name.replace('_', ' ')
+                if role == 'date':
+                    has_dates = True
+                elif role == 'metric':
+                    has_metrics = True
+                    metric_names.add(clean)
+                elif role == 'dimension':
+                    has_dimensions = True
+                    dimension_names.add(clean)
+
+        if has_metrics:
+            sample_metrics = list(metric_names)[:3]
+            capabilities.append(f"totals, averages, and comparisons for {', '.join(sample_metrics)}")
+
+        if has_dates and has_metrics:
+            capabilities.append("trends over time — monthly, weekly, daily patterns")
+
+        if has_dimensions and has_metrics:
+            sample_dims = list(dimension_names)[:3]
+            capabilities.append(f"breakdowns by {', '.join(sample_dims)}")
+
+        if has_multiple_tables:
+            capabilities.append("cross-table analysis linking related data")
+
+        if has_dimensions:
+            capabilities.append("top/bottom rankings and filtering")
+
+        if language == 'ta':
+            openers = [
+                "Unga data vachi romba vishayam panna mudiyum!",
+                "Niraiya analysis options irukku!",
+            ]
+        else:
+            openers = [
+                "There's a lot you can do with this data!",
+                "You've got plenty of analysis options!",
+                "Great question — here's what's possible!",
+            ]
+
+        response = random.choice(openers)
+        if capabilities:
+            response += " You can look at " + "; ".join(capabilities) + "."
+        response += " Just ask a question naturally and I'll figure out the rest!"
+
+        return response
+
+    def _clean_table_name(self, name: str) -> str:
+        """Strip Dataset_1_Sales_ prefixes from table names for display."""
+        parts = name.split('_')
+        for i, part in enumerate(parts):
+            if part.lower() not in ('dataset', 'data') and not part.isdigit() and len(part) > 1:
+                return '_'.join(parts[i:]).replace('_', ' ')
+        return name.replace('_', ' ')
+

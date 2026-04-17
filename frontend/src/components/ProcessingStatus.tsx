@@ -22,19 +22,18 @@ interface ProcessingStatusProps {
 
 export function ProcessingStatus({
   isProcessing,
-  isVoiceInput = false,
-  hasTamilInput = false,
   variant = 'chat',
   className
 }: ProcessingStatusProps) {
   if (!isProcessing) return null;
 
-  // Simple typing indicator - three pulsing dots
+  // Skeleton loading animation — mimics an incoming message bubble
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0 }}
+      exit={{ opacity: 0, y: -5 }}
+      transition={{ duration: 0.2 }}
       className={cn("flex justify-start w-full", className)}
     >
       <div className="flex items-start gap-3">
@@ -43,26 +42,40 @@ export function ProcessingStatus({
           T
         </div>
 
-        {/* Typing bubble */}
-        <div className="bg-card/90 border border-border rounded-2xl rounded-tl-md px-4 py-3 shadow-sm">
-          <div className="flex items-center gap-1.5">
-            {[0, 1, 2].map((i) => (
+        {/* Skeleton message bubble */}
+        <div className="bg-card/90 border border-border rounded-2xl rounded-tl-md px-4 py-3 shadow-sm min-w-[200px] max-w-[280px] space-y-2.5">
+          {/* Skeleton lines with shimmer */}
+          {[
+            { width: '85%', delay: 0 },
+            { width: '70%', delay: 0.1 },
+            { width: '55%', delay: 0.2 },
+          ].map((line, i) => (
+            <motion.div
+              key={i}
+              className="h-3 rounded-full bg-muted/60 overflow-hidden relative"
+              style={{ width: line.width }}
+              initial={{ opacity: 0.4 }}
+              animate={{ opacity: [0.4, 0.7, 0.4] }}
+              transition={{
+                duration: 1.5,
+                repeat: Infinity,
+                delay: line.delay,
+                ease: "easeInOut"
+              }}
+            >
+              {/* Shimmer effect */}
               <motion.div
-                key={i}
-                className="w-2 h-2 rounded-full bg-violet-400"
-                animate={{
-                  y: [0, -6, 0],
-                  opacity: [0.4, 1, 0.4]
-                }}
+                className="absolute inset-0 bg-gradient-to-r from-transparent via-muted-foreground/10 to-transparent"
+                animate={{ x: ['-100%', '100%'] }}
                 transition={{
-                  duration: 0.6,
+                  duration: 1.5,
                   repeat: Infinity,
-                  delay: i * 0.15,
+                  delay: line.delay + 0.2,
                   ease: "easeInOut"
                 }}
               />
-            ))}
-          </div>
+            </motion.div>
+          ))}
         </div>
       </div>
     </motion.div>

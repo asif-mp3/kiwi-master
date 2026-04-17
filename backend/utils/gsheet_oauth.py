@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from utils.logger import get_logger
+
+logger = get_logger("gsheet_oauth")
 
 # Load environment variables
 load_dotenv()
@@ -171,7 +174,7 @@ def refresh_access_token(user_id: str) -> Optional[str]:
     })
 
     if response.status_code != 200:
-        print(f"[GSheet OAuth] Token refresh failed: {response.text}")
+        logger.warning("Token refresh failed: %s", response.text)
         return None
 
     token_data = response.json()
@@ -199,7 +202,7 @@ def save_user_tokens(user_id: str, tokens: Dict[str, Any]):
     with open(token_path, 'w') as f:
         json.dump(tokens, f, indent=2)
 
-    print(f"[GSheet OAuth] Saved tokens for user: {user_id}")
+    logger.info("Saved tokens for user: %s", user_id)
 
 
 def load_user_tokens(user_id: str) -> Optional[Dict[str, Any]]:
@@ -213,7 +216,7 @@ def load_user_tokens(user_id: str) -> Optional[Dict[str, Any]]:
         with open(token_path, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"[GSheet OAuth] Error loading tokens: {e}")
+        logger.error("Error loading tokens: %s", e)
         return None
 
 
@@ -237,7 +240,7 @@ def get_valid_access_token(user_id: str) -> Optional[str]:
         expiry_time = datetime.fromisoformat(expires_at)
         # Refresh if expiring in next 5 minutes
         if datetime.utcnow() >= expiry_time - timedelta(minutes=5):
-            print(f"[GSheet OAuth] Token expired/expiring, refreshing...")
+            logger.info("Token expired/expiring, refreshing...")
             return refresh_access_token(user_id)
 
     return tokens.get("access_token")
@@ -273,14 +276,14 @@ def revoke_access(user_id: str) -> bool:
                 params={"token": access_token}
             )
         except Exception as e:
-            print(f"[GSheet OAuth] Error revoking token: {e}")
+            logger.error("Error revoking token: %s", e)
 
     # Remove token file
     token_path = get_token_path(user_id)
     if token_path.exists():
         token_path.unlink()
 
-    print(f"[GSheet OAuth] Revoked access for user: {user_id}")
+    logger.info("Revoked access for user: %s", user_id)
     return True
 
 

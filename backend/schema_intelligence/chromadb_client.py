@@ -20,6 +20,9 @@ CHROMADB_ENABLED = False
 
 import os
 from typing import List
+from utils.logger import get_logger
+
+logger = get_logger("chromadb_client")
 
 # Only import heavy dependencies if enabled
 if CHROMADB_ENABLED:
@@ -82,7 +85,7 @@ class SchemaVectorStore:
         """
         self.enabled = CHROMADB_ENABLED
         if not self.enabled:
-            print("  [ChromaDB] DISABLED - all operations are no-ops (saves memory & startup time)")
+            logger.info("DISABLED - all operations are no-ops (saves memory & startup time)")
             return
 
         # Use PersistentClient for proper disk persistence with settings
@@ -125,10 +128,10 @@ class SchemaVectorStore:
         try:
             # Delete the collection
             self.client.delete_collection(self.collection_name)
-            print(f"   Deleted ChromaDB collection: {self.collection_name}")
+            logger.info("Deleted ChromaDB collection: %s", self.collection_name)
         except Exception as e:
             # Collection may not exist
-            print(f"   ChromaDB collection doesn't exist (first run or already cleared)")
+            logger.info("ChromaDB collection doesn't exist (first run or already cleared)")
     
     def delete_by_source_id(self, source_id: str):
         """
@@ -166,18 +169,18 @@ class SchemaVectorStore:
             )
             
             if not results or not results['ids']:
-                print(f"   No ChromaDB documents found for source_id: {source_id}")
+                logger.info("No ChromaDB documents found for source_id: %s", source_id)
                 return 0
             
             # Delete documents by ID
             ids_to_delete = results['ids']
             collection.delete(ids=ids_to_delete)
             
-            print(f"   Deleted {len(ids_to_delete)} ChromaDB document(s) for source_id: {source_id}")
+            logger.info("Deleted %d ChromaDB document(s) for source_id: %s", len(ids_to_delete), source_id)
             return len(ids_to_delete)
             
         except Exception as e:
-            print(f"   [WARN]  Error deleting ChromaDB documents for source_id {source_id}: {e}")
+            logger.warning("Error deleting ChromaDB documents for source_id %s: %s", source_id, e)
             return 0
 
     def rebuild(self, source_ids=None):
@@ -196,7 +199,7 @@ class SchemaVectorStore:
 
         if source_ids is None:
             # FULL REBUILD: Delete entire collection and rebuild from scratch
-            print("   Performing FULL ChromaDB rebuild...")
+            logger.info("Performing FULL ChromaDB rebuild...")
             
             # Delete existing collection if present
             try:
@@ -212,7 +215,7 @@ class SchemaVectorStore:
             )
         else:
             # PARTIAL REBUILD: Delete only documents for specified source_ids
-            print(f"   Performing PARTIAL ChromaDB rebuild for {len(source_ids)} source(s)...")
+            logger.info("Performing PARTIAL ChromaDB rebuild for %d source(s)...", len(source_ids))
             
             # Get or create collection
             try:
@@ -238,7 +241,7 @@ class SchemaVectorStore:
         if source_ids is not None:
             # Only rebuild documents for specified source_ids
             documents = [doc for doc in documents if doc.get("source_id") in source_ids]
-            print(f"   Rebuilding {len(documents)} document(s) for specified source_ids")
+            logger.info("Rebuilding %d document(s) for specified source_ids", len(documents))
 
         # Build clean metadata (NO None values)
         metadatas = []
@@ -265,7 +268,7 @@ class SchemaVectorStore:
                 documents=[doc["text"] for doc in documents],
                 metadatas=metadatas
             )
-            print(f"   Added {len(documents)} document(s) to ChromaDB")
+            logger.info("Added %d document(s) to ChromaDB", len(documents))
 
     def count(self):
         """Get the number of documents in the collection."""
@@ -307,7 +310,7 @@ class SchemaVectorStore:
                     embedding_function=self.embedding_function
                 )
             except Exception:
-                print("[RAG] No ChromaDB collection found - returning empty results")
+                logger.warning("No ChromaDB collection found - returning empty results")
                 return []
 
             # Query for similar documents
@@ -330,7 +333,7 @@ class SchemaVectorStore:
             return formatted_results
 
         except Exception as e:
-            print(f"[RAG] Query error: {e}")
+            logger.error("RAG query error: %s", e)
             return []
 
     def get_relevant_tables(self, question: str, top_k: int = 3) -> List[tuple]:

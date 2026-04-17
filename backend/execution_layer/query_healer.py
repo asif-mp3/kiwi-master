@@ -7,6 +7,10 @@ import re
 from typing import Tuple, Optional, Dict, Any, List
 from dataclasses import dataclass
 import pandas as pd
+from utils.config_loader import get_healing_config
+from utils.logger import get_logger
+
+logger = get_logger("healer")
 
 
 @dataclass
@@ -123,13 +127,14 @@ class QueryHealer:
 
                 # Check for empty results
                 if result.empty and attempt < self.MAX_RETRIES - 1:
-                    # Only relax if we have filters to relax
+                    # Only try SAFE relaxations (LIKE widening, LIMIT increase)
+                    # NEVER remove filters — that changes query semantics
                     if plan.get('filters') or plan.get('subset_filters'):
-                        relaxed_sql = self._relax_filters(current_sql, plan)
+                        relaxed_sql = self._relax_filters_safe(current_sql, plan)
                         if relaxed_sql != current_sql:
-                            print(f"  [Healer] Empty result, relaxing filters (attempt {attempt + 2})")
+                            logger.info("Empty result, widening patterns (attempt %d)", attempt + 2)
                             self._record_attempt(attempt + 1, current_sql, relaxed_sql,
-                                                "Empty result", "relax_filters", False)
+                                                "Empty result", "widen_patterns", False)
                             current_sql = relaxed_sql
                             continue
 
@@ -138,11 +143,11 @@ class QueryHealer:
 
             except Exception as e:
                 last_error = str(e)
-                print(f"  [Healer] Error on attempt {attempt + 1}: {last_error[:100]}")
+                logger.error("Error on attempt %d: %s", attempt + 1, last_error[:100], exc_info=True)
 
                 # Fast-fail for unrecoverable errors (saves 1-3 seconds)
                 if self.is_unrecoverable_error(last_error):
-                    print(f"  [Healer] FAST-FAIL: Unrecoverable error detected")
+                    logger.error("FAST-FAIL: Unrecoverable error detected")
                     self._record_attempt(attempt + 1, current_sql, current_sql,
                                         last_error, "unrecoverable_error", False)
                     break
@@ -151,7 +156,7 @@ class QueryHealer:
 
                 if fixed_sql and fixed_sql != current_sql:
                     fix_type = self._get_fix_type(last_error)
-                    print(f"  [Healer] Applying fix: {fix_type}")
+                    logger.info("Applying fix: %s", fix_type)
                     self._record_attempt(attempt + 1, current_sql, fixed_sql,
                                         last_error, fix_type, False)
                     current_sql = fixed_sql
@@ -161,11 +166,12 @@ class QueryHealer:
                                         last_error, "no_fix_available", False)
                     break
 
-        # All retries failed
-        raise QueryExecutionError(
-            f"Query failed after {self.MAX_RETRIES} attempts. Last error: {last_error}",
-            attempts=self._healing_history
-        )
+        # All retries failed — build helpful error with suggestions
+        suggestion = self._build_error_suggestion(last_error, plan)
+        error_msg = f"Query failed after {self.MAX_RETRIES} attempts. Last error: {last_error}"
+        if suggestion:
+            error_msg += f"\n{suggestion}"
+        raise QueryExecutionError(error_msg, attempts=self._healing_history)
 
     def _record_attempt(self, attempt_num: int, original: str, fixed: str,
                        error: str, fix_type: str, success: bool):
@@ -178,6 +184,31 @@ class QueryHealer:
             fix_type=fix_type,
             success=success
         ))
+
+    def _build_error_suggestion(self, error: str, plan: Dict[str, Any]) -> str:
+        """Build a helpful suggestion message when healing fails."""
+        if not error:
+            return ""
+        error_lower = error.lower()
+
+        # Column not found — list available columns
+        if any(term in error_lower for term in ['column', 'binder', 'not found', 'does not exist', 'no column']):
+            table_name = plan.get('table')
+            if table_name:
+                profile = self.profile_store.get_profile(table_name)
+                if profile:
+                    available_cols = list(profile.get('columns', {}).keys())[:12]
+                    if available_cols:
+                        return f"Available columns in '{table_name}': {', '.join(available_cols)}"
+
+        # Table not found — list available tables
+        if 'table' in error_lower and any(term in error_lower for term in ['not found', 'does not exist', 'no table']):
+            all_profiles = self.profile_store.get_all_profiles()
+            available_tables = list(all_profiles.keys())[:10]
+            if available_tables:
+                return f"Available tables: {', '.join(available_tables)}"
+
+        return ""
 
     def _diagnose_and_fix(self, sql: str, error: str, plan: Dict[str, Any],
                          profile: Optional[Dict]) -> Optional[str]:
@@ -271,6 +302,12 @@ class QueryHealer:
                 if actual_col.lower() == missing_col.lower():
                     return self._replace_column_in_sql(sql, missing_col, actual_col)
 
+            # Space normalization: "Tamilnadu" should match "Tamil Nadu"
+            normalized_missing = missing_col.replace(' ', '').lower()
+            for actual_col in columns.keys():
+                if actual_col.replace(' ', '').lower() == normalized_missing:
+                    return self._replace_column_in_sql(sql, missing_col, actual_col)
+
             # Try synonym lookup
             for term, actual_cols in synonym_map.items():
                 if missing_col.lower() in term.lower() or term.lower() in missing_col.lower():
@@ -283,19 +320,38 @@ class QueryHealer:
                 if missing_col.lower() in actual_col.lower() or actual_col.lower() in missing_col.lower():
                     return self._replace_column_in_sql(sql, missing_col, actual_col)
 
-            # Try fuzzy matching for typos (80% similarity threshold)
+            # Try fuzzy matching for typos
+            # Higher threshold (0.90) prevents wrong column matches
+            # e.g., "Profit" should NOT match "Profit Margin" (70% similar)
             from difflib import SequenceMatcher
             best_match = None
-            best_ratio = 0.75  # Minimum threshold
+            best_ratio = get_healing_config().fuzzy_match_threshold
+
+            # Month/time words that must NEVER be fuzzy-swapped
+            # "Sales_Oct" vs "Sales_Nov" = 89% similar but completely different data
+            _time_words = {
+                'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+                'january', 'february', 'march', 'april', 'june', 'july', 'august',
+                'september', 'october', 'november', 'december',
+                'q1', 'q2', 'q3', 'q4', 'h1', 'h2',
+            }
 
             for actual_col in columns.keys():
                 ratio = SequenceMatcher(None, missing_col.lower(), actual_col.lower()).ratio()
                 if ratio > best_ratio:
+                    # Safety: reject if the only difference is a time/month word
+                    missing_words = set(missing_col.lower().replace('_', ' ').split())
+                    actual_words = set(actual_col.lower().replace('_', ' ').split())
+                    diff_words = missing_words.symmetric_difference(actual_words)
+                    if diff_words & _time_words:
+                        logger.warning("Rejected fuzzy match '%s' -> '%s': time-word mismatch (%s)",
+                                     missing_col, actual_col, diff_words & _time_words)
+                        continue
                     best_ratio = ratio
                     best_match = actual_col
 
             if best_match:
-                print(f"    [Healer] Fuzzy matched '{missing_col}' to '{best_match}' ({best_ratio:.0%})")
+                logger.info("Fuzzy matched '%s' to '%s' (%s)", missing_col, best_match, f"{best_ratio:.0%}")
                 return self._replace_column_in_sql(sql, missing_col, best_match)
 
         # Try getting columns from database directly
@@ -311,8 +367,8 @@ class QueryHealer:
                     if actual_col.lower() == missing_col.lower():
                         return self._replace_column_in_sql(sql, missing_col, actual_col)
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not query schema for table '%s': %s", table_name, e)
 
         return None
 
@@ -399,8 +455,8 @@ class QueryHealer:
         try:
             db_tables = self.db.list_tables()
             all_tables = list(set(all_tables + db_tables))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not list DB tables for healing: %s", e)
 
         # Try case-insensitive match
         for actual_table in all_tables:
@@ -424,7 +480,7 @@ class QueryHealer:
                 best_overlap = overlap
                 best_match = actual_table
 
-        if best_match and best_overlap >= len(table_words) * 0.5:
+        if best_match and best_overlap >= len(table_words) * get_healing_config().table_overlap_ratio:
             return sql.replace(f'"{table_name}"', f'"{best_match}"')
 
         return None
@@ -494,9 +550,17 @@ class QueryHealer:
 
         return sql.replace(old_pattern, new_pattern)
 
-    def _relax_filters(self, sql: str, plan: Dict[str, Any]) -> str:
+    def _relax_filters_safe(self, sql: str, plan: Dict[str, Any]) -> str:
         """
-        Relax filters progressively to get more results.
+        Safely widen search patterns WITHOUT removing any filters.
+
+        NEVER removes filters — that changes query semantics and can return
+        wrong data (e.g., removing "Mumbai" filter returns national data).
+
+        Only applies safe transformations:
+        1. Increase LIMIT
+        2. Widen LIKE patterns (add % wildcards)
+        3. Convert exact text matches to LIKE
         """
         modified = sql
 
@@ -510,16 +574,11 @@ class QueryHealer:
 
         # Strategy 2: Make LIKE patterns more generous
         # e.g., LIKE 'Dairy' -> LIKE '%Dairy%'
-        # Fixed pattern to handle single characters and edge cases
-        # Match LIKE with a value that doesn't already have % at both ends
         like_pattern = r"LIKE\s+'(?!%)([^']+)(?<!%)'"
         modified = re.sub(like_pattern, r"LIKE '%\1%'", modified, flags=re.IGNORECASE)
 
         # Strategy 3: Convert exact matches to LIKE for text columns
-        # e.g., = 'Chennai' -> LIKE '%Chennai%'
-        # Only do this if there are filters in the plan
         if plan.get('filters') or plan.get('subset_filters'):
-            # Get text columns from profile
             table_name = plan.get('table')
             profile = self.profile_store.get_profile(table_name) if table_name else None
 
@@ -528,27 +587,47 @@ class QueryHealer:
                                if info.get('role') in ['dimension', 'identifier']]
 
                 for col in text_columns:
-                    # Pattern: "Column" = 'value'
                     pattern = rf'"{re.escape(col)}"\s*=\s*\'([^\']+)\''
                     replacement = rf'"{col}" LIKE \'%\1%\''
                     modified = re.sub(pattern, replacement, modified)
 
-        if modified != sql:
-            return modified
+        # Strategy 4: Space normalization for filter values
+        # "Tamilnadu" should match "Tamil Nadu" in the data
+        if plan.get('filters') or plan.get('subset_filters'):
+            table_name = plan.get('table')
+            if table_name:
+                try:
+                    # Find all string comparisons in SQL
+                    value_pattern = r'"([^"]+)"\s*(?:=|LIKE)\s*\'([^\']+)\''
+                    for match in re.finditer(value_pattern, modified, re.IGNORECASE):
+                        col_name = match.group(1)
+                        missing_val = match.group(2).replace('%', '')  # Strip LIKE wildcards
+                        if not missing_val:
+                            continue
+                        # Query actual unique values for this column
+                        try:
+                            val_sql = f'SELECT DISTINCT "{col_name}" FROM "{table_name}" WHERE "{col_name}" IS NOT NULL LIMIT 500'
+                            val_result = self.db.query(val_sql)
+                            actual_values = [str(v) for v in val_result[col_name].tolist()] if col_name in val_result.columns else []
+                        except Exception:
+                            continue
 
-        # Strategy 4: Remove one filter at a time
-        # This is aggressive - only do if other strategies didn't help
-        filters = plan.get('filters', []) + plan.get('subset_filters', [])
-        if len(filters) > 1:
-            # Remove the last filter from WHERE clause
-            where_match = re.search(r'WHERE\s+(.+?)(?=\s+(?:GROUP|ORDER|LIMIT|$))', sql, re.IGNORECASE | re.DOTALL)
-            if where_match:
-                where_clause = where_match.group(1)
-                # Split by AND and remove last condition
-                conditions = re.split(r'\s+AND\s+', where_clause, flags=re.IGNORECASE)
-                if len(conditions) > 1:
-                    new_where = ' AND '.join(conditions[:-1])
-                    modified = sql.replace(where_clause, new_where)
+                        # Space normalization: "Tamilnadu" should match "Tamil Nadu"
+                        normalized_missing = missing_val.replace(' ', '').lower()
+                        for actual_val in actual_values:
+                            if actual_val.replace(' ', '').lower() == normalized_missing:
+                                # Found match - replace in SQL
+                                old_fragment = match.group(0)
+                                new_fragment = f'"{col_name}" = \'{actual_val}\''
+                                modified = modified.replace(old_fragment, new_fragment, 1)
+                                logger.info("Space-normalized filter: '%s' -> '%s'", missing_val, actual_val)
+                                break
+                except Exception as e:
+                    logger.debug("Space normalization failed: %s", e)
+
+        # NOTE: We intentionally do NOT remove filters.
+        # If no safe relaxation helps, return unchanged SQL — the caller
+        # will return "no data found" which is the correct answer.
 
         return modified
 

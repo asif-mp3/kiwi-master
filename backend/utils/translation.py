@@ -2,17 +2,13 @@
 Translation utilities using Gemini Flash for Tamil <-> English translation.
 """
 
-import os
 import time
-import google.generativeai as genai
+from google.genai import types
 from typing import Optional
+from utils.logger import get_logger
+from utils.config_loader import get_llm_config, get_genai_client
 
-# Configure Gemini - try both env var names for compatibility (strip whitespace from HF Spaces)
-api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-if api_key:
-    genai.configure(api_key=api_key)
-
-model = genai.GenerativeModel('gemini-2.0-flash')  # Fast model for low-latency translation
+logger = get_logger("translation")
 
 
 def translate_to_english(text: str) -> str:
@@ -21,8 +17,10 @@ def translate_to_english(text: str) -> str:
     """
     try:
         start = time.time()
-        response = model.generate_content(
-            f"""Translate the following Tamil query to English strictly for data analysis.
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model=get_llm_config().model,
+            contents=f"""Translate the following Tamil query to English strictly for data analysis.
 
 CRITICAL RULES:
 1. **Business terminology** (DO NOT confuse these!):
@@ -66,10 +64,10 @@ Text: {text}"""
         )
         english_text = response.text.strip()
         elapsed = (time.time() - start) * 1000
-        print(f"[TRANSLATE] Translation (Tamil -> English): {text} -> {english_text} [{elapsed:.0f}ms]")
+        logger.info("Translation (Tamil -> English): %s -> %s [%dms]", text, english_text, elapsed)
         return english_text
     except Exception as e:
-        print(f"[NO] Translation Error (to English): {e}")
+        logger.error("Translation Error (to English): %s", e)
         return text  # Fallback to original
 
 
@@ -79,13 +77,15 @@ def translate_to_tamil(text: str) -> str:
     """
     try:
         start = time.time()
-        response = model.generate_content(
-            f"Translate to Tamil. STRICT RULE: Convert ALL numbers to Tamil words (e.g. 6450 -> ஆறாயிரத்து நானூற்று ஐம்பது). NO DIGITS ALLOWED.\n\nText: {text}"
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model=get_llm_config().model,
+            contents=f"Translate to Tamil. STRICT RULE: Convert ALL numbers to Tamil words (e.g. 6450 -> ஆறாயிரத்து நானூற்று ஐம்பது). NO DIGITS ALLOWED.\n\nText: {text}",
         )
         tamil_text = response.text.strip()
         elapsed = (time.time() - start) * 1000
-        print(f"[TRANSLATE] Translation (English -> Tamil): {text} -> {tamil_text} [{elapsed:.0f}ms]")
+        logger.info("Translation (English -> Tamil): %s -> %s [%dms]", text, tamil_text, elapsed)
         return tamil_text
     except Exception as e:
-        print(f"[NO] Translation Error (to Tamil): {e}")
+        logger.error("Translation Error (to Tamil): %s", e)
         return text  # Fallback to original

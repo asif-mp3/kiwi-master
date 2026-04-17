@@ -16,6 +16,9 @@ import hashlib
 import threading
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+from utils.logger import get_logger
+
+logger = get_logger("tts_cache")
 
 
 class TTSCache:
@@ -171,7 +174,7 @@ class TTSCache:
 
                 return True
             except OSError as e:
-                print(f"TTS cache write error: {e}")
+                logger.error("TTS cache write error: %s", e)
                 return False
 
     def _remove_entry(self, cache_key: str) -> None:

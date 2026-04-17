@@ -1,6 +1,9 @@
 import re
 import pandas as pd
 from datetime import datetime
+from utils.logger import get_logger
+
+logger = get_logger("gsheet.wide_format_transformer")
 
 
 def is_date_column(column_name: str) -> bool:
@@ -86,7 +89,7 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     is_wide, date_columns = detect_wide_format(df)
     
     if not is_wide:
-        print(f"   [WARN]  {table_name}: Not in wide format, skipping unpivot")
+        logger.warning("%s: Not in wide format, skipping unpivot", table_name)
         return None
     
     # Check if date columns contain numeric data (hours/attendance)
@@ -100,7 +103,7 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     # If most values are strings, skip unpivoting
     string_count = sum(1 for v in sample_values if isinstance(v, str))
     if string_count > len(sample_values) * 0.5:
-        print(f"   [WARN]  {table_name}: Date columns contain strings, skipping unpivot")
+        logger.warning("%s: Date columns contain strings, skipping unpivot", table_name)
         return None
     
     # Identify metadata columns (non-date columns)
@@ -146,13 +149,13 @@ def unpivot_wide_format(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
             records.append(record)
     
     if not records:
-        print(f"   [WARN]  {table_name}: No valid records after unpivoting, skipping")
+        logger.warning("%s: No valid records after unpivoting, skipping", table_name)
         return None
     
     long_df = pd.DataFrame(records)
     
-    print(f"   [OK] Unpivoted {table_name}: {len(df)} rows -> {len(long_df)} rows")
-    print(f"     Metadata columns: {metadata_columns}")
-    print(f"     Date range: {min(date_columns)} to {max(date_columns)}")
+    logger.info("Unpivoted %s: %d rows -> %d rows", table_name, len(df), len(long_df))
+    logger.debug("  Metadata columns: %s", metadata_columns)
+    logger.debug("  Date range: %s to %s", min(date_columns), max(date_columns))
     
     return long_df

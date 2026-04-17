@@ -13,45 +13,35 @@ Key advantages:
 
 import os
 import json
-import threading
+from google.genai import types
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
+from utils.logger import get_logger
+from utils.config_loader import get_genai_client
+
+logger = get_logger("llm_selector")
 
 # Load environment variables
 load_dotenv()
 
 
-# ============================================
-# BACKWARD-COMPATIBLE MODEL WRAPPER
-# Works with google-generativeai 0.3.x (no system_instruction)
-# ============================================
-class CompatibleGenerativeModel:
-    """
-    Wrapper for GenerativeModel that supports system prompts
-    on older versions of google-generativeai (< 0.4.0).
-    """
-    def __init__(self, model, system_prompt: str):
-        self._model = model
-        self._system_prompt = system_prompt
+TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job is to analyze a user's question and select the BEST table from the available tables to answer it — OR determine that the question is conversational (not about data).
 
-    def generate_content(self, prompt, **kwargs):
-        """Prepend system prompt to user message."""
-        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
-        return self._model.generate_content(full_prompt, **kwargs)
+## CRITICAL: Conversational Detection (Check FIRST)
 
-    def __getattr__(self, name):
-        """Forward other attributes to underlying model."""
-        return getattr(self._model, name)
+**RULE #0: If the question is NOT about data, return selected_table=null and is_conversational=true**
 
+Conversational queries include:
+- Greetings: "hi", "hello", "vanakkam", "hey thara", "epdi iruka", "how are you"
+- Casual Tamil/Tanglish: "podi", "ennadi panra", "jolly ah iruka pola", "seri da", "nalla irukkiya"
+- Off-topic: jokes, weather, philosophy, emotional expressions, compliments, gratitude
+- Mic checks: "testing 1 2 3", "can you hear me", "hello hello"
+- About the assistant: "who are you", "what can you do", "your name"
+- Random gibberish or words with no data meaning
 
-# Singleton model for table selection (separate from planner)
-_selector_model = None
-_selector_model_lock = threading.Lock()
+**How to decide**: If the question has NO data intent — no metrics, no table references, no filters, no comparisons, no trends, no aggregations — it is conversational. Set `selected_table: null`, `confidence: 0.0`, `is_conversational: true`.
 
-
-TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job is to analyze a user's question and select the BEST table from the available tables to answer it.
-
-## How to Select the Right Table
+## How to Select the Right Table (only if NOT conversational)
 
 1. **Understand the Question Intent**:
    - What is the user asking for? (count, percentage, comparison, list, lookup)
@@ -81,7 +71,7 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    **RULE #2: For queries with TIME FILTERS, ALWAYS use TRANSACTIONAL tables with Date column**
    - Keywords: "last month", "last 3 months", "yesterday", "this week", "November", "October", etc.
    - Summary tables (10-50 rows) have PRE-AGGREGATED data - they CANNOT be filtered by date!
-   - Example: "category-wise sales for last 3 months" -> MUST use Daily_Sales_Transactions (has Date column)
+   - Example: "category-wise sales for last 3 months" -> MUST use the transactional table with Date column
    - Example: "sales in November" -> MUST use table with Date column, NOT a summary table
    - If question mentions ANY time period, use the HIGH ROW COUNT table with Date column
    - A Monthly_Category_Summary table shows ALL-TIME data, not filterable by date
@@ -102,7 +92,7 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
 7. **CRITICAL: COMPARISON Queries**:
    **RULE #4: For "compare X vs Y", "X versus Y", "which is better" - Use SUMMARY tables with pre-aggregated data**
    - When comparing two states (TN vs KA): Use State_Performance or State summary table
-   - When comparing two categories (Sarees vs Dhoti): Use Category_Performance table
+   - When comparing two categories (Category_A vs Category_B): Use Category_Performance table
    - When comparing two payment modes (UPI vs Cash): Use Payment_Mode_Analysis table
    - When comparing two time periods (Q3 vs Q4): Use the table with those periods pre-aggregated
    - **DO NOT use transaction tables for comparisons** - they require aggregation
@@ -112,17 +102,17 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
    **RULE #5: For "percentage", "share", "contribution", "% of" - Match the dimension being asked**
    - Payment mode question (UPI, Cash, Card, Online) -> Use table with "Payment" in name
    - State question (Tamil Nadu, Karnataka) -> Use table with "State" in name
-   - Category question (Sarees, Dhoti) -> Use table with "Category" in name
+   - Category question (product categories from data) -> Use table with "Category" in name
    - **MATCHING RULE**: The table name MUST contain the dimension being asked about:
      - "UPI share" = payment dimension = find table with "Payment_Mode" in name
-     - "Tamil Nadu percentage" = state dimension = find table with "State" in name
-     - "Sarees contribution" = category dimension = find table with "Category" in name
+     - "[State] percentage" = state dimension = find table with "State" in name
+     - "[Category] contribution" = category dimension = find table with "Category" in name
    - **DO NOT use State table for payment questions or vice versa!**
 
 9. **FILTER Queries (show data for X)**:
    **RULE #6: For "sales in X", "show X transactions", "data for X" - Use TRANSACTION tables**
    - These queries need to filter raw data, so use the HIGH ROW COUNT table
-   - "Sales in Tamil Nadu" -> Use Daily_Transactions (can filter by State column)
+   - "Sales in [location]" -> Use the transactional table (can filter by State/Location column)
    - "UPI transactions" -> Use Daily_Transactions (can filter by Payment_Mode column)
    - **DO NOT use summary tables for filter queries** - they have pre-aggregated data
 
@@ -138,51 +128,33 @@ TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job i
 ## Output Format
 Return JSON with these fields:
 {
-  "selected_table": "exact_table_name",
+  "selected_table": "exact_table_name or null",
   "confidence": 0.0-1.0,
-  "reason": "why this table is best for this question",
+  "is_conversational": false,
+  "reason": "why this table is best OR why this is conversational",
   "alternative": "second_best_table or null"
 }
+
+- If the question is conversational (Rule #0): set selected_table=null, confidence=0.0, is_conversational=true
+- If the question is about data: set is_conversational=false and pick the best table
 
 IMPORTANT: Output ONLY valid JSON, no other text."""
 
 
-def get_selector_model():
-    """
-    Get or create singleton Gemini model for table selection.
-    Uses a fast model (gemini-2.0-flash) for low latency.
-    """
-    global _selector_model
-
-    if _selector_model is not None:
-        return _selector_model
-
-    with _selector_model_lock:
-        if _selector_model is not None:
-            return _selector_model
-
-        import google.generativeai as genai
-
-        api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY not found in environment")
-
-        genai.configure(api_key=api_key)
-
-        # Create base model without system_instruction (for compatibility with 0.3.x)
-        base_model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            generation_config={
-                "temperature": 0.0,  # Deterministic
-                "response_mime_type": "application/json",
-                "max_output_tokens": 500,
-            },
-        )
-
-        # Wrap with our compatible model that handles system prompts
-        _selector_model = CompatibleGenerativeModel(base_model, TABLE_SELECTOR_PROMPT)
-
-        return _selector_model
+def _call_selector(prompt: str):
+    """Call Gemini for table selection with system instruction."""
+    from utils.config_loader import get_llm_config
+    client = get_genai_client()
+    return client.models.generate_content(
+        model=get_llm_config().model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=TABLE_SELECTOR_PROMPT,
+            temperature=0.0,
+            response_mime_type="application/json",
+            max_output_tokens=500,
+        ),
+    )
 
 
 def build_rich_table_context(profiles: Dict[str, Dict]) -> str:
@@ -301,19 +273,14 @@ def select_table_with_llm(
     import time
 
     if verbose:
-        print("\n" + "="*60)
-        print("[LLM] TABLE SELECTOR")
-        print("="*60)
-        print(f"Question: {question}")
-        print(f"\nTables provided to LLM:")
+        logger.info("LLM TABLE SELECTOR — Question: %s", question)
         # Show summary of tables
         for line in table_context.split('\n'):
             if line.startswith('## '):
-                print(f"   {line[3:]}")
+                logger.info("  Table: %s", line[3:])
 
     try:
         start_time = time.time()
-        model = get_selector_model()
 
         prompt = f"""# Question
 {question}
@@ -329,16 +296,16 @@ Analyze the question and select the BEST table to answer it. Consider:
 Output JSON only."""
 
         if verbose:
-            print(f"\n... Calling LLM...")
+            logger.debug("Calling LLM for table selection...")
 
         # Call with timeout
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(model.generate_content, prompt)
+            future = executor.submit(_call_selector, prompt)
             try:
                 response = future.result(timeout=timeout_seconds)
             except concurrent.futures.TimeoutError:
                 if verbose:
-                    print(f"[NO] LLM TIMEOUT after {timeout_seconds}s")
+                    logger.warning("LLM TIMEOUT after %ss", timeout_seconds)
                 return {
                     "selected_table": None,
                     "confidence": 0.0,
@@ -360,22 +327,26 @@ Output JSON only."""
                 response_text = response_text[4:].strip()
 
         result = json.loads(response_text)
+        result.setdefault('is_conversational', False)
 
         if verbose:
-            print(f"[YES] LLM responded in {elapsed:.2f}s")
-            print(f"\n[RESULT] LLM DECISION:")
-            print(f"   Table: {result.get('selected_table')}")
-            print(f"   Confidence: {result.get('confidence', 0):.0%}")
-            print(f"   Reason: {result.get('reason', 'N/A')}")
-            if result.get('alternative'):
-                print(f"   Alternative: {result.get('alternative')}")
-            print("="*60)
+            logger.info("LLM responded in %.2fs", elapsed)
+            if result.get('is_conversational'):
+                logger.info("LLM DECISION — CONVERSATIONAL (no data intent). Reason: %s",
+                             result.get('reason', 'N/A'))
+            else:
+                logger.info("LLM DECISION — Table: %s, Confidence: %.0f%%, Reason: %s",
+                             result.get('selected_table'),
+                             result.get('confidence', 0) * 100,
+                             result.get('reason', 'N/A'))
+                if result.get('alternative'):
+                    logger.debug("Alternative table: %s", result.get('alternative'))
 
         return result
 
     except Exception as e:
         if verbose:
-            print(f"[NO] LLM ERROR: {str(e)}")
+            logger.error("LLM table selection error: %s", e)
         return {
             "selected_table": None,
             "confidence": 0.0,
@@ -413,10 +384,10 @@ def select_table_hybrid(
         return (None, 0.0, "No tables available")
 
     if verbose:
-        print(f"\n[DATA] Available Tables ({len(profiles)}):")
+        logger.info("Available Tables (%d):", len(profiles))
         for name, prof in profiles.items():
             row_count = prof.get('row_count', 0)
-            print(f"   • {name} ({row_count} rows)")
+            logger.debug("  %s (%d rows)", name, row_count)
 
     # Build rich context for LLM
     table_context = build_rich_table_context(profiles)
@@ -445,7 +416,7 @@ def select_table_hybrid(
                     )
 
             if verbose:
-                print(f"[WARN]  LLM selected '{selected}' but table not found in profiles")
+                logger.warning("LLM selected '%s' but table not found in profiles", selected)
 
     # Fallback: use semantic similarity scoring based on question keywords
     if profiles:
@@ -461,7 +432,7 @@ def select_table_hybrid(
             reverse=True
         )
         if verbose:
-            print(f"[WARN]  Fallback: using largest table {sorted_tables[0][0]}")
+            logger.warning("Fallback: using largest table %s", sorted_tables[0][0])
         return (sorted_tables[0][0], 0.3, "Fallback: largest table")
 
     return (None, 0.0, "No tables available")
@@ -559,8 +530,8 @@ def _semantic_fallback_selection(
     table_scores.sort(key=lambda x: x[1], reverse=True)
 
     if verbose:
-        print(f"[DATA] Semantic fallback scores:")
+        logger.info("Semantic fallback scores:")
         for t, s in table_scores[:3]:
-            print(f"   • {t}: {s}")
+            logger.debug("  %s: %d", t, s)
 
     return table_scores[0]

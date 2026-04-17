@@ -4,6 +4,9 @@ from jsonschema import validate, ValidationError
 from analytics_engine.metric_registry import MetricRegistry
 from analytics_engine.duckdb_manager import DuckDBManager
 from utils.sql_utils import quote_identifier
+from utils.logger import get_logger
+
+logger = get_logger("plan_validator")
 
 
 def normalize_date_format_in_value(value: str) -> str:
@@ -114,7 +117,7 @@ def normalize_date_formats_in_plan(plan: dict) -> dict:
             original = filter_item["value"]
             normalized = normalize_date_format_in_value(original)
             if original != normalized:
-                print(f"  [Validator] Normalized date format: '{original}' -> '{normalized}'")
+                logger.info("Normalized date format: '%s' -> '%s'", original, normalized)
                 filter_item["value"] = normalized
 
     # Normalize subset_filters
@@ -123,7 +126,7 @@ def normalize_date_formats_in_plan(plan: dict) -> dict:
             original = filter_item["value"]
             normalized = normalize_date_format_in_value(original)
             if original != normalized:
-                print(f"  [Validator] Normalized date format: '{original}' -> '{normalized}'")
+                logger.info("Normalized date format: '%s' -> '%s'", original, normalized)
                 filter_item["value"] = normalized
 
     return plan
@@ -195,7 +198,7 @@ def normalize_text_filters_to_like(plan: dict, table_name: str) -> dict:
                 old_val = f['value']
                 f['operator'] = 'LIKE'
                 f['value'] = f'%{value}%'
-                print(f"  [Validator] Converted text filter to LIKE: {column} {old_op} '{old_val}' -> {column} LIKE '{f['value']}'")
+                logger.info("Converted text filter to LIKE: %s %s '%s' -> %s LIKE '%s'", column, old_op, old_val, column, f['value'])
 
     # Process main filters
     if plan.get('filters'):
@@ -221,7 +224,7 @@ def normalize_text_filters_to_like(plan: dict, table_name: str) -> dict:
                     if should_use_like(column, col_type, operator, value):
                         f['operator'] = 'LIKE'
                         f['value'] = f'%{value}%'
-                        print(f"  [Validator] Converted {period_key} filter to LIKE: {column} LIKE '%{value}%'")
+                        logger.info("Converted %s filter to LIKE: %s LIKE '%%%s%%'", period_key, column, value)
             except (KeyError, ValueError, RuntimeError):
                 pass  # Skip if can't get schema
 
@@ -378,7 +381,7 @@ def replace_sku_columns_with_alternatives(plan: dict, table_name: str) -> dict:
         available_columns = list(table_schema.keys())
         available_lower = {col.lower(): col for col in available_columns}
     except Exception as e:
-        print(f"  [Validator] Could not get schema for SKU replacement: {e}")
+        logger.warning("Could not get schema for SKU replacement: %s", e)
         return plan
 
     new_group_by = []
@@ -399,12 +402,12 @@ def replace_sku_columns_with_alternatives(plan: dict, table_name: str) -> dict:
                     break
 
             if replacement:
-                print(f"  [Validator] Replacing SKU column '{col}' with '{replacement}' for better readability")
+                logger.info("Replacing SKU column '%s' with '%s' for better readability", col, replacement)
                 new_group_by.append(replacement)
                 replaced_any = True
             else:
                 # No alternative found, keep the SKU column but warn
-                print(f"  [Validator] WARNING: Using SKU column '{col}' - no readable alternative found")
+                logger.warning("Using SKU column '%s' - no readable alternative found", col)
                 new_group_by.append(col)
         else:
             new_group_by.append(col)
@@ -545,7 +548,7 @@ def validate_metric_table_mapping(metrics: list, table_name: str, plan: dict = N
 
         # FOURTH: Not found anywhere - be lenient and use wildcard instead of erroring
         # This prevents query failures for vague questions like "are we meeting our targets?"
-        print(f"  [Validator] Warning: Metric '{metric}' not found, using all columns instead")
+        logger.warning("Metric '%s' not found, using all columns instead", metric)
         columns_to_add.append("*")
         continue
 
@@ -803,7 +806,7 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
         # This prevents SQL compiler from trying to look up non-existent metrics
         if not corrected_metrics and plan.get("select_columns"):
             plan["query_type"] = "list"
-            print(f"  [Validator] Converted 'metric' to 'list' (metrics were column names)")
+            logger.info("Converted 'metric' to 'list' (metrics were column names)")
     
     elif query_type == "lookup":
         # Lookup queries cannot use metrics - move to select_columns if present
@@ -815,16 +818,16 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
                     select_cols.append(m)
             plan["select_columns"] = select_cols
             plan["metrics"] = []
-            print(f"  [Validator] Moved metrics to select_columns for lookup query")
+            logger.info("Moved metrics to select_columns for lookup query")
 
         # Auto-fix: Set LIMIT 1 for lookup queries
         if plan.get("limit") != 1:
             plan["limit"] = 1
-            print(f"  [Validator] Auto-set limit=1 for lookup query")
+            logger.info("Auto-set limit=1 for lookup query")
 
         # Must have filters - if not, try to use "*" as wildcard
         if not plan.get("filters"):
-            print(f"  [Validator] Warning: Lookup query without filters, may return first row")
+            logger.warning("Lookup query without filters, may return first row")
     
     elif query_type == "filter":
         # Filter queries cannot use metrics
@@ -834,7 +837,7 @@ def validate_plan(plan: dict, schema_path="planning_layer/plan_schema.json"):
         # Must have filters - if missing, convert to 'list' query as fallback
         # This handles complex queries like "employees above average" that can't be expressed as filters
         if not plan.get("filters"):
-            print(f"  [Validator] Warning: Filter query without filters - converting to 'list' query")
+            logger.warning("Filter query without filters - converting to 'list' query")
             plan["query_type"] = "list"
             # Continue validation as list query (no special requirements)
     

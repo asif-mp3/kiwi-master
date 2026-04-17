@@ -18,6 +18,10 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 import pandas as pd
 
+from utils.logger import get_logger
+
+logger = get_logger("sync_manager")
+
 from data_sources.connector_factory import ConnectorFactory
 from data_sources.source_registry import (
     SourceRegistry, SourceState, TableStats,
@@ -168,7 +172,7 @@ class SyncManager:
         # Check if already registered
         existing = self.registry.get(source_id)
         if existing:
-            print(f"[SyncManager] Source already registered: {source_id}")
+            logger.info("Source already registered: %s", source_id)
             return existing
 
         # Detect connector type
@@ -194,7 +198,7 @@ class SyncManager:
         # Register with registry
         self.registry.create(state)
 
-        print(f"[SyncManager] Registered source: {source_id} ({connector_type})")
+        logger.info("Registered source: %s (%s)", source_id, connector_type)
         return state
 
     def unregister_source(self, source_id: str) -> bool:
@@ -253,11 +257,11 @@ class SyncManager:
             connector = ConnectorFactory.create(source.url)
 
             # Fetch new data
-            print(f"[SyncManager] Fetching data for {source_id}...")
+            logger.info("Fetching data for %s...", source_id)
             tables = connector.fetch_tables()
 
             if not tables:
-                print(f"[SyncManager] No tables returned for {source_id}")
+                logger.info("No tables returned for %s", source_id)
                 self.registry.mark_success(source_id, "", 0, 0)
                 return SyncResult(
                     source_id=source_id,
@@ -271,7 +275,7 @@ class SyncManager:
 
             # Check if changed
             if not force and new_hash == source.last_hash:
-                print(f"[SyncManager] No changes detected for {source_id}")
+                logger.info("No changes detected for %s", source_id)
                 return SyncResult(
                     source_id=source_id,
                     changed=False,
@@ -302,7 +306,7 @@ class SyncManager:
             )
 
             duration_ms = int((time.time() - start_time) * 1000)
-            print(f"[SyncManager] Sync complete for {source_id}: {len(table_stats)} tables, {total_rows} rows ({duration_ms}ms)")
+            logger.info("Sync complete for %s: %d tables, %d rows (%dms)", source_id, len(table_stats), total_rows, duration_ms)
 
             return SyncResult(
                 source_id=source_id,
@@ -319,7 +323,7 @@ class SyncManager:
             self.registry.mark_error(source_id, error_msg)
 
             duration_ms = int((time.time() - start_time) * 1000)
-            print(f"[SyncManager] Sync failed for {source_id}: {error_msg}")
+            logger.error("Sync failed for %s: %s", source_id, error_msg)
 
             return SyncResult(
                 source_id=source_id,
@@ -355,10 +359,10 @@ class SyncManager:
             # This handles the DuckDB loading
             load_snapshot(flat_tables, source_id=source_id)
 
-            print(f"[SyncManager] Loaded {len(flat_tables)} tables to DuckDB")
+            logger.info("Loaded %d tables to DuckDB", len(flat_tables))
 
         except Exception as e:
-            print(f"[SyncManager] Error loading to DuckDB: {e}")
+            logger.error("Error loading to DuckDB: %s", e)
             raise
 
     def sync_all(self, force: bool = False) -> List[SyncResult]:
@@ -374,7 +378,7 @@ class SyncManager:
         results = []
         sources = self.registry.get_all()
 
-        print(f"[SyncManager] Syncing {len(sources)} sources...")
+        logger.info("Syncing %d sources...", len(sources))
 
         for source in sources:
             result = self.sync_source(source.source_id, force=force)
@@ -393,7 +397,7 @@ class SyncManager:
         due_sources = self.registry.get_sources_due_for_sync()
 
         if due_sources:
-            print(f"[SyncManager] {len(due_sources)} sources due for sync")
+            logger.info("%d sources due for sync", len(due_sources))
 
             for source in due_sources:
                 result = self.sync_source(source.source_id)

@@ -333,15 +333,16 @@ function AddSourceDialog({
     try {
       let result;
 
+      // Always replace — manual source addition replaces existing data
+      const shouldAppend = false;
+
       if (mode === 'upload' && selectedFile) {
-        // Upload local file (replace existing data)
-        result = await api.uploadFile(selectedFile, false);
+        result = await api.uploadFile(selectedFile, shouldAppend);
       } else if (mode === 'url' && url.trim() && detectedType) {
-        // Route to appropriate API based on source type (replace existing data)
         if (detectedType === 'google_drive_folder') {
-          result = await api.syncDriveFolder(url.trim(), false);
+          result = await api.syncDriveFolder(url.trim(), shouldAppend);
         } else {
-          result = await api.loadSource(url.trim(), false);
+          result = await api.loadSource(url.trim(), shouldAppend);
         }
       } else {
         setError('Please provide a URL or select a file');
@@ -362,9 +363,8 @@ function AddSourceDialog({
       } else {
         setError(result.error || 'Failed to connect to data source');
       }
-    } catch (e: any) {
-      console.error('Connect error:', e);
-      setError(e.message || 'Failed to connect to data source');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to connect to data source');
     } finally {
       setIsLoading(false);
     }
@@ -637,9 +637,10 @@ export function DataSourcesPanel({ isOpen, onClose, onAddSource, onRefresh }: Da
   };
 
   const handleAddSuccess = () => {
-    setShowAddDialog(false);
-    fetchSources();
+    // Trigger parent data refresh FIRST so popover updates immediately
     onRefresh?.();
+    fetchSources();
+    setShowAddDialog(false);
   };
 
   useEffect(() => {

@@ -18,6 +18,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("excel_connector")
 
 
 class ExcelConnector(BaseConnector):
@@ -105,7 +108,7 @@ class ExcelConnector(BaseConnector):
                 return self._load_from_file()
 
         except Exception as e:
-            print(f"[ExcelConnector] Error loading Excel: {e}")
+            logger.error("Error loading Excel: %s", e)
             raise ValueError(f"Failed to load Excel file: {e}")
 
     def _load_from_url(self) -> Dict[str, pd.DataFrame]:
@@ -165,10 +168,10 @@ class ExcelConnector(BaseConnector):
                         continue
 
                     sheets[sheet_name] = df
-                    print(f"[ExcelConnector] Loaded sheet '{sheet_name}' with {len(df)} rows")
+                    logger.info("Loaded sheet '%s' with %d rows", sheet_name, len(df))
 
                 except Exception as e:
-                    print(f"[ExcelConnector] Error reading sheet '{sheet_name}': {e}")
+                    logger.error("Error reading sheet '%s': %s", sheet_name, e)
                     continue
 
             return sheets

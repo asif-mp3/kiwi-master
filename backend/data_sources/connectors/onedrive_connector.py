@@ -23,6 +23,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("onedrive_connector")
 
 # Try to import MSAL for authentication, make it optional
 try:
@@ -149,7 +152,7 @@ class OneDriveConnector(BaseConnector):
             direct_url = self._resolve_share_link()
             return self._fetch_from_url(direct_url)
         except Exception as e:
-            print(f"[OneDriveConnector] Shared link resolution failed: {e}")
+            logger.warning("Shared link resolution failed: %s", e)
 
             # Fall back to Graph API if credentials available
             if self.access_token or (self.client_id and self.client_secret):
@@ -164,38 +167,83 @@ class OneDriveConnector(BaseConnector):
         """
         Resolve OneDrive shared link to direct download URL.
 
-        OneDrive uses base64-encoded sharing tokens that can be converted
-        to direct download URLs.
+        Uses the OneDrive sharing API which works without authentication
+        for 'Anyone with the link' shares. The technique:
+        1. Base64url-encode the original sharing URL
+        2. Call the OneDrive API shares endpoint to get download URL
         """
-        url = self.url
+        import base64
 
-        # Handle 1drv.ms short links - follow redirects
+        original_url = self.url
+
+        # First try the OneDrive sharing API (works for public shares without auth)
+        try:
+            download_url = self._resolve_via_sharing_api(original_url)
+            if download_url:
+                return download_url
+        except Exception as e:
+            logger.warning("Sharing API resolution failed: %s", e)
+
+        # Handle 1drv.ms short links - follow redirects to get the full URL
+        url = original_url
         if '1drv.ms' in url:
             try:
-                response = requests.head(
-                    url,
-                    allow_redirects=True,
-                    timeout=10
-                )
+                response = requests.head(url, allow_redirects=True, timeout=10)
                 url = response.url
-                print(f"[OneDriveConnector] Resolved short URL to: {url}")
+                logger.info("Resolved short URL to: %s", url)
             except Exception as e:
-                print(f"[OneDriveConnector] Warning: Could not resolve short URL: {e}")
+                logger.warning("Could not resolve short URL: %s", e)
 
-        # Try to convert to download URL
+        # Try to convert the resolved URL to a download URL
         download_url = self._convert_to_download_url(url)
 
         return download_url
 
-    def _convert_to_download_url(self, url: str) -> str:
+    def _resolve_via_sharing_api(self, share_url: str) -> Optional[str]:
         """
-        Convert OneDrive/SharePoint URL to direct download URL.
+        Use the OneDrive sharing API to resolve a share link to a download URL.
+        Works without authentication for 'Anyone with the link' shares.
 
-        The technique involves encoding the share URL in base64 and
-        using the Graph API sharing endpoint format.
+        API: GET https://api.onedrive.com/v1.0/shares/{shareToken}/root/content
         """
         import base64
 
+        # Encode the share URL to a sharing token
+        # OneDrive format: "u!" + base64url(url) with padding stripped
+        encoded = base64.urlsafe_b64encode(share_url.encode()).decode()
+        sharing_token = "u!" + encoded.rstrip('=')
+
+        api_url = f"https://api.onedrive.com/v1.0/shares/{sharing_token}/root/content"
+        logger.info("Trying OneDrive sharing API: %s", api_url[:80])
+
+        # Request with redirect disabled to capture the download URL
+        response = requests.get(
+            api_url,
+            allow_redirects=False,
+            timeout=15,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+
+        # The API redirects (302) to the actual download URL
+        if response.status_code in (302, 301, 307):
+            download_url = response.headers.get('Location')
+            if download_url:
+                logger.info("OneDrive API resolved to download URL")
+                return download_url
+
+        # If 200, the content was returned directly (small files)
+        if response.status_code == 200:
+            # Return the API URL itself — it serves the content directly
+            return api_url
+
+        logger.warning("OneDrive sharing API returned status %d", response.status_code)
+        return None
+
+    def _convert_to_download_url(self, url: str) -> str:
+        """
+        Convert OneDrive/SharePoint URL to direct download URL.
+        Fallback when the sharing API doesn't work.
+        """
         # Clean up URL
         url = url.strip()
 
@@ -207,8 +255,6 @@ class OneDriveConnector(BaseConnector):
         if 'sharepoint.com' in url:
             parsed = urlparse(url)
             query = parse_qs(parsed.query)
-
-            # Add download parameter
             if 'download' not in query:
                 separator = '&' if parsed.query else '?'
                 return f"{url}{separator}download=1"
@@ -216,82 +262,85 @@ class OneDriveConnector(BaseConnector):
 
         # For OneDrive personal, try to modify the resid parameter
         if 'onedrive.live.com' in url:
-            # Try to extract and modify the share link
             parsed = urlparse(url)
             query = parse_qs(parsed.query)
-
             if 'resid' in query:
                 resid = query['resid'][0]
-                # Construct download URL
                 return f"https://onedrive.live.com/download?resid={resid}"
 
-        # As a fallback, try the sharing token approach
-        # Encode URL to sharing token format
-        try:
-            encoded = base64.b64encode(url.encode()).decode()
-            # OneDrive uses a modified base64 format
-            sharing_token = "u!" + encoded.rstrip('=').replace('/', '_').replace('+', '-')
-
-            # This creates a Graph API compatible sharing URL
-            # But requires authentication for private files
-            return url  # Return original if we can't convert
-
-        except Exception:
-            return url
+        # Return original URL as last resort
+        return url
 
     def _fetch_from_url(self, url: str) -> Dict[str, List[pd.DataFrame]]:
         """
         Fetch file from URL (resolved share link or direct download).
+        Includes retry with exponential backoff for transient failures.
         """
-        print(f"[OneDriveConnector] Fetching from: {url}")
+        import time
+
+        logger.info("Fetching from: %s", url[:120])
+
+        max_retries = 3
+        last_error = None
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=60,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+                break  # Success
+            except requests.RequestException as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = (attempt + 1) * 2  # 2s, 4s
+                    logger.warning("OneDrive download attempt %d failed, retrying in %ds: %s", attempt + 1, wait, e)
+                    time.sleep(wait)
+                else:
+                    raise ValueError(f"Failed to download from OneDrive after {max_retries} attempts: {last_error}")
+
+        if response is None:
+            raise ValueError("Failed to download from OneDrive")
+
+        # Determine file type
+        content_disposition = response.headers.get('Content-Disposition', '')
+        filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?\"?([^";\n]+)\"?', content_disposition)
+
+        if filename_match:
+            filename = unquote(filename_match.group(1))
+        else:
+            # Try from URL
+            parsed = urlparse(response.url)
+            filename = os.path.basename(parsed.path)
+            filename = unquote(filename)
+
+        if not filename or filename == '/':
+            filename = 'download.xlsx'  # Default assumption
+
+        # Detect file type
+        content_type = response.headers.get('Content-Type', '').lower()
+        suffix = self._get_suffix(filename.lower(), content_type)
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(response.content)
+            temp_path = tmp.name
 
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-
-            response = requests.get(
-                url,
-                headers=headers,
-                timeout=60,
-                allow_redirects=True
-            )
-            response.raise_for_status()
-
-            # Determine file type
-            content_disposition = response.headers.get('Content-Disposition', '')
-            filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?\"?([^";\n]+)\"?', content_disposition)
-
-            if filename_match:
-                filename = unquote(filename_match.group(1))
-            else:
-                # Try from URL
-                parsed = urlparse(response.url)
-                filename = os.path.basename(parsed.path)
-                filename = unquote(filename)
-
-            if not filename or filename == '/':
-                filename = 'download.xlsx'  # Default assumption
-
-            # Detect file type
-            content_type = response.headers.get('Content-Type', '').lower()
-            suffix = self._get_suffix(filename.lower(), content_type)
-
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(response.content)
-                temp_path = tmp.name
-
+            return self._process_file(temp_path, filename)
+        finally:
             try:
-                return self._process_file(temp_path, filename)
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-
-        except requests.RequestException as e:
-            raise ValueError(f"Failed to download from OneDrive: {e}")
+                os.unlink(temp_path)
+            except Exception:
+                pass
 
     def _get_suffix(self, filename: str, content_type: str) -> str:
         """Determine file suffix from filename or content type."""
@@ -340,7 +389,7 @@ class OneDriveConnector(BaseConnector):
             try:
                 df = pd.read_csv(file_path, encoding=encoding)
                 source_name = self.get_source_name()
-                print(f"[OneDriveConnector] Loaded CSV: {len(df)} rows")
+                logger.info("Loaded CSV: %d rows", len(df))
                 return self.validate_dataframes({source_name: [df]})
             except UnicodeDecodeError:
                 continue
@@ -357,7 +406,7 @@ class OneDriveConnector(BaseConnector):
                 df = pd.read_excel(excel_file, sheet_name=sheet_name)
                 if not df.empty:
                     result[sheet_name] = [df]
-                    print(f"[OneDriveConnector] Loaded sheet '{sheet_name}': {len(df)} rows")
+                    logger.info("Loaded sheet '%s': %d rows", sheet_name, len(df))
 
             return self.validate_dataframes(result)
 

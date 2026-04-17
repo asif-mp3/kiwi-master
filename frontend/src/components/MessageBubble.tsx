@@ -579,7 +579,8 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
               </div>
               <div className="text-4xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
                 {(() => {
-                  const rawValue = message.metadata.visualization.data?.value;
+                  const metricData = message.metadata.visualization.data as import('@/lib/types').MetricCardData;
+                  const rawValue = metricData?.value;
                   const val = Number(rawValue);
 
                   // Handle NaN or invalid values - show the raw value as text
@@ -588,12 +589,12 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
                   }
 
                   // Percentage display
-                  if (message.metadata.visualization.data?.is_percentage) {
+                  if (metricData?.is_percentage) {
                     return `${val.toFixed(1)}%`;
                   }
 
                   // Check if this is a currency value (explicitly marked or large sales-type number)
-                  const isCurrency = message.metadata.visualization.data?.is_currency === true;
+                  const isCurrency = metricData?.is_currency === true;
 
                   // Currency display with Indian number formatting (only if marked as currency)
                   if (isCurrency) {
@@ -610,11 +611,14 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
                   return val.toLocaleString('en-IN');
                 })()}
               </div>
-              {message.metadata.visualization.data?.supporting_text && (
-                <div className="text-xs text-muted-foreground mt-2">
-                  {message.metadata.visualization.data.supporting_text}
-                </div>
-              )}
+              {(() => {
+                const metricData = message.metadata.visualization.data as import('@/lib/types').MetricCardData;
+                return metricData?.supporting_text ? (
+                  <div className="text-xs text-muted-foreground mt-2">
+                    {metricData.supporting_text}
+                  </div>
+                ) : null;
+              })()}
             </div>
           </motion.div>
         )}

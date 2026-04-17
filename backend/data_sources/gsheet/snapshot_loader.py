@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Any
 from data_sources.gsheet.connector import fetch_sheets_with_tables
 from utils.sql_utils import quote_identifier
+from utils.logger import get_logger
+
+logger = get_logger("gsheet.snapshot_loader")
 
 DB_PATH = "data_sources/snapshots/latest.duckdb"
 TABLE_METADATA_FILE = "data_sources/snapshots/table_metadata.json"
@@ -68,7 +71,7 @@ def load_table_metadata() -> Dict[str, Dict[str, Any]]:
         with open(TABLE_METADATA_FILE, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"[WARN]  Could not load table metadata: {e}")
+        logger.warning("Could not load table metadata: %s", e)
         return {}
 
 
@@ -79,7 +82,7 @@ def save_table_metadata(metadata: Dict[str, Dict[str, Any]]):
         with open(TABLE_METADATA_FILE, 'w') as f:
             json.dump(metadata, f, indent=2)
     except Exception as e:
-        print(f"[WARN]  Could not save table metadata: {e}")
+        logger.warning("Could not save table metadata: %s", e)
 
 
 def delete_tables_by_source_id(source_id: str, conn=None):
@@ -115,12 +118,12 @@ def delete_tables_by_source_id(source_id: str, conn=None):
             try:
                 quoted_table = quote_identifier(table_name)
                 conn.execute(f"DROP TABLE IF EXISTS {quoted_table}")
-                print(f"   Deleted table: {table_name}")
+                logger.info("Deleted table: %s", table_name)
                 
                 # Remove from metadata
                 del metadata[table_name]
             except Exception as e:
-                print(f"   [WARN]  Error deleting table {table_name}: {e}")
+                logger.warning("Error deleting table %s: %s", table_name, e)
         
         # Save updated metadata
         if tables_to_delete:
@@ -144,11 +147,11 @@ def drop_all_tables(conn):
         for table in tables:
             quoted_table = quote_identifier(table)
             conn.execute(f"DROP TABLE IF EXISTS {quoted_table}")
-            print(f"   Dropped table: {table}")
+            logger.info("Dropped table: %s", table)
         
         return len(tables)
     except Exception as e:
-        print(f"[WARN]  Error dropping tables: {e}")
+        logger.warning("Error dropping tables: %s", e)
         return 0
 
 
@@ -160,18 +163,18 @@ def reset_duckdb_snapshot():
 
         if Path(DB_PATH).exists():
             os.remove(DB_PATH)
-            print(f"   Deleted old DuckDB file: {DB_PATH}")
+            logger.info("Deleted old DuckDB file: %s", DB_PATH)
 
         # Create new empty database
         conn = duckdb.connect(DB_PATH)
         conn.close()
-        print(f"   Created fresh DuckDB file: {DB_PATH}")
+        logger.info("Created fresh DuckDB file: %s", DB_PATH)
         
         # Clear table metadata
         save_table_metadata({})
         
     except Exception as e:
-        print(f"[WARN]  Error resetting DuckDB: {e}")
+        logger.warning("Error resetting DuckDB: %s", e)
 
 
 def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None):
@@ -204,7 +207,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
 
     try:
         if full_reset:
-            print("[SYNC] Performing FULL RESET...")
+            logger.info("Performing FULL RESET...")
 
             # Drop all tables and recreate DB file
             reset_duckdb_snapshot()
@@ -217,7 +220,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
             sheets_to_rebuild = sorted(sheets_with_tables.keys())
 
         elif changed_sheets:
-            print(f"[SYNC] Performing INCREMENTAL REBUILD for {len(changed_sheets)} sheet(s)...")
+            logger.info("Performing INCREMENTAL REBUILD for %d sheet(s)...", len(changed_sheets))
 
             # Connect to existing database
             conn = duckdb.connect(DB_PATH)
@@ -228,16 +231,16 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
                 if sheet_name in sheets_with_tables and sheets_with_tables[sheet_name]:
                     source_id = sheets_with_tables[sheet_name][0].get('source_id')
                     if source_id:
-                        print(f"   Deleting tables from sheet '{sheet_name}' (source_id: {source_id})...")
+                        logger.info("Deleting tables from sheet '%s' (source_id: %s)...", sheet_name, source_id)
                         deleted_count = delete_tables_by_source_id(source_id, conn)
-                        print(f"   Deleted {deleted_count} table(s)")
+                        logger.info("Deleted %d table(s)", deleted_count)
 
             # Rebuild only changed sheets
             sheets_to_rebuild = changed_sheets
 
         else:
             # Legacy incremental refresh (rebuild all)
-            print("[SYNC] Performing LEGACY INCREMENTAL REFRESH...")
+            logger.info("Performing LEGACY INCREMENTAL REFRESH...")
             conn = duckdb.connect(DB_PATH)
             sheets_to_rebuild = sorted(sheets_with_tables.keys())
 
@@ -281,7 +284,7 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
 
                 # Create table in DuckDB
                 conn.execute(f"CREATE TABLE {quoted_table} AS SELECT * FROM df")
-                print(f"   Created table: {final_name} ({len(df)} rows, {len(df.columns)} cols)")
+                logger.info("Created table: %s (%d rows, %d cols)", final_name, len(df), len(df.columns))
 
                 # Store the final table name in table_info for later use
                 table_info['duckdb_table_name'] = final_name
@@ -304,14 +307,14 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
     save_table_metadata(table_metadata)
 
     if full_reset:
-        print("[OK] Full reset complete")
+        logger.info("Full reset complete")
     elif changed_sheets:
-        print(f"[OK] Incremental rebuild complete ({len(changed_sheets)} sheet(s) rebuilt)")
+        logger.info("Incremental rebuild complete (%d sheet(s) rebuilt)", len(changed_sheets))
     else:
-        print("[OK] Legacy incremental refresh complete")
+        logger.info("Legacy incremental refresh complete")
 
     # Log table statistics (use context manager for auto-cleanup)
-    print("\n[DATA] Table Statistics:")
+    logger.info("Table Statistics:")
 
     try:
         conn = duckdb.connect(DB_PATH)
@@ -341,11 +344,11 @@ def load_snapshot(sheets_with_tables=None, full_reset=False, changed_sheets=None
                     # Provide 1-based index for user friendliness
                     r_start = row_range[0] + 1
                     r_end = row_range[1]
-                    print(f"   {final_name}: {row_count:,} rows, {len(col_info)} cols ({type_summary})")
-                    print(f"      Source: {sheet_name} rows {r_start}-{r_end}")
+                    logger.info("%s: %s rows, %d cols (%s)", final_name, f"{row_count:,}", len(col_info), type_summary)
+                    logger.debug("  Source: %s rows %d-%d", sheet_name, r_start, r_end)
 
                 except Exception as e:
-                    print(f"      [WARN]  Error reading stats for {final_name}: {e}")
+                    logger.warning("Error reading stats for %s: %s", final_name, e)
     finally:
         # Always close the stats connection
         if conn is not None:

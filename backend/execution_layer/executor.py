@@ -1,7 +1,10 @@
 from analytics_engine.duckdb_manager import DuckDBManager
 from execution_layer.sql_compiler import compile_sql
 from analytics_engine.sanity_checks import run_sanity_checks
+from utils.logger import get_logger
 import pandas as pd
+
+logger = get_logger("executor")
 
 # Advanced query types that need special handling
 ADVANCED_QUERY_TYPES = ['comparison', 'percentage', 'trend']
@@ -58,9 +61,9 @@ def execute_plan(plan: dict):
                 detail_df = db.query(detail_sql)
                 if detail_df is not None and not detail_df.empty:
                     result_df.attrs['underlying_rows'] = detail_df.to_dict('records')
-                    print(f"[Executor] Fetched {len(detail_df)} underlying rows for data table")
+                    logger.info(f"Fetched {len(detail_df)} underlying rows for data table")
         except Exception as e:
-            print(f"[Executor] Warning: Could not fetch underlying rows: {e}")
+            logger.warning(f"Could not fetch underlying rows: {e}", exc_info=True)
 
     return result_df
 
@@ -92,7 +95,7 @@ def execute_advanced_plan(plan: dict):
         return df
 
     except Exception as e:
-        print(f"[Executor] Advanced query failed: {e}")
+        logger.error(f"Advanced query failed: {e}", exc_info=True)
         # Return empty DataFrame with error info
         df = pd.DataFrame()
         df.attrs['query_type'] = plan.get("query_type")
@@ -138,9 +141,7 @@ def execute_multi_step_plan(plan: dict):
         return df
 
     except Exception as e:
-        print(f"[Executor] Multi-step query failed: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Multi-step query failed: {e}", exc_info=True)
         
         # Return empty DataFrame with error info
         df = pd.DataFrame()

@@ -2,9 +2,13 @@ import os
 import json
 import yaml
 import threading
-import google.generativeai as genai
+from google.genai import types
 from pathlib import Path
 from explanation_layer.explanation_prompt import EXPLANATION_SYSTEM_PROMPT
+from utils.logger import get_logger
+from utils.config_loader import get_genai_client
+
+logger = get_logger("explainer_client")
 
 # Backend directory for relative paths
 _BACKEND_DIR = Path(__file__).parent.parent
@@ -15,34 +19,10 @@ from utils.permanent_memory import format_memory_for_prompt
 load_dotenv()
 
 # ============================================
-# BACKWARD-COMPATIBLE MODEL WRAPPER
-# Works with google-generativeai 0.3.x (no system_instruction)
+# CACHED SYSTEM PROMPT (includes permanent memory)
 # ============================================
-class CompatibleGenerativeModel:
-    """
-    Wrapper for GenerativeModel that supports system prompts
-    on older versions of google-generativeai (< 0.4.0).
-    """
-    def __init__(self, model, system_prompt: str):
-        self._model = model
-        self._system_prompt = system_prompt
-
-    def generate_content(self, prompt, **kwargs):
-        """Prepend system prompt to user message."""
-        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
-        return self._model.generate_content(full_prompt, **kwargs)
-
-    def __getattr__(self, name):
-        """Forward other attributes to underlying model."""
-        return getattr(self._model, name)
-
-
-# ============================================
-# SINGLETON PATTERN FOR LLM CLIENT
-# Saves 2-4 seconds per query by reusing model
-# ============================================
-_explainer_model = None
-_explainer_model_lock = threading.Lock()
+_system_prompt_cache = None
+_system_prompt_lock = threading.Lock()
 _config_cache = None
 
 
@@ -59,77 +39,51 @@ def load_config():
     return _config_cache
 
 
-def get_explainer_model():
+def _get_system_prompt():
     """
-    Get or create singleton Gemini model instance for explanations.
+    Get cached system prompt with permanent memory injection.
     Thread-safe with double-checked locking pattern.
-
-    Returns:
-        GenerativeModel: Reusable Gemini model instance
     """
-    global _explainer_model
+    global _system_prompt_cache
 
-    # Fast path - model already exists
-    if _explainer_model is not None:
-        return _explainer_model
+    if _system_prompt_cache is not None:
+        return _system_prompt_cache
 
-    # Slow path - need to create model (thread-safe)
-    with _explainer_model_lock:
-        # Double-check after acquiring lock
-        if _explainer_model is not None:
-            return _explainer_model
+    with _system_prompt_lock:
+        if _system_prompt_cache is not None:
+            return _system_prompt_cache
 
-        config = load_config()
-        _explainer_model = initialize_gemini_client(config)
-        return _explainer_model
+        memory_constraints = format_memory_for_prompt()
+        _system_prompt_cache = EXPLANATION_SYSTEM_PROMPT + memory_constraints
+        return _system_prompt_cache
 
 
 def invalidate_explainer_model():
     """
-    Invalidate the cached model (e.g., when memory/config changes).
+    Invalidate the cached system prompt (e.g., when memory/config changes).
     Call this when permanent memory is updated.
     """
-    global _explainer_model, _config_cache
-    with _explainer_model_lock:
-        _explainer_model = None
+    global _system_prompt_cache, _config_cache
+    with _system_prompt_lock:
+        _system_prompt_cache = None
         _config_cache = None
 
 
-def initialize_gemini_client(config):
-    """Initialize Gemini API client with configuration and memory injection"""
-    api_key_env = config.get("api_key_env", "GEMINI_API_KEY")
-    api_key = os.getenv(api_key_env)
+def _call_explainer(prompt: str):
+    """Call Gemini API for explanation generation."""
+    config = load_config()
+    client = get_genai_client()
+    system_prompt = _get_system_prompt()
 
-    if not api_key:
-        raise ValueError(
-            f"Gemini API key not found. Please set the {api_key_env} environment variable."
-        )
-
-    genai.configure(api_key=api_key)
-
-    model_name = config.get("model", "gemini-2.0-flash")
-    temperature = config.get("temperature", 0.0)
-
-    # Limit output tokens for faster response (explanations are short)
-    max_tokens = config.get("explainer_max_tokens", 300)
-
-    generation_config = {
-        "temperature": temperature,
-        "max_output_tokens": max_tokens,
-    }
-
-    # Load and inject permanent memory into system prompt
-    memory_constraints = format_memory_for_prompt()
-    system_prompt = EXPLANATION_SYSTEM_PROMPT + memory_constraints
-
-    # Create base model without system_instruction (for compatibility with 0.3.x)
-    base_model = genai.GenerativeModel(
-        model_name=model_name,
-        generation_config=generation_config,
+    return client.models.generate_content(
+        model=config.get("model", "gemini-2.0-flash"),
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=config.get("temperature", 0.0),
+            max_output_tokens=config.get("explainer_max_tokens", 300),
+        ),
     )
-
-    # Wrap with our compatible model that handles system prompts
-    return CompatibleGenerativeModel(base_model, system_prompt)
 
 
 def _format_number_indian(value, use_word=True):
@@ -228,10 +182,107 @@ def _is_simple_aggregation(result_df, query_plan):
         query_type = query_plan.get("query_type")
         if agg_func in ["SUM", "AVG", "COUNT", "MAX", "MIN"]:
             return True
-        if query_type in ["aggregation", "count"]:
+        if query_type in ["aggregation_on_subset"]:
             return True
 
     return False
+
+
+def _build_simple_aggregation_response(result_df, query_plan, user_name, emotion_starters, language):
+    """
+    Build a direct template response for simple aggregation queries.
+    Skips LLM entirely — uses EXACT numbers from the database.
+
+    This prevents LLM hallucination where it might round, invent, or misstate
+    the actual computed result. For simple queries like "What is the total sales?"
+    or "How many employees?", the database result IS the answer.
+    """
+    import random
+
+    if result_df is None or result_df.empty:
+        return None
+
+    agg_func = query_plan.get("aggregation_function", "SUM")
+    agg_col = query_plan.get("aggregation_column", "")
+
+    # Extract the actual result value
+    result_value = None
+    if 'result' in result_df.columns:
+        result_value = result_df['result'].iloc[0]
+    elif agg_col and agg_col in result_df.columns:
+        result_value = result_df[agg_col].iloc[0]
+    elif len(result_df.columns) == 1:
+        result_value = result_df.iloc[0, 0]
+    else:
+        # Try first numeric column
+        for col in result_df.columns:
+            if col.lower() not in ('row_count', 'min_value', 'max_value'):
+                result_value = result_df[col].iloc[0]
+                break
+
+    if result_value is None:
+        return None
+
+    # Humanize the metric name
+    metric_display = _humanize_name(agg_col) if agg_col else "the value"
+
+    # Format the number naturally (Indian system)
+    if isinstance(result_value, (int, float)):
+        formatted_value = _format_number_natural(result_value)
+    else:
+        formatted_value = str(result_value)
+
+    # Map aggregation function to natural language
+    func_labels = {
+        "SUM": "total",
+        "AVG": "average",
+        "COUNT": "count",
+        "MAX": "highest",
+        "MIN": "lowest",
+    }
+    func_word = func_labels.get(agg_func, "result")
+
+    # Build filter context (e.g., "for Chennai", "in November")
+    filter_context = ""
+    all_filters = query_plan.get("subset_filters", []) or query_plan.get("filters", []) or []
+    filter_parts = []
+    for f in all_filters:
+        col = f.get("column", "")
+        val = f.get("value", "")
+        op = f.get("operator", "=")
+        if isinstance(val, str) and val:
+            # Clean up LIKE wildcards
+            clean_val = val.replace("%", "").strip()
+            if clean_val:
+                filter_parts.append(clean_val)
+    if filter_parts:
+        filter_context = f" for {', '.join(filter_parts[:2])}"
+
+    # Pick a natural conversation starter
+    starter = random.choice(emotion_starters).format(name=user_name)
+
+    # Build the response
+    if agg_func == "COUNT":
+        # Count responses: "There are 42 records matching..."
+        count_val = int(result_value) if isinstance(result_value, (int, float)) else result_value
+        response = f"{starter} The {func_word}{filter_context} is {count_val}."
+    else:
+        response = f"{starter} The {func_word} {metric_display}{filter_context} is {formatted_value}."
+
+    # Add min/max context if available (from aggregation_on_subset result)
+    if 'min_value' in result_df.columns and 'max_value' in result_df.columns:
+        try:
+            min_val = result_df['min_value'].iloc[0]
+            max_val = result_df['max_value'].iloc[0]
+            if min_val is not None and max_val is not None and isinstance(min_val, (int, float)):
+                min_f = _format_number_natural(min_val)
+                max_f = _format_number_natural(max_val)
+                if min_val != max_val:
+                    response += f" Range goes from {min_f} to {max_f}."
+        except (IndexError, TypeError):
+            pass
+
+    return response
 
 
 def explain_results(result_df, query_plan=None, original_question=None, raw_user_message=None, user_name=None):
@@ -273,12 +324,25 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
     from utils.conversation_templates import detect_question_emotion, get_conversation_starter
     question_for_emotion = raw_user_message or original_question or ""
     detected_emotion = detect_question_emotion(question_for_emotion)
-    print(f"[Emotion] Detected: {detected_emotion} from question: {question_for_emotion[:50]}...")
+    logger.info("Detected emotion: %s from question: %s...", detected_emotion, question_for_emotion[:50])
 
     # Get appropriate conversation starters for this emotion
     lang_key = "tamil" if question_language == "Tamil" else "english"
     emotion_starters = get_conversation_starter(lang_key, detected_emotion)
-    
+
+    # === FAST PATH: Simple aggregation — skip LLM to avoid hallucination ===
+    # For simple SUM/AVG/COUNT/MAX/MIN with a single result, use a template response
+    # This is MORE ACCURATE than LLM because it uses the exact number from the database
+    if _is_simple_aggregation(result_df, query_plan):
+        elapsed = (time.time() - _start) * 1000
+        template_response = _build_simple_aggregation_response(
+            result_df, query_plan, user_name or "Boss",
+            emotion_starters, question_language
+        )
+        if template_response:
+            logger.info("Simple aggregation — used template (skipped LLM) [%dms]", elapsed)
+            return template_response
+
     if result_df.empty:
         # IMPORTANT: Use Gemini LLM to generate helpful "no data" responses
         # This makes responses contextual and intelligent instead of generic
@@ -305,18 +369,17 @@ The query returned NO data (empty result).
 
 Query Details: {json.dumps(empty_context, indent=2, default=str)}
 
-IMPORTANT: Analyze WHY there's no data and explain it clearly:
-- Was a multi-step query? Check if intermediate steps succeeded but final step had no matches
-- Date mismatches? Explain if the date from one table doesn't exist in another
-- Filter too strict? Explain if the combination of filters excludes all records
-- Data gap? Mention if the requested data period isn't covered
-- Wrong status/category? Explain if the requested status value doesn't exist
+IMPORTANT: Report what was searched and the result factually. Do NOT speculate or guess reasons.
+- State what table/filters were checked
+- If multi-step: state what step 1 found and that step 2 had no matches
+- Do NOT invent reasons (e.g., don't say "maybe the spelling is wrong" or "the date might not exist")
+- Simply state: no matching records found for those conditions
 
 Generate a natural, helpful response in {question_language} language that:
 1. Starts with one of these {detected_emotion} openers: {starter_examples}
-2. Explains WHAT you found (e.g., "peak sales day was October 12th")
-3. Explains WHY there's no final result (e.g., "but attendance records don't have that date")
-4. Suggests what to try (e.g., "Want me to check a different date?")
+2. States what was searched (e.g., "I checked sales for October 12th in Chennai")
+3. States the result plainly (e.g., "but no records matched those conditions")
+4. Does NOT ask the user any questions or suggest alternatives
 
 Guidelines:
 - Be calm, thoughtful, and analytical
@@ -329,27 +392,26 @@ Response:"""
 
         try:
             # Use Gemini to generate contextual no-data response
-            model = get_explainer_model()
-            response = model.generate_content(no_data_prompt)
+            response = _call_explainer(no_data_prompt)
             explanation = response.text.strip()
 
             # Ensure response is not too long
             if len(explanation) > 300:
                 explanation = explanation[:297] + "..."
 
-            print(f"[Explainer] Gemini generated no-data response: {explanation[:50]}...")
+            logger.info("Gemini generated no-data response: %s...", explanation[:50])
             return explanation
 
         except Exception as e:
             error_msg = str(e).lower()
-            print(f"[Explainer] Error generating no-data response: {e}")
+            logger.error("Error generating no-data response: %s", e)
 
             # Enhanced fallback with context-aware messages
             is_multi_step = empty_context.get("is_multi_step", False)
 
             # Check if it's a rate limit error (429)
             if "429" in error_msg or "resource exhausted" in error_msg or "quota" in error_msg:
-                print("[Explainer] Rate limit hit - using smart fallback")
+                logger.warning("Rate limit hit - using smart fallback")
 
                 # For multi-step queries, provide more context
                 if is_multi_step:
@@ -364,15 +426,18 @@ Response:"""
 
             # Generic fallback
             if question_language == "Tamil":
-                return f"Hmm {user_name}, paakalam... Data kidaikala. Vera date or filter try pannunga?"
+                return f"Hmm {user_name}, paakalam... Antha date-la data illa, boss."
             else:
-                return f"Hmm {user_name}, I couldn't find data for that. Want to try a different date or filter?"
+                return f"Hmm {user_name}, I couldn't find data for that. No records matched that filter."
     
     # Build context for the LLM
+    # CRITICAL: Send enough rows for LLM to see the full picture
+    # 5 rows was too few — LLM made wrong conclusions from incomplete data
+    sample_size = min(20, len(result_df))
     context = {
         "row_count": len(result_df),
         "columns": list(result_df.columns),
-        "data_sample": result_df.head(5).to_dict('records')  # Show up to 5 rows (reduced for speed)
+        "data_sample": result_df.head(sample_size).to_dict('records')
     }
     
     # Add query plan context if available
@@ -405,6 +470,12 @@ Response:"""
     
     # Build the prompt for the LLM
     prompt = f"""Given the following query results, generate a concise, natural language explanation.
+
+**ACCURACY RULES (CRITICAL):**
+- ONLY use numbers that appear EXACTLY in the data below. NEVER invent, estimate, or round numbers that aren't in the data.
+- If the data shows a specific value (e.g., result=62895.08), say "about 63 thousand" — but ONLY because 62895 rounds to 63K.
+- NEVER say "around 5 lakhs" if the actual data shows 62895. That would be WRONG.
+- When in doubt, state the number as-is rather than rounding incorrectly.
 
 Context:
 {json.dumps(context, indent=2, default=str)}
@@ -439,7 +510,7 @@ Context:
    - "Okay {user_name}, idho results..."
 """
     else:
-        print("[WARN] User name not available for personalization")
+        logger.warning("User name not available for personalization")
 
     # Build emotion-specific starter guidance
     emotion_guidance = f"""
@@ -460,6 +531,7 @@ Instructions:
    - 45,000 -> "around 45 thousand"
    - 12.47% -> "about 12 percent"
    - Round to 1-2 significant digits. Nobody says exact decimals in conversation.
+   - ONLY round actual values from the data — NEVER invent numbers.
 {emotion_guidance}{name_instruction}5. **2-3 sentences MAX**: One key insight + one supporting detail
 6. **Sound human**: Use contractions (it's, that's), natural pauses, confident endings
 
@@ -500,6 +572,9 @@ GOOD (natural): "about 63 lakhs"
 - Explain why briefly: "Higher sales directly boost margins"
 - Suggest actionable insight if relevant
 
+**FUTURE DATA DISCLAIMER:**
+- If the user asks about FUTURE data ("next month", "will", "predict", "forecast") but you're showing HISTORICAL data, add a brief note: "This shows the recent trend — I don't have future data to predict from."
+
 **AVOID (CRITICAL):**
 - DON'T spell out large numbers word by word (sounds robotic)
 - DON'T list every data point
@@ -508,23 +583,35 @@ GOOD (natural): "about 63 lakhs"
 
 Generate a crispy, TTS-friendly response:"""
     
-    try:
-        # Get singleton LLM (saves 2-4s per query)
-        model = get_explainer_model()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Generate explanation via Gemini
+            response = _call_explainer(prompt)
+            explanation = response.text.strip()
 
-        # Generate explanation
-        response = model.generate_content(prompt)
-        explanation = response.text.strip()
+            elapsed = (time.time() - _start) * 1000
+            logger.info("LLM Explanation generated [%dms]", elapsed)
+            return explanation
 
-        elapsed = (time.time() - _start) * 1000
-        print(f"[YES] LLM Explanation generated [{elapsed:.0f}ms]")
-        return explanation
+        except Exception as e:
+            error_msg = str(e).lower()
+            is_rate_limit = "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg
 
-    except Exception as e:
-        # Fallback to simple explanation if LLM fails
-        elapsed = (time.time() - _start) * 1000
-        print(f"[WARN] LLM explanation failed ({e}), using fallback [{elapsed:.0f}ms]")
-        return _fallback_explanation(result_df, context)
+            if attempt < max_retries - 1:
+                if is_rate_limit:
+                    wait = 2.0 * (2 ** attempt)  # 2s, 4s
+                    logger.warning("Rate limit hit in explainer, backing off %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
+                else:
+                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s
+                    logger.info("Explainer error, retrying in %.1fs...", wait)
+                time.sleep(wait)
+                continue
+
+            # All retries exhausted — use template fallback
+            elapsed = (time.time() - _start) * 1000
+            logger.warning("LLM explanation failed after %d attempts (%s), using fallback [%dms]", max_retries, e, elapsed)
+            return _fallback_explanation(result_df, context)
 
 
 def _fallback_explanation(result_df, context):
@@ -811,35 +898,44 @@ For PERSONAL questions (how are you, did you eat):
 - Answer naturally, then redirect to data
 - "Doing great! What data would you like me to look up?"
 
-For UNCLEAR/GIBBERISH:
-- Just be friendly and ask what they want
-- "Hey! I'm ready - what would you like to know?"
+For EMPTY/UNCLEAR/GIBBERISH (short or meaningless text):
+- Acknowledge you didn't catch it clearly, ask them to repeat
+- "Didn't quite catch that, Boss — say that again?"
+- "Hmm, that didn't come through clearly. What would you like to know?"
 
 **RULES:**
 1. Keep it SHORT - 1-2 sentences max
-2. Always end by asking what data they want OR offering to help
+2. Always end with a friendly statement about what you can help with
 3. Be NATURAL - vary your responses, don't sound scripted
 4. Respond in {language_instruction}
-5. NEVER say "I didn't catch that" or "I don't understand"
+5. For unclear/gibberish input, it's OK to say you didn't catch it — but keep it friendly and natural
 6. NEVER repeat the same phrase patterns
 
 Generate a natural, conversational response:"""
 
     try:
-        model = get_explainer_model()
-        response = model.generate_content(prompt)
+        client = get_genai_client()
+        config = load_config()
+        response = client.models.generate_content(
+            model=config.get("model", "gemini-2.0-flash"),
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=200,
+            ),
+        )
         result = response.text.strip()
 
         elapsed = (time.time() - _start) * 1000
-        print(f"[YES] Off-topic LLM response generated [{elapsed:.0f}ms]")
+        logger.info("Off-topic LLM response generated [%dms]", elapsed)
         return result
 
     except Exception as e:
         # Fallback to simple response if LLM fails
         elapsed = (time.time() - _start) * 1000
-        print(f"[WARN] Off-topic LLM failed ({e}), using fallback [{elapsed:.0f}ms]")
+        logger.warning("Off-topic LLM failed (%s), using fallback [%dms]", e, elapsed)
 
         if is_tamil:
-            return "Haha interesting! Naan data expert - data pathi kelu! Enna paakanum?"
+            return "Haha interesting! Naan data expert - data queries-la help pannuven, boss!"
         else:
             return "Haha, that's fun! But my superpower is data - ask me anything about your data!"

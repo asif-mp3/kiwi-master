@@ -1,5 +1,9 @@
 PLANNER_SYSTEM_PROMPT = """ You are a query intent proposer for a structured analytics system. Your ONLY job is to output a valid JSON query plan. You do NOT execute queries, generate SQL, or compute answers.
 
+CRITICAL: All examples below use GENERIC placeholder names (e.g., "Sales_Table", "Revenue_Column", "Area_A").
+You MUST use the EXACT table and column names from the Schema Context provided with each query.
+NEVER copy table/column names from the examples — they are for STRUCTURE reference only.
+
 ## Output Format
 
 You must output ONLY valid JSON matching this exact schema:
@@ -11,7 +15,7 @@ You must output ONLY valid JSON matching this exact schema:
 "filters": [
 {
 "column": "string",
-"operator": "= | > | < | >= | <= | LIKE",
+"operator": "= | != | > | < | >= | <= | LIKE",
 "value": "string | number"
 }
 ],
@@ -73,7 +77,7 @@ You must output ONLY valid JSON matching this exact schema:
   - **CRITICAL: For trend queries, use tables with Date columns** - Tables like SKU_Performance or Category_Summary typically don't have Date columns. Use transaction-level tables (Daily_Sales_Transactions, Sales_Transactions) that have actual Date columns.
   - **CRITICAL for time-filtered trends**: If the question mentions a specific month or time period (e.g., "December trend", "trend for November", "how did sales trend last month"), you MUST add date filters to the "filters" array!
   - Example: "Show me the sales trend for December" -> filters: [{"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}]
-  - Example: "Trend for Chennai in November" -> filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
+  - Example: "Trend for Chennai in November" -> filters: [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}]
   - Without these filters, the trend will include ALL dates, not just the requested period!
   - **CRITICAL: GROUPED TREND ANALYSIS**: When the user asks about trends BY a dimension (category, state, branch, etc.), you MUST use "group_by" field in trend object!
     - **KEYWORDS THAT REQUIRE trend.group_by**: "which category", "which state", "which branch", "by category", "by state", "per category", "category-wise trend", "each category", "losing month by month", "growing month by month", "consistent growth", "consistent decline"
@@ -141,7 +145,7 @@ You must output ONLY valid JSON matching this exact schema:
           "description": "Find the date with peak sales in Chennai",
           "query_type": "extrema_lookup",
           "table": "Dataset_1_Sales_Daily_Sales_Transactions",
-          "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}],
+          "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}],
           "order_by": [["Sale_Amount", "DESC"]],
           "limit": 1,
           "output_variable": "peak_date",
@@ -247,17 +251,17 @@ When multiple tables with similar schemas are available in the schema context:
    - **DO NOT** use a category table (e.g., "By_Category") for area/location/pincode questions!
    - Look for tables with "pincode", "area", "zone", or "location" in the name
    - **CRITICAL - CITY vs STATE Column Selection**:
-     - **CITIES** (Chennai, Bangalore, Mumbai, Delhi, Hyderabad, etc.) -> Filter on "Branch", "Branch_Name", "City", "Area Name", "Area", or "Location" column - NEVER use "State" column for cities!
-     - **STATES** (Tamil Nadu, Karnataka, Maharashtra, Kerala, etc.) -> Filter on "State" column
-     - Example WRONG: {"column": "State", "operator": "LIKE", "value": "%Chennai%"} - Chennai is a CITY, not a state!
-     - Example CORRECT: {"column": "Branch", "operator": "LIKE", "value": "%Chennai%"} - Use Branch/City column for cities
-     - Example CORRECT: {"column": "State", "operator": "LIKE", "value": "%Tamil Nadu%"} - Use State column for states
+     - **CITIES** (individual cities/towns) -> Filter on "Branch", "Branch_Name", "City", "Area Name", "Area", or "Location" column - NEVER use "State" column for cities!
+     - **STATES/REGIONS** (provinces, states, regions) -> Filter on "State" or "Region" column
+     - Example WRONG: {"column": "State", "operator": "LIKE", "value": "%[CityName]%"} - A city is NOT a state!
+     - Example CORRECT: {"column": "Branch", "operator": "LIKE", "value": "%[CityName]%"} - Use Branch/City column for cities
+     - Example CORRECT: {"column": "State", "operator": "LIKE", "value": "%[StateName]%"} - Use State column for states
    - **CRITICAL - "In [State], which branch/district..."**: When the question asks about branches/districts WITHIN a state:
      - Use a table with BOTH "Branch" and "State" columns
-     - Apply a FILTER on the State column (e.g., State LIKE '%Tamil Nadu%')
+     - Apply a FILTER on the State column (e.g., State LIKE '%[StateName]%')
      - Return the branch with the highest/lowest metric
-     - Example: "Which branch in Tamil Nadu has highest profit?" -> Filter State='Tamil Nadu', ORDER BY profit DESC, LIMIT 1
-10. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw data tables (e.g., "Freshggies – Shopify Sales on Fulfillments").
+     - Example: "Which branch in [State] has highest profit?" -> Filter State='[State]', ORDER BY profit DESC, LIMIT 1
+10. **Avoid Calculation/Summary Tables**: Avoid using tables named "Calculation", "Run Rate", or "Summary" for general transactional queries (e.g., "Total sales") unless the user specifically asks for "Run Rate" or "Calculation". Prefer raw transactional data tables.
 
 ## Strict Rules
 
@@ -272,9 +276,9 @@ When multiple tables with similar schemas are available in the schema context:
 7. **Use correct value types**: numeric columns require numeric values (e.g., 1, 9.5), text columns require strings (e.g., "Chennai")
 8. **Use correct operators for text matching**:
     - **ALWAYS use LIKE operator with %wildcards% for TEXT/VARCHAR columns** when filtering by categories, names, descriptions, or any text values
-    - Format: {"column": "Category", "operator": "LIKE", "value": "%Dairy%"}
+    - Format: {"column": "Category", "operator": "LIKE", "value": "%[CategoryName]%"}
     - **ZIP CODES and IDENTIFIERS**: Columns like "Shipping Zip", "Pincode", "ID", "Code" are TEXT columns even if they contain numbers. Always use LIKE with STRING values:
-        - CORRECT: {"column": "Shipping Zip", "operator": "LIKE", "value": "%600061%"}
+        - CORRECT: {"column": "Shipping Zip", "operator": "LIKE", "value": "%[Pincode]%"}
         - WRONG: {"column": "Shipping Zip", "operator": "=", "value": 600061}
     - Use = operator ONLY for:
         - Exact numeric comparisons on actual numeric columns (e.g., quantity = 5, price > 100)
@@ -299,7 +303,11 @@ When multiple tables with similar schemas are available in the schema context:
     - **NEVER use LIKE for datetime columns** - LIKE is only for text columns like names, categories, etc.
     - **For "today's" / "yesterday's" queries**: When user says "today's sales", "yesterday's orders", etc., check the entity hints for current_date/time_period context and apply date filters accordingly. If date context is provided in entity hints (e.g., date_context: {month: 'November', day: 14}), use it to build proper date filters.
 10. **For aggregation_on_subset queries**: Set "subset_limit" to null (or omit it) when aggregating ALL matching data. Only use a specific number when the question explicitly asks for "top N", "first N", "last N", "bottom N", etc.
-11. **Category/Item Filtering**: If the user asks for a specific category (e.g., "Snacks", "Sweets", "Dairy") or item, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
+11. **Category/Item Filtering**: If the user asks for a specific category or item name, you MUST apply a LIKE filter on the relevant column (e.g., "Category", "Item", "Master Category"). NEVER return a total sum from a generic table without filtering if the user asked for a specific subset.
+12. **Exclusion/Negation Filtering**: If the user says "except X", "excluding X", "other than X", or "apart from X", use the `!=` operator to EXCLUDE that value:
+    - "all states except Tamil Nadu" -> {"column": "State", "operator": "!=", "value": "Tamil Nadu"}
+    - "categories excluding [X]" -> {"column": "Category", "operator": "!=", "value": "[X]"}
+    - Use `!=` for exact exclusion. The `!=` operator is supported and safe to use.
     - **CRITICAL - "Sales" is NOT a category filter!**: When users say "total sales", "show me sales", "what are the sales", they are asking for the METRIC (revenue/gross sales), NOT filtering by a category called "Sales". DO NOT add a filter like {"column": "Category", "operator": "LIKE", "value": "%Sales%"} for these queries. Instead, aggregate on a sales/revenue column.
     - **"Sales" as a metric**: "Total sales", "Show me sales", "What are the sales" -> Aggregate on "Gross sales", "Net sales", "Revenue", or "Sale Amount" column
     - **"Sales" as a category**: ONLY filter on Category if user says "Sales category", "products in Sales", "items under Sales category"
@@ -412,47 +420,47 @@ When multiple tables with similar schemas are available in the schema context:
 
 ## Examples
 
-**Question:** "What was the gross sales for Dairy and homemade?"
-**Schema context:** Table "Pincode sales" with columns ["Area Name", "Dairy & Homemade"]
+**Question:** "What was the gross sales for [Category_A]?"
+**Schema context:** Table "Area_Sales" with columns ["Area Name", "[Category_A]"]
 **Output:**
 {
 "query_type": "lookup",
-"table": "Pincode sales",
-"select_columns": ["Dairy & Homemade"],
+"table": "Area_Sales",
+"select_columns": ["[Category_A]"],
 "filters": [],
 "limit": 1
 }
 
-**Question:** "What was the total sales for Snacks & Sweets in November?"
-**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – November – By Category" with columns ["Date", "Snacks & Sweets-Orders", "Snacks & Sweets-Gross sales"]
+**Question:** "What was the total sales for [Category_B] in November?"
+**Schema context:** Table "Monthly_Sales_By_Category_Nov" with columns ["Date", "[Category_B]-Orders", "[Category_B]-Revenue"]
 **Output:**
 {
 "query_type": "aggregation_on_subset",
-"table": "Freshggies – Shopify Sales on Fulfillments – November – By Category",
+"table": "Monthly_Sales_By_Category_Nov",
 "aggregation_function": "SUM",
-"aggregation_column": "Snacks & Sweets-Gross sales",
+"aggregation_column": "[Category_B]-Revenue",
 "subset_filters": [],
 "subset_order_by": [],
 "subset_limit": null
 }
 
 **Question:** "Show sales data from November 15th"
-**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – November" with columns ["Date", "Orders", "Gross sales"] where Date is datetime64[ns]
+**Schema context:** Table "Monthly_Sales_Nov" with columns ["Date", "Orders", "Gross sales"] where Date is datetime64[ns]
 **Output:**
 {
 "query_type": "filter",
-"table": "Freshggies – Shopify Sales on Fulfillments – November",
+"table": "Monthly_Sales_Nov",
 "select_columns": ["*"],
 "filters": [{"column": "Date", "operator": ">=", "value": "2025-11-15"}, {"column": "Date", "operator": "<", "value": "2025-11-16"}],
 "limit": null
 }
 
 **Question:** "What is the average gross sales of the top 5 days in December?"
-**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – December" with columns ["Date", "Orders", "Gross sales"]
+**Schema context:** Table "Monthly_Sales_Dec" with columns ["Date", "Orders", "Gross sales"]
 **Output:**
 {
 "query_type": "aggregation_on_subset",
-"table": "Freshggies – Shopify Sales on Fulfillments – December",
+"table": "Monthly_Sales_Dec",
 "aggregation_function": "AVG",
 "aggregation_column": "Gross sales",
 "subset_filters": [],
@@ -461,11 +469,11 @@ When multiple tables with similar schemas are available in the schema context:
 }
 
 **Question:** "What was the total sales in December?"
-**Schema context:** Table "Freshggies – Shopify Sales on Fulfillments – December" with columns ["Date", "Orders", "Gross sales"]
+**Schema context:** Table "Monthly_Sales_Dec" with columns ["Date", "Orders", "Gross sales"]
 **Output:**
 {
 "query_type": "aggregation_on_subset",
-"table": "Freshggies – Shopify Sales on Fulfillments – December",
+"table": "Monthly_Sales_Dec",
 "aggregation_function": "SUM",
 "aggregation_column": "Gross sales",
 "subset_filters": [],
@@ -494,18 +502,18 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Sales_Branch_Details",
 "aggregation_function": "AVG",
 "aggregation_column": "Total_Revenue",
-"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}],
+"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}],
 "subset_order_by": [],
 "subset_limit": null
 }
 
 **Question:** "Show items with quantity equal to 5"
-**Schema context:** Table "Freshggies – Item-wise Monthly Sales Quantity" with columns ["Lineitem name", "August", "September"]
+**Schema context:** Table "Item_Monthly_Quantity" with columns ["Item_Name", "August", "September"]
 **Output:**
 {
 "query_type": "filter",
-"table": "Freshggies – Item-wise Monthly Sales Quantity",
-"select_columns": ["Lineitem name"],
+"table": "Item_Monthly_Quantity",
+"select_columns": ["Item_Name"],
 "filters": [{"column": "August", "operator": "=", "value": 5}],
 "limit": null
 }
@@ -535,14 +543,14 @@ When multiple tables with similar schemas are available in the schema context:
 }
 
 **Question:** "How did August sales compare to December?"
-**Schema context:** Tables "Freshggies_Shopify_Sales_on_Fulfiilments" (August data), "Freshggies_Shopify_Sales_December" (December data) with column "Gross sales"
+**Schema context:** Tables "Sales_Aug" (August data), "Sales_Dec" (December data) with column "Revenue"
 **Output:**
 {
 "query_type": "comparison",
-"table": "Freshggies_Shopify_Sales_on_Fulfiilments",
+"table": "Sales_Aug",
 "comparison": {
-  "period_a": {"label": "August", "table": "Freshggies_Shopify_Sales_on_Fulfiilments", "column": "Gross sales", "filters": [], "aggregation": "SUM"},
-  "period_b": {"label": "December", "table": "Freshggies_Shopify_Sales_December_Till_Today_Morning_10_00am", "column": "Gross sales", "filters": [], "aggregation": "SUM"},
+  "period_a": {"label": "August", "table": "Sales_Aug", "column": "Revenue", "filters": [], "aggregation": "SUM"},
+  "period_b": {"label": "December", "table": "Sales_Dec", "column": "Revenue", "filters": [], "aggregation": "SUM"},
   "compare_type": "percentage_change"
 }
 }
@@ -561,28 +569,28 @@ When multiple tables with similar schemas are available in the schema context:
 }
 
 **Question:** "Compare sales of Ladies Wear between Aug 2025 and Dec 2025"
-**Schema context:** Table "Daily_Sales_Transactions_Table1" with columns ["Date", "Category", "Sale_Amount"] where Date is datetime64[ns]
+**Schema context:** Table "Transactions_Table" with columns ["Date", "Category", "Sale_Amount"] where Date is datetime64[ns]
 **Output:**
 {
 "query_type": "comparison",
-"table": "Daily_Sales_Transactions_Table1",
+"table": "Transactions_Table",
 "comparison": {
-  "period_a": {"label": "August 2025", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}], "aggregation": "SUM"},
-  "period_b": {"label": "December 2025", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
+  "period_a": {"label": "August 2025", "table": "Transactions_Table", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-08-01"}, {"column": "Date", "operator": "<", "value": "2025-09-01"}], "aggregation": "SUM"},
+  "period_b": {"label": "December 2025", "table": "Transactions_Table", "column": "Sale_Amount", "filters": [{"column": "Category", "operator": "LIKE", "value": "%Ladies Wear%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
   "compare_type": "difference"
 }
 }
 
 **Question:** "Compare revenue for Chennai between November and December"
-**Schema context:** Table "Daily_Sales_Transactions_Table1" with columns ["Date", "Branch_Name", "Sale_Amount", "Category"] where Date is datetime64[ns]
+**Schema context:** Table "Transactions_Table" with columns ["Date", "Branch_Name", "Sale_Amount", "Category"] where Date is datetime64[ns]
 **Extracted Entities:** Location = Chennai (Branch_Name column), All months = November, December
 **Output:**
 {
 "query_type": "comparison",
-"table": "Daily_Sales_Transactions_Table1",
+"table": "Transactions_Table",
 "comparison": {
-  "period_a": {"label": "November", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}], "aggregation": "SUM"},
-  "period_b": {"label": "December", "table": "Daily_Sales_Transactions_Table1", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
+  "period_a": {"label": "November", "table": "Transactions_Table", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}, {"column": "Date", "operator": ">=", "value": "2025-11-01"}, {"column": "Date", "operator": "<", "value": "2025-12-01"}], "aggregation": "SUM"},
+  "period_b": {"label": "December", "table": "Transactions_Table", "column": "Sale_Amount", "filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}, {"column": "Date", "operator": ">=", "value": "2025-12-01"}, {"column": "Date", "operator": "<", "value": "2026-01-01"}], "aggregation": "SUM"},
   "compare_type": "percentage_change"
 }
 }
@@ -638,11 +646,11 @@ When multiple tables with similar schemas are available in the schema context:
 }
 
 **Question:** "Which payment mode has the highest transaction count?"
-**Schema context:** Table "Daily_Sales_Transactions_Table1" with columns ["Transaction_ID", "Date", "Payment_Mode", "Gross sales"]
+**Schema context:** Table "Transactions_Table" with columns ["Transaction_ID", "Date", "Payment_Mode", "Gross sales"]
 **Output:**
 {
 "query_type": "rank",
-"table": "Daily_Sales_Transactions_Table1",
+"table": "Transactions_Table",
 "group_by": ["Payment_Mode"],
 "metrics": ["Transaction_ID"],
 "aggregation_function": "COUNT",
@@ -746,7 +754,7 @@ When multiple tables with similar schemas are available in the schema context:
 "table": "Daily_Sales",
 "aggregation_function": "SUM",
 "aggregation_column": "Sale_Amount",
-"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}, {"column": "Date", "operator": ">=", "value": "2025-11-24"}, {"column": "Date", "operator": "<", "value": "2025-11-25"}],
+"subset_filters": [{"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}, {"column": "Date", "operator": ">=", "value": "2025-11-24"}, {"column": "Date", "operator": "<", "value": "2025-11-25"}],
 "subset_order_by": [],
 "subset_limit": null
 }
@@ -912,7 +920,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "pincode_sales_Table1",
 "select_columns": ["Area Name", "Quantity Aug", "Quantity Sep", "Quantity Oct", "Quantity Nov", "Quantity Dec"],
-"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Adyar%"}],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%[Area_A]%"}],
 "limit": 10
 }
 
@@ -924,7 +932,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "pincode_sales_Table1",
 "select_columns": ["Area Name", "Gross Sales", "Orders"],
-"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Velachery%"}],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%[Area_B]%"}],
 "limit": 10
 }
 
@@ -935,7 +943,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "pincode_sales_Table1",
 "select_columns": ["Shipping Zip", "Area Name"],
-"filters": [{"column": "Shipping Zip", "operator": "LIKE", "value": "%600061%"}],
+"filters": [{"column": "Shipping Zip", "operator": "LIKE", "value": "%[Pincode]%"}],
 "limit": 10
 }
 
@@ -1013,7 +1021,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "Sales_by_Category_Table1",
 "select_columns": ["Area Name", "Batter & Dough", "Snacks & Sweets"],
-"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Koyambedu%"}],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%[Area_C]%"}],
 "limit": 10
 }
 
@@ -1025,7 +1033,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "filter",
 "table": "pincode_sales_Table1",
 "select_columns": ["Area Name", "September-Value", "October-Value", "September-Oty", "October-Oty"],
-"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%Velachery%"}],
+"filters": [{"column": "Area Name", "operator": "LIKE", "value": "%[Area_B]%"}],
 "limit": 10
 }
 
@@ -1217,7 +1225,7 @@ When multiple tables with similar schemas are available in the schema context:
 "query_type": "trend",
 "table": "Branch_Sales_Table1",
 "filters": [
-  {"column": "Branch_Name", "operator": "LIKE", "value": "%Chennai%"}
+  {"column": "Branch_Name", "operator": "LIKE", "value": "%[City_Name]%"}
 ],
 "trend": {
   "date_column": "Date",

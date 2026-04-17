@@ -59,9 +59,9 @@ class DetectedTable(BaseModel):
     title: Optional[str] = None
     sheet_name: str
     source_id: str  # spreadsheet_id#sheet_name
-    sheet_hash: str
-    row_range: tuple[int, int]
-    col_range: tuple[int, int]
+    sheet_hash: str = ""
+    row_range: tuple[int, int] = (0, 0)
+    col_range: tuple[int, int] = (0, 0)
     total_rows: Optional[int] = None
     columns: Optional[List[str]] = None
     preview_data: Optional[List[Any]] = None

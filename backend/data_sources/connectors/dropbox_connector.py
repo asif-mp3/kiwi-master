@@ -22,6 +22,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("dropbox_connector")
 
 # Try to import dropbox SDK, make it optional for shared links
 try:
@@ -170,57 +173,137 @@ class DropboxConnector(BaseConnector):
 
     def _fetch_shared_link(self) -> Dict[str, List[pd.DataFrame]]:
         """
-        Fetch file from Dropbox shared link.
+        Fetch file or folder from Dropbox shared link.
 
         No authentication needed for public shared links.
+        Handles both single files and folders (ZIP downloads).
+        Includes retry with exponential backoff for transient failures.
         """
+        import time
+        import zipfile
+
         direct_url = self._get_direct_download_url()
-        print(f"[DropboxConnector] Fetching from: {direct_url}")
+        logger.info("Fetching from: %s", direct_url)
+
+        max_retries = 3
+        last_error = None
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (compatible; TharaAI/1.0)'
+                }
+
+                response = requests.get(
+                    direct_url,
+                    headers=headers,
+                    timeout=120,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+                break  # Success
+            except requests.RequestException as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = (attempt + 1) * 2  # 2s, 4s
+                    logger.warning("Dropbox download attempt %d failed, retrying in %ds: %s", attempt + 1, wait, e)
+                    time.sleep(wait)
+                else:
+                    raise ValueError(f"Failed to download from Dropbox after {max_retries} attempts: {last_error}")
+
+        if response is None:
+            raise ValueError("Failed to download from Dropbox")
+
+        content_type = response.headers.get('Content-Type', '').lower()
+
+        # Check if response is a ZIP (Dropbox sends ZIP for folder downloads)
+        is_zip = (
+            'zip' in content_type
+            or response.content[:4] == b'PK\x03\x04'  # ZIP magic bytes
+        )
+
+        if is_zip:
+            logger.info("Dropbox returned ZIP (folder download), extracting files...")
+            return self._process_zip(response.content)
+
+        # Single file — determine file type from Content-Disposition or URL
+        content_disposition = response.headers.get('Content-Disposition', '')
+        filename_match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
+
+        if filename_match:
+            filename = filename_match.group(1)
+        else:
+            filename = os.path.basename(urlparse(self.url).path)
+
+        filename_lower = filename.lower()
+        suffix = self._get_suffix(filename_lower, content_type)
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(response.content)
+            temp_path = tmp.name
 
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; TharaAI/1.0)'
-            }
-
-            response = requests.get(
-                direct_url,
-                headers=headers,
-                timeout=60,
-                allow_redirects=True
-            )
-            response.raise_for_status()
-
-            # Determine file type from Content-Disposition or URL
-            content_disposition = response.headers.get('Content-Disposition', '')
-            filename_match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
-
-            if filename_match:
-                filename = filename_match.group(1)
-            else:
-                # Use URL path
-                filename = os.path.basename(urlparse(self.url).path)
-
-            # Detect file type
-            filename_lower = filename.lower()
-            content_type = response.headers.get('Content-Type', '').lower()
-
-            # Save to temp file and process
-            suffix = self._get_suffix(filename_lower, content_type)
-
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(response.content)
-                temp_path = tmp.name
-
+            return self._process_file(temp_path, filename)
+        finally:
             try:
-                return self._process_file(temp_path, filename)
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
+                os.unlink(temp_path)
+            except Exception:
+                pass
 
-        except requests.RequestException as e:
-            raise ValueError(f"Failed to download from Dropbox: {e}")
+    def _process_zip(self, zip_bytes: bytes) -> Dict[str, List[pd.DataFrame]]:
+        """
+        Extract and process files from a ZIP archive (Dropbox folder download).
+        Returns combined results from all supported files.
+        """
+        import zipfile
+        import io
+
+        all_results: Dict[str, List[pd.DataFrame]] = {}
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            file_list = [f for f in zf.namelist() if not f.endswith('/')]
+            logger.info("ZIP contains %d files: %s", len(file_list), file_list[:10])
+
+            for zip_entry in file_list:
+                filename = os.path.basename(zip_entry)
+                filename_lower = filename.lower()
+
+                # Skip hidden/system files
+                if filename.startswith('.') or filename.startswith('__'):
+                    continue
+
+                # Only process supported file types
+                ext = os.path.splitext(filename_lower)[1]
+                if ext not in self.SUPPORTED_EXTENSIONS:
+                    logger.info("Skipping unsupported file in ZIP: %s", filename)
+                    continue
+
+                logger.info("Processing ZIP entry: %s", zip_entry)
+
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(zf.read(zip_entry))
+                    temp_path = tmp.name
+
+                try:
+                    file_results = self._process_file(temp_path, filename)
+                    all_results.update(file_results)
+                except Exception as e:
+                    logger.warning("Failed to process %s from ZIP: %s", filename, e)
+                finally:
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        pass
+
+        if not all_results:
+            raise ValueError(
+                "No supported data files found in Dropbox folder. "
+                "Supported formats: CSV, Excel (.xlsx/.xls/.xlsm), PDF"
+            )
+
+        logger.info("Extracted %d tables from Dropbox folder ZIP", len(all_results))
+        return all_results
 
     def _get_suffix(self, filename: str, content_type: str) -> str:
         """Determine file suffix from filename or content type."""
@@ -265,7 +348,7 @@ class DropboxConnector(BaseConnector):
             try:
                 df = pd.read_csv(file_path, encoding=encoding)
                 source_name = self.get_source_name()
-                print(f"[DropboxConnector] Loaded CSV: {len(df)} rows")
+                logger.info("Loaded CSV: %d rows", len(df))
                 return self.validate_dataframes({source_name: [df]})
             except UnicodeDecodeError:
                 continue
@@ -282,7 +365,7 @@ class DropboxConnector(BaseConnector):
                 df = pd.read_excel(excel_file, sheet_name=sheet_name)
                 if not df.empty:
                     result[sheet_name] = [df]
-                    print(f"[DropboxConnector] Loaded sheet '{sheet_name}': {len(df)} rows")
+                    logger.info("Loaded sheet '%s': %d rows", sheet_name, len(df))
 
             return self.validate_dataframes(result)
 

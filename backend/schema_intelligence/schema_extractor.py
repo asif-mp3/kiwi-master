@@ -1,6 +1,9 @@
 import duckdb
 import yaml
 from utils.sql_utils import quote_identifier
+from utils.logger import get_logger
+
+logger = get_logger("schema_extractor")
 
 
 def _infer_semantic_type(column_name: str, column_type: str):
@@ -104,7 +107,7 @@ def extract_schema(
             with open(metadata_file, 'r') as f:
                 table_metadata = json.load(f)
         except Exception as e:
-            print(f"[WARN]  Could not load table metadata: {e}")
+            logger.warning("Could not load table metadata: %s", e)
 
     # Load metric definitions (optional)
     metrics = {}

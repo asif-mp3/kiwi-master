@@ -12,10 +12,14 @@ CRITICAL RULES:
 """
 
 import os
-import google.generativeai as genai
+from google.genai import types
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import json
+from utils.logger import get_logger
+from utils.config_loader import get_genai_client
+
+logger = get_logger("memory_detector")
 
 load_dotenv()
 
@@ -145,29 +149,24 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         return {"has_memory_intent": False}
 
     try:
-        # Get API key (strip whitespace from HF Spaces)
-        api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
-        if not api_key:
-            print("Warning: GEMINI_API_KEY not found, memory detection disabled")
+        try:
+            client = get_genai_client()
+        except ValueError:
+            logger.warning("GEMINI_API_KEY not found, memory detection disabled")
             return {"has_memory_intent": False}
-        
-        # Configure Gemini
-        genai.configure(api_key=api_key)
 
-        # Create model with JSON output (no system_instruction for compatibility with 0.3.x)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",  # Fast model for detection
-            generation_config={
-                "temperature": 0.0,
-                "response_mime_type": "application/json"
-            },
+        from utils.config_loader import get_llm_config
+
+        # Call API with system instruction and JSON output
+        response = client.models.generate_content(
+            model=get_llm_config().model,
+            contents=f"User input: {question}\n\nDetect memory intent and output JSON:",
+            config=types.GenerateContentConfig(
+                system_instruction=MEMORY_DETECTION_PROMPT,
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
         )
-
-        # Build prompt with system instruction prepended (for compatibility)
-        full_prompt = f"{MEMORY_DETECTION_PROMPT}\n\n---\n\nUser input: {question}\n\nDetect memory intent and output JSON:"
-
-        # Call API
-        response = model.generate_content(full_prompt)
         
         # Parse JSON response
         result = json.loads(response.text)
@@ -182,21 +181,21 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         # Validate required fields for positive detection
         required_fields = ["category", "key", "value"]
         if not all(field in result for field in required_fields):
-            print(f"Warning: Incomplete memory detection result: {result}")
+            logger.warning("Incomplete memory detection result: %s", result)
             return {"has_memory_intent": False}
         
         # Validate category
         if result["category"] not in ["user_preferences", "bot_identity"]:
-            print(f"Warning: Invalid category: {result['category']}")
+            logger.warning("Invalid category: %s", result['category'])
             return {"has_memory_intent": False}
         
         return result
         
     except json.JSONDecodeError as e:
-        print(f"Warning: Failed to parse memory detection JSON: {e}")
+        logger.warning("Failed to parse memory detection JSON: %s", e)
         return {"has_memory_intent": False}
     except Exception as e:
-        print(f"Warning: Memory detection failed: {e}")
+        logger.warning("Memory detection failed: %s", e)
         return {"has_memory_intent": False}
 
 

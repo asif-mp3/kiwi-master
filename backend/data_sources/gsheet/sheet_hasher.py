@@ -22,11 +22,16 @@ import hashlib
 import json
 from google.oauth2.service_account import Credentials
 from typing import List, Any
+from utils.logger import get_logger
+
+logger = get_logger("gsheet.sheet_hasher")
 
 
 def _load_config():
     """Load configuration from settings.yaml"""
-    with open("config/settings.yaml") as f:
+    from utils.config_loader import _BACKEND_DIR
+    config_path = _BACKEND_DIR / "config" / "settings.yaml"
+    with open(config_path) as f:
         return yaml.safe_load(f)
 
 
@@ -187,37 +192,37 @@ if __name__ == "__main__":
     client = gspread.authorize(credentials)
     spreadsheet = client.open_by_key(spreadsheet_id)
     
-    print("Testing Sheet Hasher")
-    print("=" * 60)
-    
+    logger.info("Testing Sheet Hasher")
+    logger.info("=" * 60)
+
     for worksheet in spreadsheet.worksheets()[:3]:  # Test first 3 sheets
         sheet_name = worksheet.title
-        print(f"\nSheet: {sheet_name}")
-        
+        logger.info("Sheet: %s", sheet_name)
+
         try:
             raw_grid, sheet_hash = load_raw_sheet_with_hash(
-                spreadsheet_id, 
-                sheet_name, 
+                spreadsheet_id,
+                sheet_name,
                 credentials_path
             )
-            
-            print(f"  Dimensions: {len(raw_grid)} rows × {len(raw_grid[0]) if raw_grid else 0} cols")
-            print(f"  Hash: {sheet_hash[:16]}...")
-            print(f"  Source ID: {get_source_id(spreadsheet_id, sheet_name)}")
-            
+
+            logger.info("  Dimensions: %d rows x %d cols", len(raw_grid), len(raw_grid[0]) if raw_grid else 0)
+            logger.info("  Hash: %s...", sheet_hash[:16])
+            logger.info("  Source ID: %s", get_source_id(spreadsheet_id, sheet_name))
+
             # Test hash stability (load twice, should get same hash)
             _, sheet_hash2 = load_raw_sheet_with_hash(
-                spreadsheet_id, 
-                sheet_name, 
+                spreadsheet_id,
+                sheet_name,
                 credentials_path
             )
-            
+
             if sheet_hash == sheet_hash2:
-                print(f"  [OK] Hash is stable (deterministic)")
+                logger.info("  Hash is stable (deterministic)")
             else:
-                print(f"  [FAIL] Hash is NOT stable (non-deterministic!)")
-                
+                logger.error("  Hash is NOT stable (non-deterministic!)")
+
         except Exception as e:
-            print(f"  [FAIL] Error: {e}")
-    
-    print("\n" + "=" * 60)
+            logger.error("  Error: %s", e)
+
+    logger.info("=" * 60)

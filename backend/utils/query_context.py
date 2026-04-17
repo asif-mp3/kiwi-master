@@ -8,6 +8,9 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+from utils.logger import get_logger
+
+logger = get_logger("query_context")
 
 
 @dataclass
@@ -130,6 +133,7 @@ class QueryContext:
             'and what', 'now show', 'also show', 'but for',
             'instead of', 'rather than', 'as opposed to',
             'what if', 'how does', 'can you also', 'show me also',
+            'between', 'during',  # Time-range follow-ups
             'and', 'but', 'also', 'too'
         ]
 
@@ -139,15 +143,19 @@ class QueryContext:
         if any(phrase in q_lower for phrase in followup_phrases[:12]):  # Main phrases
             return True
 
+        # 1b. Time-range patterns — "from X to Y", "in the last month", etc.
+        # These provide context to the previous query
+        import re
+        time_range_followup = re.search(
+            r'^(from\s+\w+\s+to\s+|in\s+the\s+(last|past)\s+|for\s+(the\s+)?(last|past)\s+|since\s+)',
+            q_lower
+        )
+        if time_range_followup:
+            return True
+
         # 2. Very short questions are likely follow-ups
         word_count = len(question.split())
         if word_count <= 3:
-            return True
-
-        # 3. Questions starting with location/month only
-        # e.g., "Chennai?", "November?", "Bangalore"
-        if word_count <= 2:
-            # These are very likely follow-ups
             return True
 
         # 4. Pronoun references
@@ -294,7 +302,7 @@ class QueryContext:
             is_entity_lookup = any(kw in q_lower for kw in entity_lookup_keywords)
             if is_entity_lookup and self.active_entities.get('location'):
                 # User asking about a person - don't inherit location from previous query
-                print(f"    [QueryContext] Entity lookup detected - clearing location inheritance")
+                logger.debug("Entity lookup detected - clearing location inheritance")
                 if 'location' in self.active_entities:
                     del self.active_entities['location']
                 return False
@@ -321,7 +329,7 @@ class QueryContext:
         is_entity_lookup = any(kw in q_lower for kw in entity_lookup_keywords)
         if is_entity_lookup:
             inheritable_keys = [k for k in inheritable_keys if k != 'location']
-            print(f"    [QueryContext] Entity lookup - skipping location inheritance")
+            logger.debug("Entity lookup - skipping location inheritance")
 
         for key in inheritable_keys:
             new_val = new_entities.get(key)
@@ -351,7 +359,7 @@ class QueryContext:
         """
         self.date_context = date_info
         self.last_activity = datetime.now()
-        print(f"    [QueryContext] Date context set: {date_info}")
+        logger.debug("Date context set: %s", date_info)
 
     def get_date_context(self) -> Optional[Dict[str, Any]]:
         """Get current date context if set."""
@@ -475,7 +483,7 @@ class QueryContext:
             for key in keys_to_clear:
                 if key in self.active_entities:
                     del self.active_entities[key]
-            print(f"    [QueryContext] Cleared metric context for fresh query")
+            logger.debug("Cleared metric context for fresh query")
 
     # ===== CLARIFICATION STATE MANAGEMENT =====
 

@@ -204,29 +204,34 @@ def _build_where_clause(filters):
                 # Extract the core part of the search term (remove % wildcards)
                 search_term = safe_value.strip('%')
 
-                # If it's a name search (common patterns), use flexible matching
-                # This helps with variations like "Meenakshi" vs "Meenakchi"
-                if len(search_term) >= 4:  # Only for meaningful search terms
-                    # Try multiple patterns:
-                    # 1. Original pattern
-                    # 2. Pattern with common variations (ksh -> kch, sh -> ch, etc.)
+                # Use exact LIKE match first; only add Tamil spelling variations
+                # when the search term actually contains those patterns.
+                # Variations are guarded to prevent over-matching
+                # (e.g., "Lakshmi" should NOT accidentally match "Sakshi")
+                if len(search_term) >= 4:
                     patterns = [safe_value]
 
-                    # Add variation patterns for common Tamil name spellings
-                    if 'ksh' in search_term.lower():
+                    # Only add Tamil variations for specific letter combinations
+                    # Guard: only vary the EXACT substring, not partial overlaps
+                    lower_term = search_term.lower()
+                    if 'ksh' in lower_term:
+                        # "Lakshmi" → also try "Lakchmi", "Lakchimi"
                         patterns.append(safe_value.replace('ksh', 'kch').replace('Ksh', 'Kch'))
                         patterns.append(safe_value.replace('ksh', 'kchi').replace('Ksh', 'Kchi'))
-                    if 'sh' in search_term.lower():
+                    elif 'sh' in lower_term and 'ksh' not in lower_term:
+                        # Only apply sh→ch when NOT part of ksh (already handled above)
+                        # "Shanti" → "Chanti", but NOT "Lakshmi" → "Lakchmi" (double transform)
                         patterns.append(safe_value.replace('sh', 'ch').replace('Sh', 'Ch'))
 
-                    # Create OR condition for all patterns
+                    # Deduplicate patterns
+                    patterns = list(dict.fromkeys(patterns))
+
                     pattern_conditions = [
                         f"LOWER(CAST({column} AS VARCHAR)) LIKE LOWER('{pattern}')"
                         for pattern in patterns
                     ]
                     conditions.append(f"({' OR '.join(pattern_conditions)})")
                 else:
-                    # For short terms, use original pattern
                     conditions.append(f"LOWER(CAST({column} AS VARCHAR)) LIKE LOWER('{safe_value}')")
             else:
                 # Use actual operator (=, >=, <=, !=, etc.) for string comparisons

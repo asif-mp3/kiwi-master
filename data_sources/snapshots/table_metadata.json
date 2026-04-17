@@ -1,0 +1,114 @@
+{
+  "Dataset_1_Sales_Branch_Details": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Branch Details",
+    "table_index": 1,
+    "row_count": 95,
+    "created_at": "2026-02-23T09:47:50.608495"
+  },
+  "Dataset_1_Sales_Category_Performance": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Category Performance",
+    "table_index": 1,
+    "row_count": 10,
+    "created_at": "2026-02-23T09:47:50.614100"
+  },
+  "Dataset_1_Sales_Cost_Analysis": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Cost Analysis",
+    "table_index": 1,
+    "row_count": 12,
+    "created_at": "2026-02-23T09:47:50.619508"
+  },
+  "Dataset_1_Sales_Daily_Sales_Transactions": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Daily Sales Transactions",
+    "table_index": 1,
+    "row_count": 12135,
+    "created_at": "2026-02-23T09:47:50.671045"
+  },
+  "Dataset_1_Sales_Monthly_Category_Summary": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Monthly Category Summary",
+    "table_index": 1,
+    "row_count": 10,
+    "created_at": "2026-02-23T09:47:50.679682"
+  },
+  "Dataset_1_Sales_Monthly_Overall_Summary": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Monthly Overall Summary",
+    "table_index": 1,
+    "row_count": 6,
+    "created_at": "2026-02-23T09:47:50.685719"
+  },
+  "Dataset_1_Sales_Monthly_Trend_Analysis": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Monthly Trend Analysis",
+    "table_index": 1,
+    "row_count": 6,
+    "created_at": "2026-02-23T09:47:50.692624"
+  },
+  "Dataset_1_Sales_Payment_Mode_Analysis": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Payment Mode Analysis",
+    "table_index": 1,
+    "row_count": 5,
+    "created_at": "2026-02-23T09:47:50.697680"
+  },
+  "Dataset_1_Sales_Quarterly_Performance": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Quarterly Performance",
+    "table_index": 1,
+    "row_count": 3,
+    "created_at": "2026-02-23T09:47:50.702932"
+  },
+  "Dataset_1_Sales_SKU_Performance": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_SKU Performance",
+    "table_index": 1,
+    "row_count": 24,
+    "created_at": "2026-02-23T09:47:50.710548"
+  },
+  "Dataset_1_Sales_State_Performance": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_State Performance",
+    "table_index": 1,
+    "row_count": 12,
+    "created_at": "2026-02-23T09:47:50.717041"
+  },
+  "Dataset_1_Sales_Top_20_Branches": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_1_Sales_Top 20 Branches",
+    "table_index": 1,
+    "row_count": 20,
+    "created_at": "2026-02-23T09:47:50.719485"
+  },
+  "Dataset_2_Attendance_Attendance_Records": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_2_Attendance_Attendance Records",
+    "table_index": 1,
+    "row_count": 17380,
+    "created_at": "2026-02-23T09:47:50.781116"
+  },
+  "Dataset_2_Attendance_Department_Summary": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_2_Attendance_Department Summary",
+    "table_index": 1,
+    "row_count": 10,
+    "created_at": "2026-02-23T09:47:50.786990"
+  },
+  "Dataset_2_Attendance_Payroll_Summary": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_2_Attendance_Payroll Summary",
+    "table_index": 1,
+    "row_count": 120,
+    "created_at": "2026-02-23T09:47:50.792720"
+  },
+  "Dataset_2_Attendance_Staff_Maintenance": {
+    "source_id": "drive",
+    "sheet_name": "drive_Dataset_2_Attendance_Staff Maintenance",
+    "table_index": 1,
+    "row_count": 120,
+    "created_at": "2026-02-23T09:47:50.797701"
+  }
+}

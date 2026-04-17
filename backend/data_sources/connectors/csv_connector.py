@@ -17,6 +17,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("csv_connector")
 
 
 class CSVConnector(BaseConnector):
@@ -104,7 +107,7 @@ class CSVConnector(BaseConnector):
                 return self._load_from_file()
 
         except Exception as e:
-            print(f"[CSVConnector] Error loading CSV: {e}")
+            logger.error("Error loading CSV: %s", e)
             raise ValueError(f"Failed to load CSV: {e}")
 
     def _load_from_url(self) -> pd.DataFrame:
@@ -126,7 +129,7 @@ class CSVConnector(BaseConnector):
             content = response.content.decode(encoding)
             df = pd.read_csv(StringIO(content))
 
-            print(f"[CSVConnector] Loaded {len(df)} rows from URL")
+            logger.info("Loaded %d rows from URL", len(df))
             return df
 
         except requests.RequestException as e:
@@ -149,7 +152,7 @@ class CSVConnector(BaseConnector):
         for encoding in encodings:
             try:
                 df = pd.read_csv(file_path, encoding=encoding)
-                print(f"[CSVConnector] Loaded {len(df)} rows from file")
+                logger.info("Loaded %d rows from file", len(df))
                 return df
             except UnicodeDecodeError:
                 continue

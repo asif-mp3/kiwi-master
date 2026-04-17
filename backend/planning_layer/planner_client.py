@@ -1,12 +1,17 @@
 import os
 import json
 import yaml
+import time
 import threading
 import concurrent.futures
-import google.generativeai as genai
+from google.genai import types
 from pathlib import Path
 from planning_layer.planner_prompt import PLANNER_SYSTEM_PROMPT
 from dotenv import load_dotenv
+from utils.logger import get_logger
+from utils.config_loader import get_genai_client
+
+logger = get_logger("planner")
 
 # Backend directory for relative paths
 _BACKEND_DIR = Path(__file__).parent.parent
@@ -17,34 +22,10 @@ load_dotenv()
 
 
 # ============================================
-# BACKWARD-COMPATIBLE MODEL WRAPPER
-# Works with google-generativeai 0.3.x (no system_instruction)
+# CACHED SYSTEM PROMPT (includes permanent memory)
 # ============================================
-class CompatibleGenerativeModel:
-    """
-    Wrapper for GenerativeModel that supports system prompts
-    on older versions of google-generativeai (< 0.4.0).
-    """
-    def __init__(self, model, system_prompt: str):
-        self._model = model
-        self._system_prompt = system_prompt
-
-    def generate_content(self, prompt, **kwargs):
-        """Prepend system prompt to user message."""
-        full_prompt = f"{self._system_prompt}\n\n---\n\nUser Query:\n{prompt}"
-        return self._model.generate_content(full_prompt, **kwargs)
-
-    def __getattr__(self, name):
-        """Forward other attributes to underlying model."""
-        return getattr(self._model, name)
-
-
-# ============================================
-# SINGLETON PATTERN FOR LLM CLIENT
-# Saves 4-9 seconds per query by reusing model
-# ============================================
-_planner_model = None
-_planner_model_lock = threading.Lock()
+_system_prompt_cache = None
+_system_prompt_lock = threading.Lock()
 _config_cache = None
 
 
@@ -61,79 +42,34 @@ def load_config():
     return _config_cache
 
 
-def get_planner_model():
+def _get_system_prompt():
     """
-    Get or create singleton Gemini model instance.
+    Get cached system prompt with permanent memory injection.
     Thread-safe with double-checked locking pattern.
-
-    Returns:
-        GenerativeModel: Reusable Gemini model instance
     """
-    global _planner_model
+    global _system_prompt_cache
 
-    # Fast path - model already exists
-    if _planner_model is not None:
-        return _planner_model
+    if _system_prompt_cache is not None:
+        return _system_prompt_cache
 
-    # Slow path - need to create model (thread-safe)
-    with _planner_model_lock:
-        # Double-check after acquiring lock
-        if _planner_model is not None:
-            return _planner_model
+    with _system_prompt_lock:
+        if _system_prompt_cache is not None:
+            return _system_prompt_cache
 
-        config = load_config()
-        _planner_model = initialize_gemini_client(config)
-        return _planner_model
+        memory_constraints = format_memory_for_prompt()
+        _system_prompt_cache = PLANNER_SYSTEM_PROMPT + memory_constraints
+        return _system_prompt_cache
 
 
 def invalidate_planner_model():
     """
-    Invalidate the cached model (e.g., when memory/config changes).
+    Invalidate the cached system prompt (e.g., when memory/config changes).
     Call this when permanent memory is updated.
     """
-    global _planner_model, _config_cache
-    with _planner_model_lock:
-        _planner_model = None
+    global _system_prompt_cache, _config_cache
+    with _system_prompt_lock:
+        _system_prompt_cache = None
         _config_cache = None
-
-
-def initialize_gemini_client(config):
-    """Initialize Gemini API client with configuration and memory injection"""
-    api_key_env = config.get("api_key_env", "GEMINI_API_KEY")
-    api_key = os.getenv(api_key_env)
-    
-    if not api_key:
-        raise ValueError(
-            f"Gemini API key not found. Please set the {api_key_env} environment variable."
-        )
-    
-    genai.configure(api_key=api_key)
-    
-    model_name = config.get("model", "gemini-2.0-flash")
-    temperature = config.get("temperature", 0.0)
-    
-    # Output tokens for query plans - comparison queries need more tokens
-    # due to complex JSON with multiple period definitions and filters
-    max_tokens = config.get("planner_max_tokens", 1500)
-
-    generation_config = {
-        "temperature": temperature,
-        "response_mime_type": "application/json",
-        "max_output_tokens": max_tokens,
-    }
-
-    # Load and inject permanent memory into system prompt
-    memory_constraints = format_memory_for_prompt()
-    system_prompt = PLANNER_SYSTEM_PROMPT + memory_constraints
-
-    # Create base model without system_instruction (for compatibility with 0.3.x)
-    base_model = genai.GenerativeModel(
-        model_name=model_name,
-        generation_config=generation_config,
-    )
-
-    # Wrap with our compatible model that handles system prompts
-    return CompatibleGenerativeModel(base_model, system_prompt)
 
 
 # ============================================
@@ -182,49 +118,19 @@ def estimate_query_complexity(question: str, entities: dict = None) -> str:
 
 def get_model_for_complexity(complexity: str, config: dict):
     """
-    Get appropriate model based on query complexity.
-    Creates a new model instance (not singleton) for adaptive selection.
+    Get appropriate model name and token limit based on query complexity.
 
     Args:
         complexity: 'simple' or 'complex'
         config: LLM configuration
 
     Returns:
-        tuple: (model, model_name)
+        tuple: (model_name, max_tokens)
     """
-    api_key = (os.getenv(config.get("api_key_env", "GEMINI_API_KEY")) or "").strip()
-    genai.configure(api_key=api_key)
-    temperature = config.get("temperature", 0.0)
-
     if complexity == 'simple':
-        # Fast model for simple queries (2-3x faster)
-        model_name = "gemini-2.0-flash"
-        max_tokens = 1000
+        return "gemini-2.0-flash", 1000
     else:
-        # Powerful model for complex queries
-        model_name = config.get("model", "gemini-2.0-flash")
-        max_tokens = config.get("planner_max_tokens", 1500)
-
-    generation_config = {
-        "temperature": temperature,
-        "response_mime_type": "application/json",
-        "max_output_tokens": max_tokens,
-    }
-
-    # Load memory constraints
-    memory_constraints = format_memory_for_prompt()
-    system_prompt = PLANNER_SYSTEM_PROMPT + memory_constraints
-
-    # Create base model without system_instruction (for compatibility with 0.3.x)
-    base_model = genai.GenerativeModel(
-        model_name=model_name,
-        generation_config=generation_config,
-    )
-
-    # Wrap with our compatible model that handles system prompts
-    model = CompatibleGenerativeModel(base_model, system_prompt)
-
-    return model, model_name
+        return config.get("model", "gemini-2.0-flash"), config.get("planner_max_tokens", 1500)
 
 
 def format_schema_context(schema_context) -> str:
@@ -306,17 +212,17 @@ def parse_json_response(response_text: str) -> dict:
         # e.g., "Which category sold the most AND which has highest profit"
         # Take the first plan to answer the primary question
         if isinstance(parsed, list) and len(parsed) > 0:
-            print(f"  [Planner] Compound question detected - LLM returned {len(parsed)} plans, using first")
+            logger.debug("Compound question detected - LLM returned %s plans, using first", len(parsed))
             return parsed[0]
 
         return parsed
     except json.JSONDecodeError as e:
         # Try to repair truncated JSON (common with token limits)
-        print(f"  [Planner] JSON parse failed, attempting repair...")
+        logger.warning("JSON parse failed, attempting repair...")
         try:
             repaired = _repair_truncated_json(text)
             parsed = json.loads(repaired)
-            print(f"  [Planner] JSON repair successful!")
+            logger.info("JSON repair successful")
 
             if isinstance(parsed, list) and len(parsed) > 0:
                 return parsed[0]
@@ -326,13 +232,14 @@ def parse_json_response(response_text: str) -> dict:
             raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
 
 
-def call_llm_with_timeout(model, prompt: str, timeout_seconds: int = 60):
+def call_llm_with_timeout(prompt: str, model_name: str, gen_config: types.GenerateContentConfig, timeout_seconds: int = 60):
     """
     Call LLM with a timeout to prevent hanging.
 
     Args:
-        model: The Gemini model instance
         prompt: The prompt to send
+        model_name: Gemini model name (e.g. 'gemini-2.0-flash')
+        gen_config: GenerateContentConfig with temperature, system_instruction, etc.
         timeout_seconds: Maximum time to wait (default 60s from config)
 
     Returns:
@@ -342,8 +249,17 @@ def call_llm_with_timeout(model, prompt: str, timeout_seconds: int = 60):
         TimeoutError: If the call takes longer than timeout_seconds
         Exception: Any error from the model
     """
+    client = get_genai_client()
+
+    def _call():
+        return client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=gen_config,
+        )
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(model.generate_content, prompt)
+        future = executor.submit(_call)
         try:
             return future.result(timeout=timeout_seconds)
         except concurrent.futures.TimeoutError:
@@ -381,8 +297,17 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
 
     # ADAPTIVE MODEL SELECTION: Use faster model for simple queries
     complexity = estimate_query_complexity(question, entities)
-    model, model_name = get_model_for_complexity(complexity, config)
-    print(f"  [Planner] Query complexity: {complexity} -> using {model_name}")
+    model_name, max_tokens = get_model_for_complexity(complexity, config)
+    logger.debug("Query complexity: %s -> using %s", complexity, model_name)
+
+    # Build generation config with system prompt
+    system_prompt = _get_system_prompt()
+    gen_config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=config.get("temperature", 0.0),
+        response_mime_type="application/json",
+        max_output_tokens=max_tokens,
+    )
 
     # Format schema context
     schema_text = format_schema_context(schema_context)
@@ -393,33 +318,15 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
         hint_parts = []
         if entities.get('location'):
             location = entities['location']
-            # Determine if it's a city or state to help LLM choose correct column
-            known_cities = {
-                'chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad', 'kolkata',
-                'pune', 'ahmedabad', 'jaipur', 'lucknow', 'kanpur', 'nagpur',
-                'indore', 'thane', 'bhopal', 'visakhapatnam', 'coimbatore', 'madurai',
-                'kochi', 'patna', 'jodhpur', 'surat', 'vadodara', 'rajkot',
-                'velachery', 'adyar', 'anna nagar', 't nagar', 'tambaram', 'koyambedu',
-                'nungambakkam', 'mylapore', 'triplicane', 'egmore', 'kodambakkam'
-            }
-            known_states = {
-                'tamil nadu', 'karnataka', 'maharashtra', 'kerala', 'andhra pradesh',
-                'telangana', 'west bengal', 'gujarat', 'rajasthan', 'uttar pradesh',
-                'madhya pradesh', 'bihar', 'odisha', 'punjab', 'haryana', 'jharkhand',
-                'chhattisgarh', 'assam', 'goa', 'uttarakhand', 'himachal pradesh'
-            }
-
             location_lower = location.lower()
-            if location_lower in known_cities:
-                hint_parts.append(f"- Filter by CITY/BRANCH (NOT State column!): {location} - Use columns like 'Branch', 'Branch_Name', 'City', 'Area Name', 'Area', 'Location' for this filter")
-            elif location_lower in known_states:
+            # Heuristic: multi-word locations with state-like suffixes are states
+            # Single-word locations are likely cities/branches
+            state_suffixes = ['pradesh', 'nadu', 'bengal', 'kashmir', 'garh', 'khand', 'land']
+            word_count = len(location.split())
+            if word_count >= 2 or any(kw in location_lower for kw in state_suffixes):
                 hint_parts.append(f"- Filter by STATE: {location} - Use the 'State' column for this filter")
             else:
-                # Check if it looks like a state (contains 'pradesh', 'nadu', etc.)
-                if any(kw in location_lower for kw in ['pradesh', 'nadu', 'bengal', 'kashmir']):
-                    hint_parts.append(f"- Filter by STATE: {location} - Use the 'State' column")
-                else:
-                    hint_parts.append(f"- Filter by location/area: {location} - Try 'Branch', 'City', 'Area Name', or 'State' column based on what exists")
+                hint_parts.append(f"- Filter by CITY/BRANCH (NOT State column!): {location} - Use columns like 'Branch', 'Branch_Name', 'City', 'Area Name', 'Area', 'Location' for this filter")
         if entities.get('category'):
             hint_parts.append(f"- Filter by category: {entities['category']}")
         if entities.get('month'):
@@ -475,6 +382,13 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
             elif day:
                 # Only day specified, use with month context
                 hint_parts.append(f"- **SPECIFIC DAY**: Day {day} of the month -> Apply date filter for day {day}")
+        # Handle negation/exclusion: "except Tamil Nadu", "excluding Dairy"
+        if entities.get('negation'):
+            neg = entities['negation']
+            if neg.get('type') == 'exclude' and neg.get('value'):
+                excl_val = neg['value']
+                hint_parts.append(f"- **EXCLUSION**: User wants to EXCLUDE '{excl_val}'. Use operator '!=' in subset_filters for the matching column (e.g., State != '{excl_val}' or Category != '{excl_val}')")
+
         if hint_parts:
             entity_hints = "\n**Extracted Entities (use these for filters):**\n" + "\n".join(hint_parts) + "\n"
 
@@ -506,7 +420,7 @@ Output the query plan as JSON:"""
     for attempt in range(max_retries):
         try:
             # Call Gemini API with timeout protection
-            response = call_llm_with_timeout(model, user_prompt, timeout_seconds)
+            response = call_llm_with_timeout(user_prompt, model_name, gen_config, timeout_seconds)
 
             # Extract text from response
             response_text = response.text
@@ -562,28 +476,43 @@ Output the query plan as JSON:"""
                     raise ValueError(f"order_by must be a list, got: {type(plan.get('order_by'))}")
 
             elapsed = (time.time() - _start) * 1000
-            print(f"[YES] LLM Planning generated [{elapsed:.0f}ms]")
+            logger.info("LLM Planning generated [%dms]", int(elapsed))
             return plan
 
         except TimeoutError as e:
             last_error = e
-            print(f"[Planner] Attempt {attempt + 1}/{max_retries} timed out")
+            logger.warning("Attempt %s/%s timed out", attempt + 1, max_retries)
             if attempt < max_retries - 1:
-                continue  # Retry
+                wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                logger.info("Retrying in %.1fs...", wait)
+                time.sleep(wait)
+                continue
             else:
                 raise TimeoutError(f"LLM request timed out after {max_retries} attempts")
 
         except json.JSONDecodeError as e:
             last_error = e
             if attempt < max_retries - 1:
-                continue  # Retry
+                wait = 0.5 * (2 ** attempt)
+                logger.info("JSON parse failed, retrying in %.1fs...", wait)
+                time.sleep(wait)
+                continue
             else:
                 raise ValueError(f"Failed to parse valid JSON after {max_retries} attempts: {e}")
 
         except Exception as e:
             last_error = e
+            error_msg = str(e).lower()
             if attempt < max_retries - 1:
-                continue  # Retry
+                # Longer backoff for rate limits (429 / resource_exhausted)
+                if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
+                    wait = 2.0 * (2 ** attempt)  # 2s, 4s, 8s
+                    logger.warning("Rate limit hit, backing off %.1fs (attempt %d/%d)", wait, attempt + 1, max_retries)
+                else:
+                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    logger.info("Error, retrying in %.1fs...", wait)
+                time.sleep(wait)
+                continue
             else:
                 raise ValueError(f"Failed to generate plan after {max_retries} attempts: {e}")
     

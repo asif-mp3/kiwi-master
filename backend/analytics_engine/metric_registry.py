@@ -1,5 +1,8 @@
 import yaml
 from pathlib import Path
+from utils.logger import get_logger
+
+logger = get_logger("metric_registry")
 
 class MetricRegistry:
     def __init__(self, path="config/metric_definitions.yaml"):
@@ -12,7 +15,7 @@ class MetricRegistry:
                         self.metrics = config["metrics"]
         except Exception as e:
             # Gracefully handle missing or invalid metric files
-            print(f"[WARN]  Could not load metrics: {e}")
+            logger.warning("Could not load metrics: %s", e)
             self.metrics = {}
 
     def is_valid_metric(self, metric_name: str) -> bool:

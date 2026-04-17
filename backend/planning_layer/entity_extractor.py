@@ -11,6 +11,10 @@ import re
 from typing import Dict, Optional, List, Any, Set
 from datetime import datetime, timedelta
 
+from utils.logger import get_logger
+
+logger = get_logger("entity_extractor")
+
 
 class EntityExtractor:
     """
@@ -90,38 +94,13 @@ class EntityExtractor:
     ]
 
     # Minimal fallback locations (only used if no profiles loaded)
-    _DEFAULT_LOCATIONS: Set[str] = {
-        'chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad',
-        # Common Chennai areas (Freshggies delivery zones)
-        'velachery', 'adyar', 'koyambedu', 'anna nagar', 'chromepet',
-        'tambaram', 'porur', 't nagar', 'mylapore', 'besant nagar',
-        'thiruvanmiyur', 'guindy', 'nanganallur', 'madipakkam',
-        # Indian states (for state-level filtering)
-        'tamil nadu', 'karnataka', 'kerala', 'andhra pradesh', 'telangana',
-        'maharashtra', 'gujarat', 'rajasthan', 'punjab', 'haryana',
-        'uttar pradesh', 'madhya pradesh', 'west bengal', 'odisha', 'bihar'
-    }
+    # Empty — locations are learned dynamically from loaded profiles
+    _DEFAULT_LOCATIONS: Set[str] = set()
 
-    # Fallback categories (used if not learned from profiles)
-    # Includes common Freshggies product categories
+    # Fallback categories (only used if no profiles loaded)
+    # Empty — categories are learned dynamically from loaded profiles
     # NOTE: "sales" is NOT a category - it's a metric! Do not add it here.
-    _DEFAULT_CATEGORIES: Set[str] = {
-        'orders', 'products', 'customers',
-        # Freshggies categories
-        'fresh cut vegetables', 'fresh cut fruits', 'leafy greens',
-        'exotic vegetables', 'salad mixes', 'ready to cook',
-        'dairy', 'beverages', 'groceries', 'snacks', 'frozen',
-        'fruits', 'vegetables', 'organic', 'premium',
-        # Additional common categories
-        'fresh produce', 'dairy & homemade', 'snacks & sweets',
-        'bakery', 'meat', 'seafood', 'pantry', 'household',
-        # Freshggies specific categories from user data (EXACT column names)
-        'dairy & homemade essentials', 'batter & dough',
-        'ready to cook & eat', 'fresh fruits', 'fresh vegetables',
-        'juices & beverages', 'homemade powders, pastes & pickles',
-        'pickles & preserves', 'salads & dressings', 'combo / value pack',
-        'fresh cut vegetables / prepped veggies'
-    }
+    _DEFAULT_CATEGORIES: Set[str] = set()
 
     # Aggregation keywords
     AGGREGATION_TERMS = {
@@ -165,12 +144,12 @@ class EntityExtractor:
                 from schema_intelligence.profile_store import ProfileStore
                 profile_store = ProfileStore()
             except Exception as e:
-                print(f"  Warning: Could not load ProfileStore for entity learning: {e}")
+                logger.warning("Could not load ProfileStore for entity learning: %s", e)
                 return
 
         profiles = profile_store.get_all_profiles()
         if not profiles:
-            print("  No profiles available for entity learning")
+            logger.debug("No profiles available for entity learning")
             return
 
         # Clear previous learned entities
@@ -225,11 +204,13 @@ class EntityExtractor:
                             self._learned_custom_entities[entity_key].add(val.lower().strip())
 
         self._profiles_loaded = True
-        print(f"  [OK] Learned entities from profiles:")
-        print(f"    - {len(self._learned_locations)} locations")
-        print(f"    - {len(self._learned_categories)} categories")
-        print(f"    - {len(self._learned_products)} products")
-        print(f"    - {len(self._learned_custom_entities)} custom dimensions")
+        logger.info(
+            "Learned entities from profiles: %s locations, %s categories, %s products, %s custom dimensions",
+            len(self._learned_locations),
+            len(self._learned_categories),
+            len(self._learned_products),
+            len(self._learned_custom_entities),
+        )
 
     @property
     def LOCATIONS(self) -> Set[str]:
@@ -356,6 +337,7 @@ class EntityExtractor:
             'trend_intent': self._is_trend_query(q_lower),
             'summary_intent': self._is_summary_query(q_lower),
             'impact_intent': self._is_impact_query(q_lower),
+            'negation': self._extract_negation(q_lower),
             'raw_question': question
         }
 
@@ -410,6 +392,34 @@ class EntityExtractor:
         'total', 'average', 'count', 'sum', 'net', 'gross'
     }
 
+    # Common English words that should NEVER be extracted as categories/entities
+    # even if they appear as values in data columns. These cause false routing
+    # when users ask general questions like "What's the data quality like?"
+    COMMON_WORD_EXCLUSIONS = {
+        # Meta/abstract words
+        'quality', 'general', 'standard', 'special', 'regular', 'basic',
+        'premium', 'normal', 'default', 'custom', 'other', 'unknown',
+        'primary', 'secondary', 'main', 'minor', 'major', 'common',
+        # Descriptive words
+        'good', 'bad', 'high', 'low', 'best', 'worst', 'new', 'old',
+        'open', 'closed', 'active', 'inactive', 'pending', 'complete',
+        'large', 'small', 'medium', 'long', 'short', 'full', 'empty',
+        # Action/question words
+        'like', 'look', 'tell', 'show', 'give', 'find', 'help',
+        'want', 'need', 'make', 'take', 'keep', 'know', 'think',
+        # Data/meta words
+        'data', 'info', 'information', 'detail', 'details', 'report',
+        'overview', 'summary', 'analysis', 'insight', 'insights',
+        'performance', 'status', 'result', 'results', 'record', 'records',
+        'value', 'values', 'number', 'numbers', 'type', 'types',
+        # Time words
+        'today', 'yesterday', 'tomorrow', 'week', 'month', 'year',
+        'daily', 'weekly', 'monthly', 'yearly', 'current', 'recent',
+        # Structural words
+        'first', 'last', 'next', 'previous', 'above', 'below',
+        'same', 'different', 'similar', 'overall', 'entire',
+    }
+
     def _extract_category(self, text_lower: str, original: str) -> Optional[str]:
         """
         Extract product category from text.
@@ -431,8 +441,12 @@ class EntityExtractor:
         # Collect all matching categories with their position and length
         matches = []
         for cat in self.CATEGORIES:
+            cat_lower = cat.lower()
             # Skip if this is a metric keyword (not a real product category)
-            if cat.lower() in self.METRIC_EXCLUSIONS:
+            if cat_lower in self.METRIC_EXCLUSIONS:
+                continue
+            # Skip common English words that cause false entity extraction
+            if cat_lower in self.COMMON_WORD_EXCLUSIONS:
                 continue
 
             pattern = r'\b' + re.escape(cat) + r'\b'
@@ -461,24 +475,22 @@ class EntityExtractor:
 
         # First try exact match on learned locations
         for loc in self.LOCATIONS:
+            # Skip common words that could be location values but aren't real locations
+            if loc.lower() in self.COMMON_WORD_EXCLUSIONS:
+                continue
             pattern = r'\b' + re.escape(loc) + r'\b'
             if re.search(pattern, text_lower):
                 return loc.title()
 
-        # FUZZY MATCH: Check if user's input is a PREFIX of any learned location
-        # e.g., "chennai" should match "chennai main"
-        # Extract potential location words from user input
-        common_cities = ['chennai', 'bangalore', 'mumbai', 'delhi', 'hyderabad', 'pune',
-                        'kolkata', 'ahmedabad', 'jaipur', 'lucknow', 'coimbatore', 'madurai']
-
-        for city in common_cities:
-            if city in text_lower:
-                # Find any learned location that STARTS with this city
-                for loc in self.LOCATIONS:
-                    if loc.startswith(city):
-                        return loc.title()  # Return the full location name
-                # If no learned location, return the city itself
-                return city.title()
+        # FUZZY MATCH: Check if any word in the query is a prefix of a learned location
+        # e.g., "chennai" should match "chennai main" in the profiles
+        words = text_lower.split()
+        for word in words:
+            if len(word) < 3:
+                continue
+            for loc in self.LOCATIONS:
+                if loc.startswith(word) and loc != word:
+                    return loc.title()  # Return the full location name
 
         # Also check custom entities that might be area/location related
         location_entity_types = ['area_name', 'area', 'location', 'city', 'zone', 'region']
@@ -490,9 +502,9 @@ class EntityExtractor:
                     pattern = r'\b' + re.escape(val_lower) + r'\b'
                     if re.search(pattern, text_lower):
                         return val.title()
-                    # Fuzzy: check if user input contains start of location
-                    for city in common_cities:
-                        if city in text_lower and val_lower.startswith(city):
+                    # Fuzzy: check if user input word is prefix of this value
+                    for word in words:
+                        if len(word) >= 3 and val_lower.startswith(word):
                             return val.title()
 
         return None
@@ -637,6 +649,30 @@ class EntityExtractor:
         if 'last week' in text:
             return 'last_week'
 
+        if 'year to date' in text or 'ytd' in text:
+            return 'year_to_date'
+        if 'month to date' in text or 'mtd' in text:
+            return 'month_to_date'
+
+        return None
+
+    def _extract_negation(self, text: str) -> Optional[Dict[str, str]]:
+        """Detect negation patterns like 'except', 'not', 'excluding', 'zero'."""
+        # "everyone except X" / "all except X" / "excluding X"
+        except_match = re.search(r'\b(?:except|excluding|other\s+than|apart\s+from)\s+(.+?)(?:\s+(?:in|for|from|during|and|$))', text)
+        if except_match:
+            return {'type': 'exclude', 'value': except_match.group(1).strip()}
+
+        # "NOT X" / "did not" / "didn't"
+        not_match = re.search(r'\b(?:not|didn\'?t|don\'?t|won\'?t|never)\s+(?:meet|reach|exceed|achieve|have|had)\b', text)
+        if not_match:
+            return {'type': 'less_than', 'value': None}
+
+        # "zero X" / "no X"
+        zero_match = re.search(r'\b(?:zero|no|nil)\s+(sales|profit|revenue|attendance|payment|transaction)', text)
+        if zero_match:
+            return {'type': 'equals_zero', 'value': zero_match.group(1)}
+
         return None
 
     def _extract_explicit_table(self, question: str) -> Optional[str]:
@@ -773,6 +809,9 @@ class EntityExtractor:
         found = {}
         for entity_type, values in self._learned_custom_entities.items():
             for val in values:
+                # Skip common words that cause false extraction
+                if val.lower() in self.COMMON_WORD_EXCLUSIONS or val.lower() in self.METRIC_EXCLUSIONS:
+                    continue
                 pattern = r'\b' + re.escape(val) + r'\b'
                 if re.search(pattern, text):
                     found[entity_type] = val.title()
@@ -883,18 +922,15 @@ class EntityExtractor:
         if any(phrase in question for phrase in tamil_followup_phrases):
             return True
 
-        # Very short questions are likely follow-ups
+        # Short questions are only follow-ups if they contain a data entity
+        # (month, metric, location, dimension keyword). Pure casual words
+        # like "podi", "ennadi panra" are NOT follow-ups.
         word_count = len(question.split())
         if word_count <= 3:
-            return True
-
-        # Questions that are just a location or month
-        if word_count <= 2:
-            # Check if it's just a location name
-            if self._extract_location(q_lower):
-                return True
-            # Check if it's just a month
-            if self._extract_month(q_lower):
+            if (self._extract_month(q_lower) or
+                    self._extract_metric(q_lower) or
+                    self._extract_location(q_lower) or
+                    self._extract_dimension_keywords(q_lower)):
                 return True
 
         return False

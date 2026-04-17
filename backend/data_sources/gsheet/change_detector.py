@@ -29,13 +29,18 @@ from data_sources.gsheet.sheet_hasher import (
     get_source_id,
     compute_sheet_hash
 )
+from utils.logger import get_logger
+
+logger = get_logger("gsheet.change_detector")
 
 SHEET_REGISTRY_FILE = "data_sources/snapshots/sheet_state.json"
 
 
 def _load_config():
     """Load configuration from settings.yaml"""
-    with open("config/settings.yaml") as f:
+    from utils.config_loader import _BACKEND_DIR
+    config_path = _BACKEND_DIR / "config" / "settings.yaml"
+    with open(config_path) as f:
         return yaml.safe_load(f)
 
 
@@ -70,13 +75,13 @@ def load_sheet_registry() -> Dict[str, Any]:
             
         # Migrate old format if needed
         if "fingerprints" in registry:
-            print("   Migrating old table-level fingerprints to sheet-level hashes...")
+            logger.info("Migrating old table-level fingerprints to sheet-level hashes...")
             registry = _migrate_old_format(registry)
             
         return registry
         
     except Exception as e:
-        print(f"[WARN]  Could not load sheet registry: {e}")
+        logger.warning("Could not load sheet registry: %s", e)
         return {
             "spreadsheet_id": None,
             "sheets": {}
@@ -139,7 +144,7 @@ def _migrate_old_format(old_registry: dict) -> dict:
                 "source_id": get_source_id(spreadsheet_id, sheet_name) if spreadsheet_id else None
             }
     
-    print(f"   Migrated {len(new_registry['sheets'])} sheets from old format")
+    logger.info("Migrated %d sheets from old format", len(new_registry['sheets']))
     return new_registry
 
 
@@ -175,10 +180,10 @@ def save_sheet_registry(spreadsheet_id: str, sheet_hashes: Dict[str, Dict[str, A
         with open(SHEET_REGISTRY_FILE, 'w') as f:
             json.dump(registry, f, indent=2)
             
-        print(f"[OK] Sheet registry saved for {len(sheet_hashes)} sheet(s)")
+        logger.info("Sheet registry saved for %d sheet(s)", len(sheet_hashes))
         
     except Exception as e:
-        print(f"[WARN]  Could not save sheet registry: {e}")
+        logger.warning("Could not save sheet registry: %s", e)
 
 
 def compute_current_sheet_hashes(sheets_with_tables: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
@@ -207,7 +212,7 @@ def compute_current_sheet_hashes(sheets_with_tables: Dict[str, List[Dict[str, An
             
             if not sheet_hash:
                 # Fallback: compute hash from raw data if not present
-                print(f"   [WARN]  No sheet_hash found for '{sheet_name}', this shouldn't happen")
+                logger.warning("No sheet_hash found for '%s', this shouldn't happen", sheet_name)
                 sheet_hash = "UNKNOWN"
             
             sheet_hashes[sheet_name] = {
@@ -244,7 +249,7 @@ def get_changed_sheets(old_registry: dict, current_sheet_hashes: Dict[str, Dict[
         if sheet_name not in old_sheets:
             # New sheet
             changed_sheets.append(sheet_name)
-            print(f"   [NEW] New sheet detected: '{sheet_name}'")
+            logger.info("New sheet detected: '%s'", sheet_name)
             continue
         
         old_metadata = old_sheets[sheet_name]
@@ -253,20 +258,20 @@ def get_changed_sheets(old_registry: dict, current_sheet_hashes: Dict[str, Dict[
         if old_hash is None:
             # No previous hash (first run or migration)
             changed_sheets.append(sheet_name)
-            print(f"   [SYNC] No previous hash for '{sheet_name}' (first run)")
+            logger.info("No previous hash for '%s' (first run)", sheet_name)
             continue
         
         if current_hash != old_hash:
             # Hash changed
             changed_sheets.append(sheet_name)
-            print(f"   [SYNC] Content changed in sheet '{sheet_name}'")
-            print(f"      Old: {old_hash[:16]}...")
-            print(f"      New: {current_hash[:16]}...")
+            logger.info("Content changed in sheet '%s'", sheet_name)
+            logger.debug("  Old hash: %s...", old_hash[:16])
+            logger.debug("  New hash: %s...", current_hash[:16])
     
     # Check for deleted sheets
     for sheet_name in old_sheets.keys():
         if sheet_name not in current_sheet_hashes:
-            print(f"   [DEL]  Sheet deleted: '{sheet_name}'")
+            logger.info("Sheet deleted: '%s'", sheet_name)
             # Note: Deleted sheets don't need rebuild, but we should clean up their tables
             # This will be handled by the cleanup logic
     
@@ -297,14 +302,14 @@ def needs_refresh(sheets_with_tables: Dict[str, List[Dict[str, Any]]]) -> Tuple[
         
         # Check if spreadsheet ID changed (user switched to different spreadsheet)
         if old_spreadsheet_id and old_spreadsheet_id != current_spreadsheet_id:
-            print("[SYNC] Spreadsheet ID changed - FULL RESET REQUIRED")
-            print(f"   Old: {old_spreadsheet_id}")
-            print(f"   New: {current_spreadsheet_id}")
+            logger.info("Spreadsheet ID changed - FULL RESET REQUIRED")
+            logger.info("  Old: %s", old_spreadsheet_id)
+            logger.info("  New: %s", current_spreadsheet_id)
             return True, True, []
         
         # First run - no previous state
         if not old_registry.get("sheets"):
-            print("[SCAN] No previous state found (first run) - FULL RESET REQUIRED")
+            logger.info("No previous state found (first run) - FULL RESET REQUIRED")
             return True, True, []
         
         # Compute current sheet hashes
@@ -314,18 +319,16 @@ def needs_refresh(sheets_with_tables: Dict[str, List[Dict[str, Any]]]) -> Tuple[
         changed_sheets = get_changed_sheets(old_registry, current_sheet_hashes)
         
         if not changed_sheets:
-            print("[OK] No sheet changes detected (all hashes match)")
+            logger.info("No sheet changes detected (all hashes match)")
             return False, False, []
         
         # Changes detected - incremental rebuild
-        print(f"[SYNC] {len(changed_sheets)} sheet(s) changed - INCREMENTAL REBUILD")
+        logger.info("%d sheet(s) changed - INCREMENTAL REBUILD", len(changed_sheets))
         return True, False, changed_sheets
         
     except Exception as e:
         # Safe default: full reset on error
-        print(f"[WARN]  Could not check for changes: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.warning("Could not check for changes: %s", e, exc_info=True)
         return True, True, []
 
 
@@ -350,10 +353,10 @@ def mark_synced(sheets_with_tables: Dict[str, List[Dict[str, Any]]]):
         
         # Count total tables
         total_tables = sum(len(tables) for tables in sheets_with_tables.values())
-        print(f"[OK] Marked {len(sheet_hashes)} sheet(s) as synced ({total_tables} total tables)")
+        logger.info("Marked %d sheet(s) as synced (%d total tables)", len(sheet_hashes), total_tables)
         
     except Exception as e:
-        print(f"[WARN]  Could not mark sheets as synced: {e}")
+        logger.warning("Could not mark sheets as synced: %s", e)
 
 
 # Backward compatibility: Keep old function names as aliases
@@ -369,4 +372,4 @@ def save_sheet_state(sheets: list, fingerprints: dict):
     This function is kept for compatibility but should not be used.
     Use save_sheet_registry() instead.
     """
-    print("[WARN]  save_sheet_state() is deprecated, use save_sheet_registry() instead")
+    logger.warning("save_sheet_state() is deprecated, use save_sheet_registry() instead")

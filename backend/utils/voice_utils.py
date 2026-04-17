@@ -10,6 +10,9 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import Optional
+from utils.logger import get_logger
+
+logger = get_logger("voice_utils")
 
 # Load environment variables
 load_dotenv()
@@ -49,7 +52,7 @@ def get_voice_config() -> dict:
         if not voice_config.get("tamil_voice_id"):
             # Fall back to default voice if Tamil not configured
             voice_config["tamil_voice_id"] = voice_config["default_voice_id"]
-            print("⚠️ voice.tamil_voice_id not configured, using default_voice_id")
+            logger.warning("voice.tamil_voice_id not configured, using default_voice_id")
 
         _voice_config_cache = voice_config
     else:
@@ -91,9 +94,9 @@ def transcribe_audio(audio_file_path: str, language: Optional[str] = None) -> st
             language = voice_config.get("stt_language")  # None means auto-detect
 
         if language:
-            print(f"🎤 STT: Using Scribe v2 with language={language}")
+            logger.info("STT: Using Scribe v2 with language=%s", language)
         else:
-            print(f"🎤 STT: Using Scribe v2 with auto language detection")
+            logger.info("STT: Using Scribe v2 with auto language detection")
 
         # Use Scribe v2 - latest available model
         with open(audio_file_path, 'rb') as audio_file:
@@ -116,13 +119,13 @@ def transcribe_audio(audio_file_path: str, language: Optional[str] = None) -> st
             transcribed_text = str(result)
 
         elapsed = (time.time() - _start) * 1000
-        print(f"✅ STT: Transcribed [{elapsed:.0f}ms]: \"{transcribed_text}\"")
+        logger.info("STT: Transcribed [%dms]: \"%s\"", elapsed, transcribed_text)
         return transcribed_text
 
     except Exception as e:
         elapsed = (time.time() - _start) * 1000
         error_msg = f"Transcription failed: {str(e)}"
-        print(f"❌ STT Error: {error_msg} [{elapsed:.0f}ms]")
+        logger.error("STT Error: %s [%dms]", error_msg, elapsed)
         raise Exception(error_msg)
 
 def _preprocess_for_tts(text: str) -> str:
@@ -183,21 +186,21 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
         hit, cached_audio = get_cached_tts_audio(processed_text, voice_id)
         if hit and cached_audio:
             elapsed = (time.time() - start_time) * 1000
-            print(f"⚡ TTS CACHE HIT: {len(cached_audio)} bytes [{elapsed:.0f}ms]")
+            logger.info("TTS CACHE HIT: %d bytes [%dms]", len(cached_audio), elapsed)
             return cached_audio
 
-        print(f"🔊 TTS: Using voice ID {voice_id}")
+        logger.info("TTS: Using voice ID %s", voice_id)
 
         # Initialize ElevenLabs client
         client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
         # Select model based on language for best balance of speed vs accuracy
         if has_tamil:
-            model_id = "eleven_multilingual_v2"
-            print("🔊 TTS: Detected Tamil text - Multilingual v2")
+            model_id = "eleven_flash_v2_5"
+            logger.info("TTS: Detected Tamil text - Flash v2.5 (fast multilingual)")
         else:
-            model_id = "eleven_turbo_v2_5"
-            print("🔊 TTS: English text - Turbo v2.5 (fastest)")
+            model_id = "eleven_flash_v2_5"
+            logger.info("TTS: English text - Flash v2.5 (fastest)")
 
         # Generate audio - use standard MP3 format for browser compatibility
         audio_stream = client.text_to_speech.convert(
@@ -217,12 +220,12 @@ def text_to_speech(text: str, voice_id: Optional[str] = None) -> bytes:
         cache_tts_audio(processed_text, voice_id, audio_bytes)
 
         elapsed = (time.time() - start_time) * 1000
-        print(f"✅ TTS: Generated {len(audio_bytes)} bytes [{elapsed:.0f}ms]")
+        logger.info("TTS: Generated %d bytes [%dms]", len(audio_bytes), elapsed)
         return audio_bytes
 
     except Exception as e:
         error_msg = f"ElevenLabs TTS failed: {str(e)}"
-        print(f"❌ TTS Error: {error_msg}")
+        logger.error("TTS Error: %s", error_msg)
         raise Exception(error_msg)
 
 
@@ -266,25 +269,25 @@ def text_to_speech_streaming(text: str, voice_id: Optional[str] = None):
         hit, cached_audio = get_cached_tts_audio(processed_text, voice_id)
         if hit and cached_audio:
             elapsed = (time.time() - start_time) * 1000
-            print(f"⚡ TTS STREAM CACHE HIT: {len(cached_audio)} bytes [{elapsed:.0f}ms]")
+            logger.info("TTS STREAM CACHE HIT: %d bytes [%dms]", len(cached_audio), elapsed)
             # Yield cached audio in chunks for consistent streaming behavior
             chunk_size = 8192
             for i in range(0, len(cached_audio), chunk_size):
                 yield cached_audio[i:i + chunk_size]
             return
 
-        print(f"🔊 TTS STREAM: Using voice ID {voice_id}")
+        logger.info("TTS STREAM: Using voice ID %s", voice_id)
 
         # Initialize ElevenLabs client
         client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
         # Select model based on language
         if has_tamil:
-            model_id = "eleven_multilingual_v2"
-            print("🔊 TTS STREAM: Tamil - Multilingual v2")
+            model_id = "eleven_flash_v2_5"
+            logger.info("TTS STREAM: Tamil - Flash v2.5 (fast multilingual)")
         else:
-            model_id = "eleven_turbo_v2_5"
-            print("🔊 TTS STREAM: English - Turbo v2.5 (fastest)")
+            model_id = "eleven_flash_v2_5"
+            logger.info("TTS STREAM: English - Flash v2.5 (fastest)")
 
         # Generate audio with streaming
         audio_stream = client.text_to_speech.convert(
@@ -302,7 +305,7 @@ def text_to_speech_streaming(text: str, voice_id: Optional[str] = None):
             if chunk:
                 if first_chunk_time is None:
                     first_chunk_time = (time.time() - start_time) * 1000
-                    print(f"🔊 TTS STREAM: First chunk [{first_chunk_time:.0f}ms]")
+                    logger.info("TTS STREAM: First chunk [%dms]", first_chunk_time)
                 all_chunks.append(chunk)
                 yield chunk
 
@@ -311,9 +314,9 @@ def text_to_speech_streaming(text: str, voice_id: Optional[str] = None):
             complete_audio = b"".join(all_chunks)
             cache_tts_audio(processed_text, voice_id, complete_audio)
             elapsed = (time.time() - start_time) * 1000
-            print(f"✅ TTS STREAM: Complete {len(complete_audio)} bytes [{elapsed:.0f}ms]")
+            logger.info("TTS STREAM: Complete %d bytes [%dms]", len(complete_audio), elapsed)
 
     except Exception as e:
         error_msg = f"ElevenLabs TTS streaming failed: {str(e)}"
-        print(f"❌ TTS STREAM Error: {error_msg}")
+        logger.error("TTS STREAM Error: %s", error_msg)
         raise Exception(error_msg)

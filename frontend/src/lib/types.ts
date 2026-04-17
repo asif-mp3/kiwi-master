@@ -2,14 +2,14 @@ export type MessageRole = 'user' | 'assistant' | 'system';
 
 export interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: MessageRole;
   content: string;
   timestamp: number;
   audioUrl?: string;
   isSpeaking?: boolean;
   metadata?: {
     plan?: QueryPlan | null;
-    data?: any[] | null;
+    data?: Record<string, unknown>[] | null;
     schema_context?: { text: string }[];
     data_refreshed?: boolean;
     is_greeting?: boolean;
@@ -106,9 +106,24 @@ export interface DetectedTable {
   row_range: [number, number];
   col_range: [number, number];
   // Frontend will handle dataframe as array of objects (JSON representation)
-  preview_data?: any[];
+  preview_data?: Record<string, unknown>[];
   total_rows?: number;
   columns?: string[];
+}
+
+/** Per-table profile summary from backend profile_store */
+export interface TableProfileSummary {
+  name: string;
+  table_type: string;
+  row_count: number;
+  column_count: number;
+  metrics: string[];
+  dimensions: string[];
+  date_columns: string[];
+  identifiers: string[];
+  date_range: { min: string; max: string } | null;
+  granularity: string;
+  data_quality_score: number;
 }
 
 export interface AuthState {
@@ -145,10 +160,20 @@ export interface VisualizationDataPoint {
   projected?: boolean;  // True for forecast/projection data points
 }
 
+// Metric card data (single-value display, not chart)
+export interface MetricCardData {
+  value: number | string;
+  is_percentage?: boolean;
+  is_currency?: boolean;
+  supporting_text?: string;
+}
+
+export type VisualizationType = 'bar' | 'line' | 'pie' | 'horizontal_bar' | 'metric_card';
+
 export interface VisualizationConfig {
-  type: 'bar' | 'line' | 'pie' | 'horizontal_bar';
+  type: VisualizationType;
   title: string;
-  data: VisualizationDataPoint[];
+  data: VisualizationDataPoint[] | MetricCardData;
   xKey?: string;
   yKey?: string;
   colors: string[];
@@ -173,6 +198,8 @@ export interface ProcessQueryResponse {
   visualization?: VisualizationConfig;
   name_changed?: boolean;
   new_name?: string;
+  is_llm_fallback?: boolean;   // True when Gemini general LLM provided the answer
+  is_raw_fallback?: boolean;   // True when raw table data was shown as fallback
 }
 
 export interface DatasetStatusResponse {

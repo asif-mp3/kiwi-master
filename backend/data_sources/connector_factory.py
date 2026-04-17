@@ -20,6 +20,9 @@ take precedence over format-based detection.
 import re
 from typing import Optional, Type, List, Dict, Tuple
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("connector_factory")
 
 
 class UnsupportedSourceError(ValueError):
@@ -45,7 +48,7 @@ def register_connector(connector_class: Type[BaseConnector]):
     """
     if connector_class not in _connector_registry:
         _connector_registry.append(connector_class)
-        print(f"[ConnectorFactory] Registered: {connector_class.__name__} (priority={getattr(connector_class, 'priority', 100)})")
+        logger.info("Registered: %s (priority=%d)", connector_class.__name__, getattr(connector_class, 'priority', 100))
 
 
 def is_google_sheets_url(url: str) -> bool:
@@ -204,14 +207,14 @@ class ConnectorFactory:
         # Check for ambiguous matches (same priority)
         if len(matches) > 1 and matches[0][0] == matches[1][0]:
             # Log warning but proceed with first match
-            print(
-                f"[ConnectorFactory] Warning: Multiple connectors match with same priority: "
-                f"{[m[1].__name__ for m in matches[:2]]}"
+            logger.warning(
+                "Multiple connectors match with same priority: %s",
+                [m[1].__name__ for m in matches[:2]]
             )
 
         # Use highest priority connector
         selected_class = matches[0][1]
-        print(f"[ConnectorFactory] Selected: {selected_class.__name__} for {url[:50]}...")
+        logger.info("Selected: %s for %s...", selected_class.__name__, url[:50])
 
         return selected_class(url, credentials)
 
@@ -294,47 +297,47 @@ def _register_all_connectors():
         from data_sources.connectors.local_connector import LocalConnector
         register_connector(LocalConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] LocalConnector not available: {e}")
+        logger.warning("LocalConnector not available: %s", e)
 
     # Priority 150: Cloud storage connectors
     try:
         from data_sources.connectors.dropbox_connector import DropboxConnector
         register_connector(DropboxConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] DropboxConnector not available: {e}")
+        logger.warning("DropboxConnector not available: %s", e)
 
     try:
         from data_sources.connectors.onedrive_connector import OneDriveConnector
         register_connector(OneDriveConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] OneDriveConnector not available: {e}")
+        logger.warning("OneDriveConnector not available: %s", e)
 
     try:
         from data_sources.connectors.gdrive_connector import GoogleDriveConnector
         register_connector(GoogleDriveConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] GoogleDriveConnector not available: {e}")
+        logger.warning("GoogleDriveConnector not available: %s", e)
 
     # Priority 100: Format-specific connectors
     try:
         from data_sources.connectors.csv_connector import CSVConnector
         register_connector(CSVConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] CSVConnector not available: {e}")
+        logger.warning("CSVConnector not available: %s", e)
 
     try:
         from data_sources.connectors.excel_connector import ExcelConnector
         register_connector(ExcelConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] ExcelConnector not available: {e}")
+        logger.warning("ExcelConnector not available: %s", e)
 
     try:
         from data_sources.connectors.pdf_connector import PDFConnector
         register_connector(PDFConnector)
     except ImportError as e:
-        print(f"[ConnectorFactory] PDFConnector not available (install pdfplumber): {e}")
+        logger.warning("PDFConnector not available (install pdfplumber): %s", e)
 
-    print(f"[ConnectorFactory] Registered {len(_connector_registry)} connectors")
+    logger.info("Registered %d connectors", len(_connector_registry))
 
 
 # Register connectors on module load

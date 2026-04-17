@@ -26,7 +26,8 @@ interface DataChartProps {
 }
 
 export function DataChart({ visualization }: DataChartProps) {
-  const { type, title, data, colors } = visualization;
+  const { type, title, colors } = visualization;
+  const data = visualization.data as VisualizationDataPoint[];
 
   // Memoize formatLabel function to avoid recreation on every render
   const formatLabel = useCallback((label: string) => {
@@ -85,11 +86,23 @@ export function DataChart({ visualization }: DataChartProps) {
   }, [data]);
 
   // Custom tooltip styling with projection support
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  interface TooltipPayloadEntry {
+    dataKey: string;
+    value: number | null;
+    name?: string;
+  }
+
+  interface CustomTooltipProps {
+    active?: boolean;
+    payload?: TooltipPayloadEntry[];
+    label?: string;
+  }
+
+  const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
     if (active && payload && payload.length) {
       // Check if this is a projection chart with both actual and projected
-      const actualPayload = payload.find((p: any) => p.dataKey === 'actual' && p.value !== null);
-      const projectedPayload = payload.find((p: any) => p.dataKey === 'projected' && p.value !== null);
+      const actualPayload = payload.find((p) => p.dataKey === 'actual' && p.value !== null);
+      const projectedPayload = payload.find((p) => p.dataKey === 'projected' && p.value !== null);
       const isProjected = projectedPayload && !actualPayload;
       const displayValue = actualPayload?.value ?? projectedPayload?.value ?? payload[0]?.value;
 
@@ -100,7 +113,7 @@ export function DataChart({ visualization }: DataChartProps) {
           <p className={`text-xs font-medium mb-1 ${
             isProjected ? 'text-amber-300' : 'text-violet-300'
           }`}>
-            {formatLabel(label) || payload[0]?.name}
+            {formatLabel(label ?? '') || payload[0]?.name}
             {isProjected && <span className="ml-1 text-[10px] opacity-70">(projected)</span>}
           </p>
           <p className="text-white text-sm font-semibold">
@@ -341,8 +354,8 @@ export function DataChart({ visualization }: DataChartProps) {
             outerRadius={75}
             paddingAngle={2}
             dataKey="value"
-            label={({ name, percent }) =>
-              `${name.length > 8 ? name.substring(0, 8) + '..' : name} ${(percent * 100).toFixed(0)}%`
+            label={({ name, percent }: { name?: string; percent?: number }) =>
+              `${(name ?? '').length > 8 ? (name ?? '').substring(0, 8) + '..' : (name ?? '')} ${((percent ?? 0) * 100).toFixed(0)}%`
             }
             labelLine={{ stroke: '#a78bfa', strokeWidth: 1 }}
           >

@@ -8,6 +8,9 @@ import numpy as np
 import re
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
+from utils.logger import get_logger
+
+logger = get_logger("data_profiler")
 
 
 class DataProfiler:
@@ -174,7 +177,7 @@ class DataProfiler:
             from schema_intelligence.semantic_summarizer import generate_table_summary_rule_based
             profile['semantic_summary'] = generate_table_summary_rule_based(table_name, profile)
         except Exception as e:
-            print(f"  Warning: Could not generate semantic summary for {table_name}: {e}")
+            logger.warning("Could not generate semantic summary for %s: %s", table_name, e)
             profile['semantic_summary'] = f"Data table with {len(df)} rows"
 
         return profile

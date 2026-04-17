@@ -20,6 +20,9 @@ from typing import Dict, List, Optional, Any, Tuple
 from enum import Enum
 import statistics
 import math
+from utils.logger import get_logger
+
+logger = get_logger("projection_calculator")
 
 
 class ProjectionMethod(Enum):
@@ -628,7 +631,7 @@ def extract_trend_context(previous_turn: Any) -> Optional[TrendContext]:
         TrendContext if extractable, None otherwise
     """
     if not previous_turn:
-        print("    [extract_trend_context] No previous_turn provided")
+        logger.debug("No previous_turn provided")
         return None
 
     query_plan = getattr(previous_turn, 'query_plan', {}) or {}
@@ -636,16 +639,16 @@ def extract_trend_context(previous_turn: Any) -> Optional[TrendContext]:
 
     # Debug output to trace the issue
     query_type = query_plan.get('query_type', 'unknown')
-    print(f"    [extract_trend_context] Previous query_type: {query_type}")
-    print(f"    [extract_trend_context] query_plan keys: {list(query_plan.keys())}")
+    logger.debug("Previous query_type: %s", query_type)
+    logger.debug("query_plan keys: %s", list(query_plan.keys()))
 
     # Try to get analysis from query_plan
     analysis = query_plan.get('analysis', {}) or {}
-    print(f"    [extract_trend_context] analysis keys: {list(analysis.keys()) if analysis else 'empty'}")
+    logger.debug("analysis keys: %s", list(analysis.keys()) if analysis else 'empty')
 
     # If no analysis but was a trend query, log warning
     if query_type == 'trend' and not analysis:
-        print(f"    [extract_trend_context] WARNING: Trend query but no analysis found!")
+        logger.warning("Trend query but no analysis found!")
 
     # Also check result_values (some data might be stored there)
     if not analysis:
@@ -671,11 +674,11 @@ def extract_trend_context(previous_turn: Any) -> Optional[TrendContext]:
         0
     )
 
-    print(f"    [extract_trend_context] direction={direction}, slope={slope}, normalized_slope={normalized_slope}")
+    logger.debug("direction=%s, slope=%s, normalized_slope=%s", direction, slope, normalized_slope)
 
     # If no trend data available, return None
     if direction == 'unknown' and slope == 0 and normalized_slope == 0:
-        print("    [extract_trend_context] All values are default - returning None")
+        logger.debug("All values are default - returning None")
         return None
 
     # Extract values array

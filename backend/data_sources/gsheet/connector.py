@@ -7,6 +7,9 @@ import time
 import threading
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from typing import Dict, List, Any, Optional, Tuple
+from utils.logger import get_logger
+
+logger = get_logger("gsheet.connector")
 
 # ============================================
 # THREAD-LOCAL STORAGE FOR USER CREDENTIALS
@@ -106,16 +109,16 @@ class SheetCache:
         """
         with self._cache_lock:
             if self._data is None:
-                print(f"    [SheetCache] Invalid: no data cached")
+                logger.debug("SheetCache invalid: no data cached")
                 return False
             if self._spreadsheet_id != spreadsheet_id:
-                print(f"    [SheetCache] Invalid: ID mismatch (cached: {self._spreadsheet_id[:15] if self._spreadsheet_id else 'None'}...)")
+                logger.debug("SheetCache invalid: ID mismatch (cached: %s...)", self._spreadsheet_id[:15] if self._spreadsheet_id else "None")
                 return False
             age = time.time() - self._last_check
             if age >= self._check_interval:
-                print(f"    [SheetCache] Invalid: cache expired (age: {age:.1f}s > {self._check_interval}s)")
+                logger.debug("SheetCache invalid: cache expired (age: %.1fs > %ds)", age, self._check_interval)
                 return False
-            print(f"    [SheetCache] Valid! Age: {age:.1f}s < {self._check_interval}s TTL")
+            logger.debug("SheetCache valid: age %.1fs < %ds TTL", age, self._check_interval)
             return True
 
     def set_check_interval(self, seconds: int) -> None:
@@ -166,7 +169,9 @@ def clear_current_user():
 
 
 def _load_config():
-    with open("config/settings.yaml") as f:
+    from utils.config_loader import _BACKEND_DIR
+    config_path = _BACKEND_DIR / "config" / "settings.yaml"
+    with open(config_path) as f:
         return yaml.safe_load(f)
 
 
@@ -193,23 +198,23 @@ def _get_credentials(scopes: List[str]):
             from utils.gsheet_oauth import get_gspread_credentials, has_sheets_access
 
             if has_sheets_access(current_user):
-                print(f"[GSheet] Using OAuth credentials for user: {current_user}")
+                logger.info("Using OAuth credentials for user: %s", current_user)
                 return get_gspread_credentials(current_user)
         except Exception as e:
-            print(f"[GSheet] OAuth credentials failed: {e}, falling back to service account")
+            logger.warning("OAuth credentials failed: %s, falling back to service account", e)
 
     # Try service account from environment variable (for cloud deployment)
     service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if service_account_json:
         try:
-            print(f"[GSheet] Using service account from environment variable")
+            logger.info("Using service account from environment variable")
             service_account_info = json.loads(service_account_json)
             return ServiceAccountCredentials.from_service_account_info(
                 service_account_info,
                 scopes=scopes
             )
         except Exception as e:
-            print(f"[GSheet] Failed to load service account from env: {e}")
+            logger.error("Failed to load service account from env: %s", e)
 
     # Fallback to service account file (for local development)
     config = _load_config()
@@ -217,7 +222,7 @@ def _get_credentials(scopes: List[str]):
     credentials_path = gs_config.get("credentials_path", "credentials/service_account.json")
 
     if os.path.exists(credentials_path):
-        print(f"[GSheet] Using service account credentials from file")
+        logger.info("Using service account credentials from file")
         return ServiceAccountCredentials.from_service_account_file(
             credentials_path,
             scopes=scopes
@@ -318,7 +323,7 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                     col_lower = col.lower()
                     if 'date' in col_lower or 'joining' in col_lower or 'dob' in col_lower:
                         sample = non_null.head(3).tolist()
-                        print(f"\n      [DATE DEBUG] Column '{col}' samples: {sample}")
+                        logger.debug("Column '%s' date samples: %s", col, sample)
 
                     # Check for Google Sheets serial date numbers (e.g., 44941 = 2023-01-15)
                     # Serial dates are typically between 1 and 100000 (covers 1900-2173)
@@ -403,13 +408,13 @@ def infer_and_convert_types(df, numeric_threshold: float = None, date_threshold:
                     # Debug: confirm successful date parsing
                     valid_count = df[col].notna().sum()
                     sample_dates = df[col].dropna().head(2).tolist()
-                    print(f"      [OK] [DATE SUCCESS] Column '{col}': {valid_count}/{len(df)} valid dates. Samples: {sample_dates}")
+                    logger.debug("Date column '%s': %d/%d valid dates. Samples: %s", col, valid_count, len(df), sample_dates)
                     continue
             except (ValueError, TypeError, OverflowError):
                 pass  # Date conversion failed, keep original type
         except Exception as e:
             # If any error occurs for this column, skip it and continue with next column
-            print(f"      [WARN]  Warning: Could not infer type for column '{col}': {e}")
+            logger.warning("Could not infer type for column '%s': %s", col, e)
             continue
     
     return df
@@ -444,14 +449,14 @@ def detect_date_format(date_series):
             first_part = date_str[:4]
             if first_part.isdigit() and 1900 <= int(first_part) <= 2100:
                 # This is ISO format - return None to use comprehensive format list
-                print(f"      [DATE] Detected ISO format: {date_str}")
+                logger.debug("Detected ISO date format: %s", date_str)
                 return None
 
         # Check for month names (Jan, January, etc.)
         month_names = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
                        'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
         if any(month in date_str.lower() for month in month_names):
-            print(f"      [DATE] Detected month name format: {date_str}")
+            logger.debug("Detected month name date format: %s", date_str)
             return None  # Use comprehensive format list
 
         # Try to detect separator and order for DD/MM/YYYY style dates
@@ -465,19 +470,19 @@ def detect_date_format(date_series):
 
                     # If first part is 4 digits, it's YYYY-... format
                     if first > 1900:
-                        print(f"      [DATE] Detected YYYY-first format: {date_str}")
+                        logger.debug("Detected YYYY-first date format: %s", date_str)
                         return None
 
                     # If first part > 12, it must be day (DD/MM/YYYY or DD-MM-YYYY)
                     if first > 12 and first <= 31:
                         fmt = 'DD/MM/YYYY' if sep == '/' else None
-                        print(f"      [DATE] Detected DD-first format: {date_str} -> {fmt}")
+                        logger.debug("Detected DD-first date format: %s -> %s", date_str, fmt)
                         return fmt
 
                     # If second part > 12, it must be day (MM/DD/YYYY or MM-DD-YYYY)
                     if second > 12 and second <= 31:
                         fmt = 'MM/DD/YYYY' if sep == '/' else None
-                        print(f"      [DATE] Detected MM-first format: {date_str} -> {fmt}")
+                        logger.debug("Detected MM-first date format: %s -> %s", date_str, fmt)
                         return fmt
                 except ValueError:
                     continue
@@ -485,11 +490,11 @@ def detect_date_format(date_series):
     # If we found "/" separator but couldn't determine order, default to DD/MM/YYYY
     for date_str in non_null.head(5):
         if '/' in date_str:
-            print(f"      [DATE] Defaulting to DD/MM/YYYY for: {date_str}")
+            logger.debug("Defaulting to DD/MM/YYYY for: %s", date_str)
             return 'DD/MM/YYYY'
 
     # For other separators or unknown formats, return None to use comprehensive list
-    print(f"      [DATE] Unknown format, using comprehensive list")
+    logger.debug("Unknown date format, using comprehensive list")
     return None
 
 
@@ -553,10 +558,10 @@ def combine_date_time_columns(df):
             # Normalize Date column to ISO format (YYYY-MM-DD) for consistency
             df['Date'] = parsed_dates.dt.strftime('%d/%m/%Y')
             
-            print(f"      -> Combined Date + Time into timestamp column (detected {date_format} format)")
+            logger.info("Combined Date + Time into timestamp column (detected %s format)", date_format)
     except Exception as e:
         # If combination fails, keep original columns
-        print(f"      [WARN]  Warning: Could not combine Date + Time columns: {e}")
+        logger.warning("Could not combine Date + Time columns: %s", e)
         pass
     
     return df
@@ -580,29 +585,29 @@ def fetch_sheets():
     sheets_data = {}
     total_sheets = len(spreadsheet.worksheets())
     
-    print(f"[DATA] Loading {total_sheets} sheets from Google Sheets...")
+    logger.info("Loading %d sheets from Google Sheets...", total_sheets)
 
     for idx, worksheet in enumerate(spreadsheet.worksheets(), 1):
         try:
             sheet_name = worksheet.title
-            print(f"   [{idx}/{total_sheets}] Loading '{sheet_name}'...", end=" ")
-            
+            logger.info("[%d/%d] Loading '%s'...", idx, total_sheets, sheet_name)
+
             # Get all values including headers
             all_values = worksheet.get_all_values()
-            
+
             if not all_values or len(all_values) < 2:
                 # Skip empty sheets or sheets with only headers
-                print("⊘ Empty, skipped")
+                logger.info("[%d/%d] '%s' - empty, skipped", idx, total_sheets, sheet_name)
                 continue
-            
+
             # Extract headers and data
             headers = all_values[0]
             data_rows = all_values[1:]
-            
+
             # Make headers unique by appending numbers to duplicates
             unique_headers = []
             header_counts = {}
-            
+
             for header in headers:
                 # Handle empty headers
                 if not header or header.strip() == '':
@@ -610,7 +615,7 @@ def fetch_sheets():
                 else:
                     # Strip leading/trailing whitespace from column names
                     header = header.strip()
-                
+
                 # Make duplicates unique
                 if header in header_counts:
                     header_counts[header] += 1
@@ -618,33 +623,33 @@ def fetch_sheets():
                 else:
                     header_counts[header] = 0
                     unique_header = header
-                
+
                 unique_headers.append(unique_header)
-            
+
             # Create DataFrame
             df = pd.DataFrame(data_rows, columns=unique_headers)
-            
+
             # Remove completely empty rows
             df = df.replace('', pd.NA).dropna(how='all')
-            
+
             if df.empty:
-                print("⊘ No data, skipped")
+                logger.info("[%d/%d] '%s' - no data, skipped", idx, total_sheets, sheet_name)
                 continue
-            
+
             # Apply intelligent type inference
             df = infer_and_convert_types(df)
-            
+
             # Combine Date + Time columns if both exist
             df = combine_date_time_columns(df)
-            
+
             sheets_data[worksheet.title] = df
-            print(f"[OK] {len(df):,} rows, {len(df.columns)} cols")
-            
+            logger.info("[%d/%d] '%s' - %s rows, %d cols", idx, total_sheets, sheet_name, f"{len(df):,}", len(df.columns))
+
         except Exception as e:
-            print(f"[WARN]  Error: {e}")
+            logger.warning("Error loading sheet: %s", e)
             continue
 
-    print(f"\n[OK] Loaded {len(sheets_data)} sheets successfully")
+    logger.info("Loaded %d sheets successfully", len(sheets_data))
 
     if not sheets_data:
         raise RuntimeError("No data found in Google Sheets")
@@ -695,77 +700,75 @@ def fetch_sheets_with_tables(spreadsheet_id: str = None) -> Dict[str, List[Dict[
     sheets_with_tables = {}
     total_sheets = len(spreadsheet.worksheets())
     
-    print(f"[DATA] Loading {total_sheets} sheets from Google Sheets...")
+    logger.info("Loading %d sheets from Google Sheets...", total_sheets)
 
     for idx, worksheet in enumerate(spreadsheet.worksheets(), 1):
         try:
             sheet_name = worksheet.title
-            print(f"   [{idx}/{total_sheets}] Loading '{sheet_name}'...", end=" ")
-            
+            logger.info("[%d/%d] Loading '%s'...", idx, total_sheets, sheet_name)
+
             # Get all values including headers
             all_values = worksheet.get_all_values()
-            
+
             if not all_values or len(all_values) < 2:
                 # Skip empty sheets or sheets with only headers
-                print("⊘ Empty, skipped")
+                logger.info("[%d/%d] '%s' - empty, skipped", idx, total_sheets, sheet_name)
                 continue
-            
+
             # STEP 1: Compute raw sheet hash BEFORE any processing
             # This hash represents the complete state of the sheet
             # FORCE INVALIDATION: Append version to force rebuild with new type inference logic
             sheet_hash = compute_sheet_hash(all_values) + "_v3_force_numeric"
             source_id = get_source_id(spreadsheet_id, sheet_name)
-            
+
             # Create DataFrame with RAW string data (no type inference yet)
-            # IMPORTANT: Do not extract headers here! 
+            # IMPORTANT: Do not extract headers here!
             # The custom detector processing pipeline (detect_and_clean_tables -> clean_detected_tables)
             # expects the headers to be in the first row of the DataFrame body.
             # If we extract headers here, clean_detected_tables will treat the first DATA row as headers.
             raw_df = pd.DataFrame(all_values)
-            
+
             # DO NOT remove empty rows here! The custom detector NEEDS them to separate tables.
             # Empty rows act as separators between tables in the sheet.
             # The table_cleaner will handle empty row removal AFTER detection.
-            
+
             if raw_df.empty:
-                print("⊘ No data, skipped")
+                logger.info("[%d/%d] '%s' - no data, skipped", idx, total_sheets, sheet_name)
                 continue
-            
+
             # STEP 2: Detect tables in this sheet using RAW data
-            print(f"[OK] {len(raw_df):,} rows, detecting tables...", end=" ")
+            logger.info("[%d/%d] '%s' - %s rows, detecting tables...", idx, total_sheets, sheet_name, f"{len(raw_df):,}")
             detected_tables = detect_and_clean_tables(raw_df, sheet_name)
-            
+
             # STEP 3: Add source_id and sheet_hash to each detected table
             for table in detected_tables:
                 table['source_id'] = source_id
                 table['sheet_hash'] = sheet_hash
-            
+
             # STEP 4: Apply type inference and date/time combination to each detected table
             for table in detected_tables:
                 table_df = table['dataframe']
-                
+
                 # Apply intelligent type inference
                 table_df = infer_and_convert_types(table_df)
-                
+
                 # Combine Date + Time columns if both exist
                 table_df = combine_date_time_columns(table_df)
-                
+
                 # Update the dataframe in the table info
                 table['dataframe'] = table_df
-            
+
             sheets_with_tables[worksheet.title] = detected_tables
-            print(f"[OK] Found {len(detected_tables)} table(s) [hash: {sheet_hash[:8]}...]")
-            
+            logger.info("[%d/%d] '%s' - found %d table(s) [hash: %s...]", idx, total_sheets, sheet_name, len(detected_tables), sheet_hash[:8])
+
         except Exception as e:
             import traceback
-            print(f"[WARN]  Error processing '{sheet_name}': {e}")
-            print(f"    Traceback:")
-            traceback.print_exc()
-            print(f"    -> Skipping this sheet")
+            logger.error("Error processing '%s': %s", sheet_name, e, exc_info=True)
+            logger.info("Skipping sheet '%s'", sheet_name)
             continue
 
-    print(f"\n[OK] Loaded {len(sheets_with_tables)} sheets successfully")
-    print(f"[OK] Detected {sum(len(tables) for tables in sheets_with_tables.values())} total tables across {len(sheets_with_tables)} sheets\n")
+    logger.info("Loaded %d sheets successfully", len(sheets_with_tables))
+    logger.info("Detected %d total tables across %d sheets", sum(len(tables) for tables in sheets_with_tables.values()), len(sheets_with_tables))
 
     if not sheets_with_tables:
         raise RuntimeError("No data found in Google Sheets")

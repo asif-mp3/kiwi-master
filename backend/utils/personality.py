@@ -282,9 +282,9 @@ class TharaPersonality:
                 f"{name_part}, nothing found. Different question try pannunga."
             ]
             responses_en = [
-                f"{name_part}, I couldn't find any data for that. Try a different filter or check the spelling.",
-                f"{name_part}, no data matches that criteria. Perhaps try a different date range?",
-                f"{name_part}, that search came up empty. Could you rephrase or try different keywords?"
+                f"{name_part}, I checked but couldn't find a match — the spelling might be slightly different.",
+                f"{name_part}, there's no data for that date range in the records.",
+                f"{name_part}, I couldn't match those keywords to anything in the data."
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
@@ -294,24 +294,24 @@ class TharaPersonality:
                 f"{name_part}, multiple matches irukku. Konjam specific ah solla mudiyuma?"
             ]
             responses_en = [
-                f"{name_part}, I found multiple possibilities. Which one did you mean?",
-                f"{name_part}, a few things match that. Can you be more specific?",
-                f"{name_part}, there are multiple options. Could you help narrow it down?"
+                f"{name_part}, I found multiple matches — here are the options.",
+                f"{name_part}, a few things match that — I'll list them.",
+                f"{name_part}, multiple results came up — showing all of them."
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
         elif error_type == 'table_not_found':
             responses = [
                 f"{name_part}, I can't find that table. Let me show you what's available.",
-                f"{name_part}, that table isn't available. Would you like to see the available options?",
+                f"{name_part}, that table isn't available. Here's what's available instead.",
                 f"{name_part}, no such table found. I can show you what we have."
             ]
             return random.choice(responses)
 
         elif error_type == 'column_not_found':
             responses = [
-                f"{name_part}, that column or metric isn't available. Want to see what I can show you?",
-                f"{name_part}, I don't have that specific data. Shall I show you what's available?",
+                f"{name_part}, that column or metric isn't available. Here's what I have.",
+                f"{name_part}, I don't have that specific data. Let me show you what's available.",
                 f"{name_part}, can't find that one. I can show you the available metrics."
             ]
             return random.choice(responses)
@@ -323,8 +323,8 @@ class TharaPersonality:
             ]
             responses_en = [
                 f"{name_part}, having trouble reaching the data. Please check the connection.",
-                f"{name_part}, can't connect to the data source right now. Try reconnecting?",
-                f"{name_part}, the data connection seems to be down. Could you check if it's working?"
+                f"{name_part}, can't connect to the data source right now. Reconnecting should fix it.",
+                f"{name_part}, the data connection seems to be down at the moment."
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)
 
@@ -343,8 +343,8 @@ class TharaPersonality:
             ]
             # English responses
             responses_en = [
-                f"{name_part}, something went wrong. Would you like to try again?",
-                f"{name_part}, ran into an issue. Could you rephrase that?",
+                f"{name_part}, something went wrong on my end — try once more.",
+                f"{name_part}, ran into an issue. A slight rephrase might help.",
                 f"{name_part}, that didn't work as expected. Let's try a different approach."
             ]
             return random.choice(responses_ta if self.language == 'ta' else responses_en)

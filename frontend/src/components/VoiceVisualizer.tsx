@@ -10,7 +10,7 @@ interface VoiceVisualizerProps {
 
 export function VoiceVisualizer({ isRecording, isSpeaking }: VoiceVisualizerProps) {
   const [audioLevels, setAudioLevels] = useState<number[]>(Array(32).fill(0.1));
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number>(undefined);
 
   useEffect(() => {
     const animate = () => {

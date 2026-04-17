@@ -17,6 +17,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+from utils.logger import get_logger
+
+logger = get_logger("permanent_memory")
 
 # Memory file path
 MEMORY_FILE = "data_sources/persistent_memory.json"
@@ -52,7 +55,7 @@ def load_memory() -> Dict[str, Any]:
             
         # Validate structure
         if not isinstance(memory, dict):
-            print(f"Warning: Invalid memory structure, using empty memory")
+            logger.warning("Invalid memory structure, using empty memory")
             return {
                 "user_preferences": {},
                 "bot_identity": {},
@@ -70,14 +73,14 @@ def load_memory() -> Dict[str, Any]:
         return memory
         
     except json.JSONDecodeError as e:
-        print(f"Warning: Failed to parse memory JSON: {e}")
+        logger.warning("Failed to parse memory JSON: %s", e)
         return {
             "user_preferences": {},
             "bot_identity": {},
             "meta": {}
         }
     except Exception as e:
-        print(f"Warning: Failed to load memory: {e}")
+        logger.warning("Failed to load memory: %s", e)
         return {
             "user_preferences": {},
             "bot_identity": {},
@@ -122,7 +125,7 @@ def save_memory(memory: Dict[str, Any]) -> bool:
         return True
         
     except Exception as e:
-        print(f"Error: Failed to save memory: {e}")
+        logger.error("Failed to save memory: %s", e)
         return False
 
 
@@ -139,7 +142,7 @@ def update_memory(category: str, key: str, value: Any) -> bool:
         True if successful, False otherwise
     """
     if category not in ["user_preferences", "bot_identity"]:
-        print(f"Error: Invalid category '{category}'")
+        logger.error("Invalid category '%s'", category)
         return False
     
     # Load existing memory

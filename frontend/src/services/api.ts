@@ -1,5 +1,7 @@
-import { LoadDataResponse, ProcessQueryResponse, DetectedTable, DataSourcesResponse, DataSource, DataSourceType } from '../lib/types';
+import { LoadDataResponse, ProcessQueryResponse, DetectedTable, DataSourcesResponse, DataSource, DataSourceType, TableProfileSummary } from '../lib/types';
 import { getApiBaseUrl, getElevenLabsVoiceId } from '../lib/constants';
+import { STORAGE_KEYS } from '../config/storage-keys';
+import { API_TIMEOUTS } from '../config/timing';
 
 // ============================================================================
 // API Service for Thara.ai
@@ -18,7 +20,7 @@ const API_BASE_URL = getApiBaseUrl();
 const getAuthHeaders = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
 
-  const token = localStorage.getItem('thara_access_token');
+  const token = localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN);
   return token ? { 'Authorization': `Bearer ${token}` } : {};
 };
 
@@ -28,7 +30,7 @@ const getAuthHeaders = (): Record<string, string> => {
 const fetchWithTimeout = async (
   url: string,
   options: RequestInit,
-  timeoutMs: number = 60000  // 60 second default
+  timeoutMs: number = API_TIMEOUTS.DEFAULT
 ): Promise<Response> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -56,8 +58,8 @@ const handleResponse = async (response: Response): Promise<Response> => {
   if (response.status === 401) {
     // Token expired or invalid - clear auth and redirect
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('thara_access_token');
-      localStorage.removeItem('thara_auth');
+      localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.AUTH);
       window.location.href = '/';
     }
     throw new Error('Session expired. Please log in again.');
@@ -74,8 +76,6 @@ export const api = {
    * @param append - If true, adds to existing data instead of replacing (for multi-spreadsheet support)
    */
   loadDataset: async (url: string, append: boolean = false): Promise<LoadDataResponse> => {
-    console.log('[API] loadDataset called with URL:', url, 'append:', append);
-
     const response = await handleResponse(
       await fetch(`${API_BASE_URL}/api/load-dataset`, {
         method: 'POST',
@@ -89,17 +89,14 @@ export const api = {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('[API] loadDataset HTTP error:', response.status, error);
       throw new Error(error.detail || 'Failed to load dataset');
     }
 
     const result = await response.json();
-    console.log('[API] loadDataset response:', result);
 
     // Backend returns 200 even on errors with success: false
     if (!result.success) {
       const errorMsg = result.error || result.message || 'Failed to load dataset';
-      console.error('[API] loadDataset backend error:', errorMsg);
       throw new Error(errorMsg);
     }
 
@@ -114,8 +111,6 @@ export const api = {
    * @param sessionName - Optional session name for "Call me X" feature
    */
   sendMessage: async (text: string, sessionName?: string): Promise<ProcessQueryResponse> => {
-    console.log('Sending query:', text, sessionName ? `(as ${sessionName})` : '');
-
     const response = await handleResponse(
       await fetchWithTimeout(
         `${API_BASE_URL}/api/query`,
@@ -135,14 +130,11 @@ export const api = {
     );
 
     if (!response.ok) {
-      console.error('Query API error:', response.status, response.statusText);
       const error = await response.json().catch(() => ({ detail: 'Failed to process query' }));
-      console.error('Error details:', error);
       throw new Error(error.detail || 'Failed to process query');
     }
 
     const result = await response.json();
-    console.log('Query result:', result);
     return result;
   },
 
@@ -165,13 +157,11 @@ export const api = {
     );
 
     if (!response.ok) {
-      console.error('Transcribe API error:', response.status, response.statusText);
       const error = await response.json().catch(() => ({ detail: 'Failed to transcribe audio' }));
       throw new Error(error.detail || 'Failed to transcribe audio');
     }
 
     const result = await response.json();
-    console.log('Transcribe result:', result);
 
     if (!result.success) {
       throw new Error(result.error || 'Transcription failed');
@@ -263,7 +253,6 @@ export const api = {
     const blob = await response.blob();
     // Re-create blob with explicit audio/mpeg type if needed
     if (blob.type !== 'audio/mpeg') {
-      console.log('[API] Converting blob from', blob.type, 'to audio/mpeg');
       return new Blob([blob], { type: 'audio/mpeg' });
     }
     return blob;
@@ -340,13 +329,12 @@ export const api = {
       throw err;
     }
 
-    // Collect chunks while streaming
+    // Collect streamed chunks into a blob (streaming = lower time-to-first-byte from server)
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalLength = 0;
 
-    // Start collecting chunks
-    const collectChunks = async (): Promise<Blob> => {
+    const blobPromise = (async (): Promise<Blob> => {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -355,8 +343,6 @@ export const api = {
           totalLength += value.length;
         }
       }
-
-      // Combine all chunks into a single blob
       const combined = new Uint8Array(totalLength);
       let offset = 0;
       for (const chunk of chunks) {
@@ -364,15 +350,10 @@ export const api = {
         offset += chunk.length;
       }
       return new Blob([combined], { type: 'audio/mpeg' });
-    };
+    })();
 
-    // Start chunk collection (runs in background)
-    const blobPromise = collectChunks();
-
-    // Create audio element - will play once blob is ready
     const audio = new Audio();
 
-    // Wait for blob and play
     blobPromise.then((blob) => {
       const url = URL.createObjectURL(blob);
       audio.src = url;
@@ -387,11 +368,10 @@ export const api = {
       audio.play()
         .then(() => {
           onStart?.();
-          audio.playbackRate = 1.3; // 30% faster playback
+          audio.playbackRate = 1.15; // 15% faster playback
         })
-        .catch((e) => {
-          // Browser autoplay policy - audio element is returned for manual play
-          console.warn('Autoplay blocked, user interaction required:', e);
+        .catch(() => {
+          // Autoplay may be blocked by browser policy
         });
     }).catch((err) => {
       onError?.(err);
@@ -418,13 +398,11 @@ export const api = {
 
       // Validate response before parsing JSON
       if (!response.ok) {
-        console.warn('[API] checkSheetsAuth failed:', response.status);
         return { configured: false, authorized: false };
       }
 
       return await response.json();
-    } catch (e) {
-      console.error('[API] checkSheetsAuth error:', e);
+    } catch {
       return { configured: false, authorized: false };
     }
   },
@@ -510,15 +488,12 @@ export const api = {
       });
 
       if (!response.ok) {
-        console.warn('[API] clearCache failed:', response.status);
         return { success: false };
       }
 
       const result = await response.json();
-      console.log('[API] Cache cleared:', result);
       return result;
-    } catch (e) {
-      console.error('[API] clearCache error:', e);
+    } catch {
       return { success: false };
     }
   },
@@ -542,6 +517,9 @@ export const api = {
     loaded_spreadsheets?: string[];
     error?: string;
     drive_folder_url?: string;
+    smart_suggestions?: string[];
+    table_profiles_summary?: TableProfileSummary[];
+    source_type?: string;
   }> => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/dataset-status`, {
@@ -555,9 +533,31 @@ export const api = {
       }
 
       return await response.json();
-    } catch (e) {
-      console.error('[API] getDatasetStatus error:', e);
+    } catch {
       return { loaded: false, demo_mode: false };
+    }
+  },
+
+  /**
+   * Reset data to default source (re-sync from default Drive folder).
+   * Backend endpoint: POST /api/reset-to-default
+   */
+  resetToDefault: async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reset-to-default`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        return { success: false, error: data.detail || 'Failed to reset' };
+      }
+      return await response.json();
+    } catch {
+      return { success: false, error: 'Network error' };
     }
   },
 
@@ -581,8 +581,6 @@ export const api = {
    * @param append - If true, adds to existing data
    */
   loadSource: async (url: string, append: boolean = false): Promise<LoadDataResponse> => {
-    console.log('[API] loadSource called with URL:', url, 'append:', append);
-
     const response = await handleResponse(
       await fetchWithTimeout(
         `${API_BASE_URL}/api/load-source`,
@@ -600,12 +598,10 @@ export const api = {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('[API] loadSource HTTP error:', response.status, error);
       throw new Error(error.detail || 'Failed to load data source');
     }
 
     const result = await response.json();
-    console.log('[API] loadSource response:', result);
 
     if (!result.success) {
       throw new Error(result.error || result.message || 'Failed to load data source');
@@ -622,8 +618,6 @@ export const api = {
    * @param append - If true, adds to existing data
    */
   uploadFile: async (file: File, append: boolean = false): Promise<LoadDataResponse> => {
-    console.log('[API] uploadFile called with file:', file.name, 'append:', append);
-
     const formData = new FormData();
     formData.append('file', file);
 
@@ -648,12 +642,10 @@ export const api = {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('[API] uploadFile HTTP error:', response.status, error);
       throw new Error(error.detail || 'Failed to upload file');
     }
 
     const result = await response.json();
-    console.log('[API] uploadFile response:', result);
 
     if (!result.success) {
       throw new Error(result.error || result.message || 'Failed to upload file');
@@ -670,8 +662,6 @@ export const api = {
    * @param append - If true, adds to existing data
    */
   syncDriveFolder: async (folderUrl: string, append: boolean = false): Promise<LoadDataResponse> => {
-    console.log('[API] syncDriveFolder called with URL:', folderUrl);
-
     const response = await handleResponse(
       await fetchWithTimeout(
         `${API_BASE_URL}/api/sync-folder`,
@@ -776,8 +766,7 @@ export const api = {
         demoMode: status.demo_mode,
         demoFolderUrl: status.drive_folder_url,
       };
-    } catch (e) {
-      console.error('[API] getDataSources error:', e);
+    } catch {
       return {
         success: false,
         sources: [],

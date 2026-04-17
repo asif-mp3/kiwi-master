@@ -12,6 +12,9 @@ Maps query types to appropriate visualizations:
 """
 
 from typing import Dict, Any, List, Optional
+from utils.logger import get_logger
+
+logger = get_logger("visualization")
 
 
 def _humanize_column_name(col_name: str) -> str:
@@ -178,7 +181,7 @@ def determine_visualization(
                 if is_percentage:
                     is_currency = False
 
-                print(f"[Viz] Metric card: {value_col} = {value}, is_percentage={is_percentage}, is_currency={is_currency}")
+                logger.debug("Metric card: %s = %s, is_percentage=%s, is_currency=%s", value_col, value, is_percentage, is_currency)
 
                 return {
                     'type': 'metric_card',
@@ -214,7 +217,7 @@ def _build_chart_config(
         return None
 
     columns = list(data[0].keys())
-    print(f"[Viz] Query type: {query_type}, Columns: {columns}, Rows: {len(data)}")
+    logger.debug("Query type: %s, Columns: %s, Rows: %d", query_type, columns, len(data))
 
     # Special handling for trend queries from advanced executor
     # Data format: [{"date": "2025-01-01", "value": 123}, ...]
@@ -230,7 +233,7 @@ def _build_chart_config(
 
             if len(chart_data) >= 2:
                 colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
-                print(f"[Viz] SUCCESS - Trend chart data: {len(chart_data)} points")
+                logger.info("Trend chart data: %d points", len(chart_data))
                 return {
                     'type': 'line',
                     'title': _generate_title(plan, query_type),
@@ -252,7 +255,7 @@ def _build_chart_config(
 
             if len(chart_data) >= 2:
                 colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
-                print(f"[Viz] SUCCESS - Grouped trend chart: {len(chart_data)} groups")
+                logger.info("Grouped trend chart: %d groups", len(chart_data))
                 return {
                     'type': 'horizontal_bar',
                     'title': 'Trend by ' + plan.get('trend', {}).get('group_by', 'Group'),
@@ -284,16 +287,16 @@ def _build_chart_config(
     labels = None
     if not dimension_col:
         labels = _extract_labels_from_context(plan, entities, len(data))
-        print(f"[Viz] No dimension column found, extracted labels: {labels}")
+        logger.debug("No dimension column found, extracted labels: %s", labels)
 
     # Must have metric column
     if not metric_col:
-        print(f"[Viz] SKIP - No valid metric column found")
+        logger.debug("SKIP - No valid metric column found")
         return None
 
     # Must have either dimension column OR extracted labels
     if not dimension_col and not labels:
-        print(f"[Viz] SKIP - No dimension column and no labels extractable")
+        logger.debug("SKIP - No dimension column and no labels extractable")
         return None
 
     # Format the chart data
@@ -301,19 +304,19 @@ def _build_chart_config(
 
     # Validate the formatted data
     if not chart_data or len(chart_data) < 2:
-        print(f"[Viz] SKIP - Formatted data invalid or too small")
+        logger.debug("SKIP - Formatted data invalid or too small")
         return None
 
     # Check all data points have valid names and values
     for point in chart_data:
         if not point.get('name') or point['name'] in ['', 'None', 'null']:
-            print(f"[Viz] SKIP - Data point has invalid name: {point}")
+            logger.debug("SKIP - Data point has invalid name: %s", point)
             return None
         if point.get('value') is None:
-            print(f"[Viz] SKIP - Data point has null value: {point}")
+            logger.debug("SKIP - Data point has null value: %s", point)
             return None
 
-    print(f"[Viz] SUCCESS - Chart data: {chart_data}")
+    logger.info("Chart data: %s", chart_data)
 
     # Purple theme colors
     colors = ['#8B5CF6', '#A78BFA', '#7C3AED', '#6D28D9', '#5B21B6', '#4C1D95']
@@ -362,7 +365,7 @@ def _handle_comparison_data(data: List[Dict], plan: Dict[str, Any]) -> Optional[
                         'value': round(value, 2) if isinstance(value, float) else value
                     })
             if len(chart_data) >= 2:
-                print(f"[Viz] Comparison from analysis: {chart_data}")
+                logger.debug("Comparison from analysis: %s", chart_data)
                 return chart_data
 
     # Try extracting from data rows where format is {"Label": value}
@@ -377,7 +380,7 @@ def _handle_comparison_data(data: List[Dict], plan: Dict[str, Any]) -> Optional[
                     })
 
     if len(chart_data) >= 2:
-        print(f"[Viz] Comparison from single-key rows: {chart_data}")
+        logger.debug("Comparison from single-key rows: %s", chart_data)
         return chart_data
 
     return None
@@ -400,7 +403,7 @@ def _detect_columns(columns: List[str], data: List[Dict], plan: Dict[str, Any]):
         elif col_type == 'numeric':
             numeric_cols.append(col)
 
-    print(f"[Viz] String cols: {string_cols}, Numeric cols: {numeric_cols}")
+    logger.debug("String cols: %s, Numeric cols: %s", string_cols, numeric_cols)
 
     # Dimension = first valid string column (preferring group_by from plan)
     group_by = plan.get('group_by', [])
@@ -539,7 +542,7 @@ def _extract_labels_from_context(plan: Dict[str, Any], entities: Dict[str, Any],
             seen.add(label)
             unique_labels.append(label)
 
-    print(f"[Viz] Extracted labels: {unique_labels} (need {num_rows})")
+    logger.debug("Extracted labels: %s (need %d)", unique_labels, num_rows)
 
     # Must have exactly the right number of labels
     if len(unique_labels) == num_rows:
@@ -644,7 +647,7 @@ def _mark_projection_data(
         marked_data.append(new_point)
 
     projected_count = len([p for p in marked_data if p.get('projected')])
-    print(f"[Viz] Marked {projected_count}/{len(marked_data)} points as projected (split at index {split_index})")
+    logger.debug("Marked %d/%d points as projected (split at index %d)", projected_count, len(marked_data), split_index)
 
     return marked_data
 

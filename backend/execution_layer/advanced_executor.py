@@ -13,6 +13,10 @@ from datetime import datetime
 import statistics
 import re
 
+from utils.logger import get_logger
+
+logger = get_logger("advanced_executor")
+
 
 def execute_advanced_query(
     plan: Dict[str, Any],
@@ -82,7 +86,7 @@ def execute_comparison(
             missing_info.append(f"{period_b.get('label', 'Period B')} ({period_b.get('column', 'unknown column')})")
 
         error_msg = f"Couldn't find data for: {', '.join(missing_info)}. The column might not exist or have NULL values."
-        print(f"[Comparison] {error_msg}")
+        logger.warning("Comparison data missing: %s", error_msg)
 
         return {
             "data": [],
@@ -121,7 +125,7 @@ def execute_comparison(
             "period_b_label": period_b.get("label", "Period B"),
             "period_b_value": value_b,
             "difference": value_b - value_a,
-            "percentage_change": ((value_b - value_a) / value_a * 100) if value_a != 0 else None,
+            "percentage_change": round(((value_b - value_a) / value_a * 100), 2) if value_a != 0 else None,
             "direction": direction,
             "direction_emoji": direction_emoji,
             "compare_type": compare_type
@@ -163,17 +167,35 @@ def execute_percentage(
         denominator.get("aggregation", "SUM")
     )
 
-    if numerator_value is None or denominator_value is None or denominator_value == 0:
+    if numerator_value is None or denominator_value is None:
+        # Missing data — column doesn't exist or no matching rows
+        missing_parts = []
+        if numerator_value is None:
+            missing_parts.append("numerator (filtered subset)")
+        if denominator_value is None:
+            missing_parts.append("denominator (total)")
         return {
             "data": [],
             "calculation_result": None,
             "analysis": {
-                "error": "Oops! Couldn't calculate the percentage - missing data or the total is zero. Try different criteria?",
+                "error": f"Couldn't find data for: {', '.join(missing_parts)}. Check that the column exists and has data for the requested filter.",
                 "numerator": numerator_value,
                 "denominator": denominator_value
             }
         }
 
+    if denominator_value == 0:
+        return {
+            "data": [],
+            "calculation_result": None,
+            "analysis": {
+                "error": "The total is zero — there's no data for the requested period or filter to calculate a percentage from.",
+                "numerator": numerator_value,
+                "denominator": denominator_value
+            }
+        }
+
+    # Valid: numerator=0 is a valid answer (0% contribution), not an error
     percentage_value = (numerator_value / denominator_value) * 100
 
     return {
@@ -217,7 +239,7 @@ def execute_trend(
         # ID columns should NOT be used for trend analysis
         invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
         if any(pattern in date_col_lower for pattern in invalid_patterns):
-            print(f"  [WARN] WARNING: '{date_column}' looks like an ID column, not a date column!")
+            logger.warning("Column '%s' looks like an ID column, not a date column", date_column)
             return {
                 "data": [],
                 "calculation_result": None,
@@ -255,7 +277,7 @@ def execute_trend(
     where_clause = " AND ".join(filter_conditions)
 
     if filters:
-        print(f"  [FILTER] Applying {len(filters)} filter(s) to trend query")
+        logger.debug("Applying %s filter(s) to trend query", len(filters))
 
     # Check if date_column is a text-based quarter column (e.g., "Q3 2025")
     is_quarter = _is_quarter_column(conn, table, date_column)
@@ -272,7 +294,7 @@ def execute_trend(
                 CAST(REGEXP_EXTRACT({quoted_date}, '(\\d{{4}})', 1) AS INTEGER),
                 CAST(REGEXP_EXTRACT({quoted_date}, 'Q(\\d)', 1) AS INTEGER)
         """
-        print(f"  [DATE] Quarter column detected - using chronological sort")
+        logger.debug("Quarter column detected - using chronological sort")
     else:
         sql = f"""
             SELECT {quoted_date} as date, {aggregation}({quoted_value}) as value
@@ -288,7 +310,7 @@ def execute_trend(
             return {
                 "data": [],
                 "calculation_result": None,
-                "analysis": {"error": "Hmm, no data found for the trend! Try a different date range or filter?"}
+                "analysis": {"error": "Hmm, no data found for that trend. No records matched that date range."}
             }
 
         # Filter both arrays together to ensure alignment (avoid index mismatch if NULLs exist)
@@ -424,7 +446,7 @@ def _is_quarter_column(
         return matches >= len(result) * 0.8  # 80% threshold
 
     except Exception as e:
-        print(f"  [WARN] Error checking quarter column: {e}")
+        logger.warning("Error checking quarter column: %s", e)
         return False
 
 
@@ -471,7 +493,11 @@ def _get_aggregated_value(
                 op = f.get("operator", "=")
                 val = f.get("value")
                 if isinstance(val, str):
-                    parts.append(f"{quoted_col} {op} '{val}'")
+                    # Use LIKE for partial matching (e.g. "Chennai" matches "Chennai Main")
+                    if op == "=":
+                        parts.append(f"LOWER(CAST({quoted_col} AS VARCHAR)) LIKE LOWER('%{val}%')")
+                    else:
+                        parts.append(f"{quoted_col} {op} '{val}'")
                 else:
                     parts.append(f"{quoted_col} {op} {val}")
 
@@ -487,7 +513,11 @@ def _get_aggregated_value(
             op = f.get("operator", "=")
             val = f.get("value")
             if isinstance(val, str):
-                conditions.append(f"{quoted_col} {op} '{val}'")
+                # Use LIKE for partial matching (e.g. "Chennai" matches "Chennai Main")
+                if op == "=":
+                    conditions.append(f"LOWER(CAST({quoted_col} AS VARCHAR)) LIKE LOWER('%{val}%')")
+                else:
+                    conditions.append(f"{quoted_col} {op} '{val}'")
             else:
                 conditions.append(f"{quoted_col} {op} {val}")
 
@@ -522,19 +552,19 @@ def _get_aggregated_value(
         return result[0] if result else None
     except Exception as e:
         # Log detailed error for debugging - likely column doesn't exist
-        print(f"[AdvancedExecutor] Error in aggregation for column '{column}' in table '{table}': {e}")
-        print(f"[AdvancedExecutor] SQL attempted: {sql[:200]}...")
+        logger.error("Error in aggregation for column '%s' in table '%s': %s", column, table, e)
+        logger.error("SQL attempted: %s...", sql[:200])
         return None
 
 
 def _calculate_comparison(value_a: float, value_b: float, compare_type: str) -> float:
     """Calculate comparison result based on type."""
     if compare_type == "difference":
-        return value_b - value_a
+        return round(value_b - value_a, 2)
     elif compare_type == "percentage_change":
         if value_a == 0:
             return None
-        return ((value_b - value_a) / value_a) * 100
+        return round(((value_b - value_a) / value_a) * 100, 2)
     elif compare_type == "ratio":
         if value_a == 0:
             return None
@@ -643,7 +673,7 @@ def execute_grouped_trend(
         date_col_lower = date_column.lower()
         invalid_patterns = ['_id', 'id_', 'sku_', 'transaction_', 'order_id', 'item_id', 'product_id', 'customer_id']
         if any(pattern in date_col_lower for pattern in invalid_patterns):
-            print(f"  [WARN] WARNING: '{date_column}' looks like an ID column, not a date column!")
+            logger.warning("Column '%s' looks like an ID column, not a date column", date_column)
             return {
                 "data": [],
                 "calculation_result": None,
@@ -688,7 +718,7 @@ def execute_grouped_trend(
             return {"data": [], "analysis": {"error": f"No groups found for {group_by}"}}
 
         groups = [row[0] for row in groups_result if row[0]]
-        print(f"  [DATA] Analyzing trend for {len(groups)} {group_by} groups")
+        logger.debug("Analyzing trend for %s %s groups", len(groups), group_by)
 
         # Analyze trend for each group
         group_trends = []
@@ -747,8 +777,20 @@ def execute_grouped_trend(
         if not group_trends:
             return {"data": [], "analysis": {"error": f"Not enough data to analyze trends by {group_by}"}}
 
-        # Sort groups by slope (most declining first for "which is declining" questions)
-        group_trends.sort(key=lambda x: x["normalized_slope"])
+        # Sort groups by slope — direction depends on the question context
+        # If user asks "which is growing/best/improving", show growing first (DESC)
+        # If user asks "which is declining/losing/worst", show declining first (ASC)
+        description = (plan.get("description") or "").lower()
+        growing_keywords = {'growing', 'growth', 'improving', 'best', 'highest', 'top', 'increase', 'performing'}
+        declining_keywords = {'declining', 'losing', 'worst', 'lowest', 'decrease', 'drop', 'falling'}
+
+        if any(kw in description for kw in growing_keywords):
+            group_trends.sort(key=lambda x: x["normalized_slope"], reverse=True)
+        elif any(kw in description for kw in declining_keywords):
+            group_trends.sort(key=lambda x: x["normalized_slope"])
+        else:
+            # Default: show best performers first (most useful for business users)
+            group_trends.sort(key=lambda x: x["normalized_slope"], reverse=True)
 
         return {
             "data": group_trends,
@@ -769,7 +811,7 @@ def execute_grouped_trend(
         }
 
     except Exception as e:
-        print(f"[GroupedTrend] Error: {e}")
+        logger.error("Grouped trend error: %s", e)
         return {"data": [], "analysis": {"error": f"Error analyzing grouped trend: {str(e)}"}}
 
 

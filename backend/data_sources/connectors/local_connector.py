@@ -17,6 +17,9 @@ from typing import Dict, List, Optional, ClassVar
 import pandas as pd
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("local_connector")
 
 
 class SecurityError(Exception):
@@ -213,7 +216,7 @@ class LocalConnector(BaseConnector):
         result = {}
         folder_path = Path(folder_path)
 
-        print(f"[LocalConnector] Scanning folder: {folder_path}")
+        logger.info("Scanning folder: %s", folder_path)
 
         for ext in self.SUPPORTED_EXTENSIONS:
             for file_path in folder_path.rglob(f"*{ext}"):
@@ -233,10 +236,10 @@ class LocalConnector(BaseConnector):
                         result[unique_key] = dfs
 
                 except Exception as e:
-                    print(f"[LocalConnector] Error processing {file_path}: {e}")
+                    logger.error("Error processing %s: %s", file_path, e)
                     continue
 
-        print(f"[LocalConnector] Found {len(result)} tables in folder")
+        logger.info("Found %d tables in folder", len(result))
         return self.validate_dataframes(result)
 
     def _process_file(self, file_path: str) -> Dict[str, List[pd.DataFrame]]:
@@ -281,8 +284,8 @@ class LocalConnector(BaseConnector):
             connector = PDFConnector(file_path)
             return connector.fetch_tables()
         except ImportError:
-            print(f"[LocalConnector] PDFConnector not available, skipping {file_path}")
+            logger.warning("PDFConnector not available, skipping %s", file_path)
             return {}
         except Exception as e:
-            print(f"[LocalConnector] Error loading PDF {file_path}: {e}")
+            logger.error("Error loading PDF %s: %s", file_path, e)
             return {}

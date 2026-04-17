@@ -11,6 +11,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, ClassVar
 import pandas as pd
 
+from utils.logger import get_logger
+
+logger = get_logger("base_connector")
+
 
 class OutputContractError(Exception):
     """Raised when connector output doesn't match the expected contract."""
@@ -172,7 +176,7 @@ class BaseConnector(ABC):
                     try:
                         unique_types = df[col].dropna().apply(type).nunique()
                         if unique_types > 1:
-                            print(f"  [Connector] Warning: Mixed types in {name}.{col}")
+                            logger.warning("Mixed types in %s.%s", name, col)
                     except Exception:
                         pass  # Skip type checking on error
 

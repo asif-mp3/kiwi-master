@@ -169,24 +169,24 @@ GREETINGS_TAMIL = [
 # =============================================================================
 
 FOLLOWUP_SUGGESTIONS_ENGLISH = [
-    "Would you like me to dig deeper into this?",
-    "Want me to compare this with another time period?",
-    "I can show you the trend if you're interested.",
-    "Would you like to explore a specific category?",
-    "Let me know if you'd like more details.",
-    "I can break this down further if needed.",
-    "There's more to explore here if you'd like.",
-    "Would you like to see this from a different angle?"
+    "I can also break this down further.",
+    "I can compare this with another time period too.",
+    "The trend over time is also available.",
+    "I can explore specific categories too.",
+    "More details are available if needed.",
+    "I can slice this differently.",
+    "There's more to unpack here.",
+    "I can show this from a different angle."
 ]
 
 FOLLOWUP_SUGGESTIONS_TAMIL = [
-    "இன்னும் டீடெயில் ஆ பாக்கணுமா?",
-    "வேற டைம் பீரியட் காம்பேர் பண்ணலாமா?",
-    "ட்ரெண்ட் பாக்கணும் னா சொல்லுங்க.",
-    "வேற கேடகரி எக்ஸ்ப்ளோர் பண்ணலாமா?",
-    "வேற என்ன வேணும்?",
-    "இன்னும் டீடெயில் வேணும் னா சொல்லுங்க.",
-    "வேற கேள்விகள் இருந்தா கேளு."
+    "இன்னும் டீடெயில் ஆ காட்ட முடியும்.",
+    "வேற டைம் பீரியட் கூட காம்பேர் பண்ணலாம்.",
+    "ட்ரெண்ட் கூட இருக்கு.",
+    "வேற கேடகரி கூட எக்ஸ்ப்ளோர் பண்ணலாம்.",
+    "வேற வேணும் னா சொல்லுங்க.",
+    "இன்னும் டீடெயில் இருக்கு.",
+    "வேற கேள்விகள் இருந்தா சொல்லுங்க."
 ]
 
 # =============================================================================
@@ -235,9 +235,9 @@ COMPARISON_PROMPTS_TAMIL = [
 ERROR_TEMPLATES = {
     "no_data": {
         "english": [
-            "{name}, I couldn't find any data for that. Try a different filter or check the spelling.",
-            "{name}, no data matches that criteria. Perhaps try a different date range?",
-            "{name}, that search came up empty. Could you rephrase or try different keywords?"
+            "{name}, I checked but couldn't find a match — the spelling might be slightly different.",
+            "{name}, there's no data for that date range in the records.",
+            "{name}, I couldn't match those keywords to anything in the data."
         ],
         "tamil": [
             "{name}, அந்த டேட்டா கிடைக்கல. ஸ்பெல்லிங் செக் பண்ணுங்க ஆர் வேற ஃபில்டர் ட்ரை பண்ணுங்க.",
@@ -247,14 +247,14 @@ ERROR_TEMPLATES = {
     },
     "ambiguous": {
         "english": [
-            "{name}, I need a bit more clarity. Could you be more specific?",
-            "{name}, there are a few ways to interpret that. Could you clarify?",
-            "{name}, I want to make sure I understand correctly. Can you rephrase that?"
+            "{name}, I found multiple matches — showing all of them.",
+            "{name}, there are a few ways to interpret that — here are the results.",
+            "{name}, I'll show the closest matches I found."
         ],
         "tamil": [
-            "{name}, கொஞ்சம் க்ளியர் ஆ சொல்லுங்க. புரியல.",
-            "{name}, இத வேற விதமா அர்த்தம் பண்ணலாம். கொஞ்சம் க்ளாரிஃபை பண்ணுங்க.",
-            "{name}, சரி ஆ புரிஞ்சுக்கணும். ஒரு வாட்டி ரிபீட் பண்ணுங்க?"
+            "{name}, பல ரிசல்ட்ஸ் கிடைச்சது — எல்லாத்தையும் காட்டுறேன்.",
+            "{name}, இத வேற விதமா அர்த்தம் பண்ணலாம் — closest matches காட்டுறேன்.",
+            "{name}, multiple results வந்தது — showing all."
         ]
     },
     "connection_error": {

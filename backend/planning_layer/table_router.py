@@ -1,22 +1,24 @@
 """
 Table Router - Intelligent query routing to the correct table.
 
-UPDATED: Now uses hybrid LLM-based selection for better accuracy with any dataset.
-The old hardcoded scoring approach is kept as a fallback.
+LLM-PRIMARY ROUTING: Gemini Flash is the primary table selector.
+It understands question semantics, table contents, and conversational intent.
+Rule-based scoring is kept as an automatic fallback when LLM fails/times out.
 
 Selection Strategy:
-1. Check for explicit table reference (user mentions "from X table")
-2. Try LLM-based semantic selection (understands intent)
-3. Fall back to rule-based scoring if LLM fails
+1. Check for projection/follow-up (reuse previous table)
+2. Check for explicit table reference (user mentions "from X table")
+3. LLM primary routing (Gemini Flash — understands intent)
+4. Fall back to rule-based scoring if LLM fails
 """
 
 from typing import Optional, List, Tuple, Dict, Any
 from schema_intelligence.profile_store import ProfileStore
 from planning_layer.entity_extractor import EntityExtractor
+from utils.config_loader import get_routing_config
+from utils.logger import get_logger
 
-# Configuration for LLM-based selection
-USE_LLM_SELECTION = False  # DISABLED: Rule-based scoring is faster and works for 95%+ queries
-LLM_SELECTION_TIMEOUT = 5  # Seconds to wait for LLM response (if enabled)
+logger = get_logger("router")
 
 
 def _get_actual_duckdb_tables() -> List[str]:
@@ -26,7 +28,7 @@ def _get_actual_duckdb_tables() -> List[str]:
         db = DuckDBManager()
         return db.list_tables()
     except Exception as e:
-        print(f"[TableRouter] Warning: Could not get DuckDB tables: {e}")
+        logger.warning("Could not get DuckDB tables: %s", e)
         return []
 
 
@@ -45,6 +47,31 @@ class TableRouter:
         self.profile_store = profile_store or ProfileStore()
         self.entity_extractor = EntityExtractor()
         self._last_routing_debug = {}
+        self._cached_table_context: Optional[str] = None
+
+    def _get_or_build_table_context(self) -> Optional[str]:
+        """Get cached table context for LLM, or build it from profiles."""
+        if self._cached_table_context is not None:
+            return self._cached_table_context
+        profiles = self.profile_store.get_all_profiles()
+        if not profiles:
+            return None
+        from planning_layer.llm_table_selector import build_rich_table_context
+        self._cached_table_context = build_rich_table_context(profiles)
+        return self._cached_table_context
+
+    def invalidate_table_context_cache(self):
+        """Clear cached table context (call after dataset changes)."""
+        self._cached_table_context = None
+
+    def _validate_llm_table(self, selected: str, actual_tables: List[str],
+                            actual_tables_lower: Dict[str, str]) -> Optional[str]:
+        """Validate LLM-selected table exists in DuckDB. Returns canonical name or None."""
+        if not actual_tables:
+            return selected if selected in self.profile_store.get_table_names() else None
+        if selected in actual_tables:
+            return selected
+        return actual_tables_lower.get(selected.lower())
 
     def route(self, question: str, previous_context: Dict[str, Any] = None) -> 'RoutingResult':
         """
@@ -101,13 +128,20 @@ class TableRouter:
             # Check if this is a projection/continuation query
             is_projection = any(phrase in q_lower for phrase in projection_phrases)
 
-            # Also check for very short follow-up questions (likely referring to previous result)
-            is_short_followup = len(question.split()) < 8 and is_followup
+            # Short follow-up only counts if it has at least one data entity
+            # (prevents casual words like "podi", "ennadi panra" from reusing previous table)
+            has_any_entity = bool(
+                entities.get('month') or entities.get('metric') or
+                entities.get('location') or entities.get('category') or
+                entities.get('comparison') or entities.get('dimension_keywords') or
+                entities.get('time_period') or entities.get('explicit_table')
+            )
+            is_short_followup = len(question.split()) < 8 and is_followup and has_any_entity
 
             if is_projection or is_short_followup:
                 # Validate that previous table still exists (uses cached actual_tables from start)
                 if not actual_tables or prev_table in actual_tables:
-                    print(f"[TableRouter] [OK] PROJECTION QUERY - using previous table: {prev_table}")
+                    logger.info("PROJECTION QUERY - using previous table: %s", prev_table)
                     self._last_routing_debug = {
                         'method': 'projection_followup',
                         'table': prev_table,
@@ -134,7 +168,7 @@ class TableRouter:
                         else:
                             # Table doesn't exist, skip explicit match
                             explicit_match = None
-                            print(f"[TableRouter] Explicit table reference not found in DuckDB")
+                            logger.warning("Explicit table reference not found in DuckDB")
 
             if explicit_match:
                 self._last_routing_debug = {
@@ -149,77 +183,58 @@ class TableRouter:
                     alternatives=[(explicit_match, 100)]
                 )
 
-        # NEW: Try LLM-based semantic selection for better accuracy
-        if USE_LLM_SELECTION:
+        # === LLM PRIMARY ROUTING ===
+        # Send question + table profiles to Gemini Flash for intelligent selection.
+        # This replaces the 200+ line scoring engine as the primary routing method.
+        table_context = self._get_or_build_table_context()
+        if table_context:
             try:
-                from planning_layer.llm_table_selector import select_table_hybrid
+                from planning_layer.llm_table_selector import select_table_with_llm
+                rc = get_routing_config()
+                llm_result = select_table_with_llm(
+                    question, table_context,
+                    timeout_seconds=rc.llm_router_timeout,
+                    verbose=True
+                )
 
-                profiles = self.profile_store.get_all_profiles()
-                if profiles:
-                    selected_table, confidence, reason = select_table_hybrid(
-                        question=question,
-                        profiles=profiles,
-                        entities=entities,
-                        use_llm=True,
-                        llm_timeout=LLM_SELECTION_TIMEOUT
+                # Conversational detection — LLM says this isn't a data query
+                if llm_result.get('is_conversational'):
+                    logger.info("LLM router: CONVERSATIONAL — no data intent detected")
+                    self._last_routing_debug = {
+                        'method': 'llm_conversational',
+                        'reason': llm_result.get('reason', 'conversational'),
+                    }
+                    return RoutingResult(
+                        table=None, entities=entities,
+                        confidence=0.0, alternatives=[]
                     )
 
-                    if selected_table and confidence >= 0.6:
-                        # Validate table exists in DuckDB
-                        actual_tables = _get_actual_duckdb_tables()
-                        if not actual_tables or selected_table in actual_tables:
-                            self._last_routing_debug = {
-                                'method': 'llm_semantic_selection',
-                                'table': selected_table,
-                                'confidence': confidence,
-                                'reason': reason
-                            }
-                            return RoutingResult(
-                                table=selected_table,
-                                entities=entities,
-                                confidence=confidence,
-                                alternatives=[(selected_table, int(confidence * 100))]
-                            )
-                        else:
-                            # Try case-insensitive match
-                            actual_tables_lower = {t.lower(): t for t in actual_tables}
-                            if selected_table.lower() in actual_tables_lower:
-                                corrected_table = actual_tables_lower[selected_table.lower()]
-                                self._last_routing_debug = {
-                                    'method': 'llm_semantic_selection',
-                                    'table': corrected_table,
-                                    'confidence': confidence,
-                                    'reason': reason
-                                }
-                                return RoutingResult(
-                                    table=corrected_table,
-                                    entities=entities,
-                                    confidence=confidence,
-                                    alternatives=[(corrected_table, int(confidence * 100))]
-                                )
-            except Exception as e:
-                print(f"[TableRouter] LLM selection failed, falling back to scoring: {e}")
-
-        # RAG-based semantic search - DISABLED for performance
-        # ChromaDB initialization adds 10+ seconds latency even when failing
-        # Enable only if you have ChromaDB properly configured with embeddings
-        USE_RAG_SEARCH = False
-        if USE_RAG_SEARCH:
-            try:
-                from schema_intelligence.chromadb_client import SchemaVectorStore
-                vector_store = SchemaVectorStore()
-                rag_tables = vector_store.get_relevant_tables(question, top_k=3)
-                if rag_tables and rag_tables[0][1] > 0.5:
-                    rag_best_table, rag_score = rag_tables[0]
-                    if not actual_tables or rag_best_table in actual_tables:
-                        print(f"[TableRouter] RAG found: {rag_best_table} ({rag_score:.0%})")
+                # Valid table selected by LLM
+                selected = llm_result.get('selected_table')
+                if selected and not llm_result.get('error'):
+                    validated_table = self._validate_llm_table(selected, actual_tables, actual_tables_lower)
+                    if validated_table:
+                        llm_confidence = llm_result.get('confidence', 0.7)
+                        self._last_routing_debug = {
+                            'method': 'llm_primary',
+                            'table': validated_table,
+                            'confidence': llm_confidence,
+                            'reason': llm_result.get('reason', 'LLM selection'),
+                        }
                         return RoutingResult(
-                            table=rag_best_table, entities=entities,
-                            confidence=rag_score,
-                            alternatives=[(t, int(s * 100)) for t, s in rag_tables[:3]]
+                            table=validated_table, entities=entities,
+                            confidence=llm_confidence,
+                            alternatives=[(validated_table, int(llm_confidence * 100))]
                         )
+                    else:
+                        logger.warning("LLM selected '%s' but table not found in DuckDB — falling back to scoring", selected)
+
+                # LLM returned no table and not conversational — fall through to scoring
+                if not selected and not llm_result.get('error'):
+                    logger.info("LLM returned no table selection — falling back to scoring")
+
             except Exception as e:
-                print(f"[TableRouter] RAG skipped: {e}")
+                logger.warning("LLM router failed (%s) — falling back to scoring", e)
 
         # FALLBACK: Get candidate tables with rule-based scoring (FAST - no LLM)
         candidates = self.profile_store.find_best_table_for_query(entities)
@@ -237,9 +252,9 @@ class TableRouter:
                     # Use the actual table name from DuckDB (correct casing)
                     actual_name = actual_tables_lower[table_name.lower()]
                     validated_candidates.append((actual_name, score))
-                    print(f"[TableRouter] Fixed table name casing: {table_name} -> {actual_name}")
+                    logger.debug("Fixed table name casing: %s -> %s", table_name, actual_name)
                 else:
-                    print(f"[TableRouter] Filtered out non-existent table: {table_name}")
+                    logger.warning("Filtered out non-existent table: %s", table_name)
 
             candidates = validated_candidates
 
@@ -262,17 +277,47 @@ class TableRouter:
         # Calculate confidence based on score distribution
         confidence = self._calculate_confidence(candidates)
 
+        # PENALTY: Reduce confidence when query has NO data intent signals
+        # Generic questions like "What's the data quality like?" or "Tell me something interesting"
+        # may get false entity matches but have no actual data query intent
+        has_data_intent = (
+            entities.get('month') or
+            entities.get('metric') or
+            entities.get('comparison') or
+            entities.get('cross_table_intent') or
+            entities.get('date_specific') or
+            entities.get('time_period') or
+            entities.get('explicit_table') or
+            entities.get('dimension_keywords') or
+            entities.get('trend_intent') or
+            entities.get('summary_intent') or
+            entities.get('impact_intent')
+        )
+        # Also treat explicit aggregation keywords (total, average, count, sum, max, min)
+        # as data intent — but only if they appear as explicit words in the query
+        if not has_data_intent:
+            agg_keywords = {'total', 'sum', 'average', 'avg', 'count', 'maximum', 'max', 'minimum', 'min', 'highest', 'lowest'}
+            query_words = set(question.lower().split())
+            if query_words & agg_keywords:
+                has_data_intent = True
+        if not has_data_intent:
+            # No data signals (no month, metric, comparison, trend, etc.)
+            # Score is entirely from coincidental matches (e.g., "enna" in "chennai")
+            # Cap confidence hard so query_service.py conversational fallback triggers
+            confidence = min(confidence, 0.10)
+            logger.debug("No data intent signals — confidence capped at %.2f", confidence)
+
         # Boost confidence for cross-table queries when we found a table with aggregate data
         # This prevents unnecessary clarification for "across all months" type queries
+        rc = get_routing_config()
         if entities.get('cross_table_intent') and best_score >= 40:
-            # High score with cross-table intent means we found a good aggregate table
-            confidence = min(1.0, confidence + 0.25)
+            confidence = min(1.0, confidence + rc.cross_table_boost)
 
-        # Store debug info for transparency
+        top_n = rc.top_alternatives_count
         self._last_routing_debug = {
             'method': 'scoring',
             'entities': entities,
-            'candidates': candidates[:5],  # Top 5
+            'candidates': candidates[:top_n],
             'selected': best_table,
             'score': best_score,
             'confidence': confidence,
@@ -283,7 +328,7 @@ class TableRouter:
             table=best_table,
             entities=entities,
             confidence=confidence,
-            alternatives=candidates[:5]  # Top 5 candidates
+            alternatives=candidates[:top_n]
         )
 
     def _merge_with_context(self, new_entities: Dict[str, Any],
@@ -333,8 +378,8 @@ class TableRouter:
         if table_ref_lower in skip_words:
             return None
 
-        # Require minimum 3 characters for partial matching
-        if len(table_ref_lower) < 3:
+        rc = get_routing_config()
+        if len(table_ref_lower) < rc.min_table_ref_length:
             return None
 
         all_tables = self.profile_store.get_table_names()
@@ -375,7 +420,7 @@ class TableRouter:
                 best_word_overlap = overlap
                 best_match = table
 
-        if best_word_overlap >= len(ref_words) * 0.5:  # At least 50% words match
+        if best_word_overlap >= len(ref_words) * rc.min_word_overlap_ratio:
             return best_match
 
         return None
@@ -396,47 +441,45 @@ class TableRouter:
         if not candidates:
             return 0.0
 
-        if len(candidates) == 1:
-            # Only one candidate - base confidence on score
-            score = candidates[0][1]
-            return min(1.0, score / 60)  # 60+ score = max confidence
+        rc = get_routing_config()
 
-        # Multiple candidates - check score gap
+        if len(candidates) == 1:
+            score = candidates[0][1]
+            return min(1.0, score / rc.score_divisor_single)
+
         best_table, best_score = candidates[0]
         second_score = candidates[1][1]
 
-        # Score gap analysis
         if best_score <= 0:
             return 0.0
 
         gap = best_score - second_score
         gap_ratio = gap / best_score
 
-        # HIGH CONFIDENCE CONDITIONS (no clarification needed):
-        # 1. Strong absolute score (>= 60) with reasonable gap (>= 20%)
-        if best_score >= 60 and gap_ratio >= 0.20:
-            return max(0.7, min(1.0, best_score / 80))
+        # HIGH CONFIDENCE CONDITIONS:
+        # 1. Strong absolute score with reasonable gap
+        if best_score >= rc.strong_score_threshold and gap_ratio >= rc.strong_gap_ratio:
+            return max(0.7, min(1.0, best_score / rc.very_high_score))
 
-        # 2. Very high score (>= 80) regardless of gap - clear keyword match
-        if best_score >= 80:
-            return max(0.75, min(1.0, best_score / 100))
+        # 2. Very high score regardless of gap
+        if best_score >= rc.very_high_score:
+            return max(0.75, min(1.0, best_score / rc.max_score_divisor))
 
-        # 3. Large gap (>= 35 points) - clear winner even if scores are moderate
+        # 3. Large gap - clear winner even if scores are moderate
         if gap >= 35:
-            return max(0.7, min(1.0, gap / 60 + 0.4))
+            return max(0.7, min(1.0, gap / rc.score_divisor_single + 0.4))
 
         # Base confidence from score magnitude
-        magnitude_confidence = min(1.0, best_score / 70)  # 70+ = max
+        magnitude_confidence = min(1.0, best_score / rc.magnitude_divisor)
 
         # Gap confidence - penalize very close scores more heavily
-        if gap_ratio < 0.1:  # Within 10% - genuinely ambiguous
-            gap_confidence = 0.2
-        elif gap_ratio < 0.2:  # Within 20%
-            gap_confidence = 0.4
+        if gap_ratio < 0.1:
+            gap_confidence = rc.gap_confidence_small
+        elif gap_ratio < 0.2:
+            gap_confidence = rc.gap_confidence_medium
         else:
-            gap_confidence = min(1.0, gap_ratio * 1.5)
+            gap_confidence = min(1.0, gap_ratio * rc.gap_confidence_large)
 
-        # Combined confidence
         confidence = (magnitude_confidence * 0.5) + (gap_confidence * 0.5)
 
         return round(confidence, 2)
@@ -535,17 +578,13 @@ class TableRouter:
         Returns:
             table_name: The best matching table, or None if LLM can't determine
         """
-        import google.generativeai as genai
-        import os
-        from dotenv import load_dotenv
-
-        load_dotenv()
+        from utils.config_loader import get_genai_client, get_llm_config
 
         try:
             # Get ALL available tables with their basic info
             all_tables = self.profile_store.get_table_names()
             if not all_tables:
-                print("[LLM Fallback] No tables available")
+                logger.warning("LLM Fallback: No tables available")
                 return None
 
             # Build a concise summary of all tables
@@ -572,40 +611,39 @@ Respond with ONLY the exact table name, nothing else. If none match, respond wit
 Table name:"""
 
             # Call Gemini
-            api_key = os.getenv('GEMINI_API_KEY')
-            if not api_key:
-                print("[LLM Fallback] No GEMINI_API_KEY found")
+            try:
+                client = get_genai_client()
+            except ValueError:
+                logger.error("LLM Fallback: No GEMINI_API_KEY found")
                 return None
 
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
-
-            print(f"[LLM Fallback] Asking Gemini to pick best table from {len(all_tables)} options...")
-            response = model.generate_content(prompt)
+            logger.info("LLM Fallback: Asking Gemini to pick best table from %d options...", len(all_tables))
+            response = client.models.generate_content(
+                model=get_llm_config().model,
+                contents=prompt,
+            )
             suggested_table = response.text.strip()
 
             # Validate the suggested table exists
             if suggested_table == "NONE":
-                print("[LLM Fallback] LLM couldn't determine appropriate table")
+                logger.warning("LLM Fallback: LLM couldn't determine appropriate table")
                 return None
 
             if suggested_table in all_tables:
-                print(f"[LLM Fallback] ✓ LLM selected: {suggested_table}")
+                logger.info("LLM Fallback: LLM selected: %s", suggested_table)
                 return suggested_table
             else:
                 # Try fuzzy match (LLM might have formatting differences)
                 for table in all_tables:
                     if suggested_table.lower() in table.lower() or table.lower() in suggested_table.lower():
-                        print(f"[LLM Fallback] ✓ LLM selected (fuzzy match): {table}")
+                        logger.info("LLM Fallback: LLM selected (fuzzy match): %s", table)
                         return table
 
-                print(f"[LLM Fallback] ! LLM suggested '{suggested_table}' but it doesn't exist")
+                logger.warning("LLM Fallback: LLM suggested '%s' but it doesn't exist", suggested_table)
                 return None
 
         except Exception as e:
-            print(f"[LLM Fallback] Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("LLM Fallback error: %s", e, exc_info=True)
             return None
 
     def get_fallback_schema(self, question: str, top_k: int = 5) -> str:
@@ -754,7 +792,7 @@ class RoutingResult:
     @property
     def is_confident(self) -> bool:
         """Check if routing result is confident enough to use single table"""
-        return self.confidence >= 0.6
+        return self.confidence >= get_routing_config().confidence_threshold_high
 
     @property
     def needs_clarification(self) -> bool:
@@ -807,7 +845,7 @@ class RoutingResult:
     @property
     def should_fallback(self) -> bool:
         """Check if we should use fallback multi-table approach (RARE - only when backend model completely fails)"""
-        return self.confidence < 0.15 or self.table is None
+        return self.confidence < get_routing_config().confidence_threshold_low or self.table is None
 
     def get_clarification_options(self) -> List[str]:
         """Get table options for user clarification"""

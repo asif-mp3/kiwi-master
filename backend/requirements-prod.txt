@@ -3,50 +3,42 @@
 # chromadb + sentence-transformers are REQUIRED for schema intelligence
 
 # Core Dependencies
-google-generativeai>=0.8.0
-pyyaml>=6.0
-jsonschema>=4.0.0
-python-dotenv>=1.0.0
+google-genai==1.64.0
+pyyaml==6.0.2
+jsonschema==4.23.0
+python-dotenv==1.0.1
 
 # Database
-duckdb>=0.9.0
+duckdb==1.1.3
 
 # Vector Store & Embeddings (CORE - DO NOT REMOVE)
-chromadb>=0.4.0
-sentence-transformers>=2.2.0
+chromadb==0.5.23
+sentence-transformers==3.3.1
 
 # Google Sheets Integration
-gspread>=5.0.0
-google-auth>=2.0.0
+gspread==6.1.4
+google-auth==2.37.0
 
 # Google Cloud Translation API
-google-cloud-translate>=3.0.0
+google-cloud-translate==3.18.0
 
 # Data Processing
-pandas>=2.0.0
-numpy>=1.24.0
-openpyxl>=3.1.0  # Required for Excel file support
-et-xmlfile>=1.1.0  # Required by openpyxl
+pandas==2.2.3
+numpy==1.26.4
+openpyxl==3.1.5
+et-xmlfile==2.0.0
 
 # Voice & Audio (Production)
-elevenlabs>=1.0.0
-langdetect>=1.0.9
+elevenlabs==1.14.0
+langdetect==1.0.9
 
 # Utilities
-requests>=2.31.0
-
-# Authentication
-supabase>=2.0.0
+requests==2.32.3
 
 # API Server
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
 
-# ============================================
-# REMOVED (Not used in production FastAPI):
-# ============================================
-# streamlit>=1.28.0          - Only used in legacy auth functions (optional imports)
-# gtts>=2.4.0                - Not used anywhere in codebase
-# pydub>=0.25.1              - Not used anywhere in codebase  
-# scipy>=1.10.0              - Not used anywhere in codebase
+# Monitoring
+sentry-sdk[fastapi]==2.19.2

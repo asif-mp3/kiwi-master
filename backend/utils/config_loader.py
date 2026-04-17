@@ -12,11 +12,15 @@ Usage:
     print(config.cache.query_cache_ttl_seconds)  # 300
 """
 
+import os
 import yaml
 import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
+from utils.logger import get_logger
+
+logger = get_logger("config_loader")
 
 
 @dataclass
@@ -116,6 +120,47 @@ class TableRoutingConfig:
 
 
 @dataclass
+class RoutingConfig:
+    """Table routing confidence and scoring thresholds."""
+    confidence_threshold_high: float = 0.6
+    confidence_threshold_low: float = 0.15
+    score_divisor_single: int = 60
+    strong_score_threshold: int = 60
+    strong_gap_ratio: float = 0.20
+    very_high_score: int = 80
+    max_score_divisor: int = 100
+    magnitude_divisor: int = 70
+    gap_confidence_small: float = 0.2
+    gap_confidence_medium: float = 0.4
+    gap_confidence_large: float = 1.5
+    cross_table_boost: float = 0.25
+    top_alternatives_count: int = 5
+    min_table_ref_length: int = 3
+    min_word_overlap_ratio: float = 0.5
+    rag_top_k: int = 3
+    rag_score_threshold: float = 0.5
+    conversational_fallback_score: int = 25
+    llm_router_timeout: int = 10
+
+
+@dataclass
+class HealingConfig:
+    """Query healing thresholds."""
+    fuzzy_match_threshold: float = 0.85
+    table_overlap_ratio: float = 0.5
+
+
+@dataclass
+class FormattingConfig:
+    """Number and currency formatting configuration."""
+    currency_symbol: str = "₹"
+    crore_divisor: int = 10000000
+    lakh_divisor: int = 100000
+    thousand_divisor: int = 1000
+    min_word_threshold: int = 10
+
+
+@dataclass
 class Config:
     """Complete configuration for Thara.ai."""
     duckdb: DuckDBConfig
@@ -127,6 +172,9 @@ class Config:
     cache: CacheConfig
     voice: VoiceConfig
     table_routing: TableRoutingConfig
+    routing: RoutingConfig
+    healing: HealingConfig
+    formatting: FormattingConfig
 
 
 # Singleton instance
@@ -222,6 +270,37 @@ def _parse_config(raw: dict) -> Config:
             is_transactional=raw.get("table_routing", {}).get("is_transactional", 15),
             data_quality_high=raw.get("table_routing", {}).get("data_quality_high", 10),
         ),
+        routing=RoutingConfig(
+            confidence_threshold_high=raw.get("routing", {}).get("confidence_threshold_high", 0.6),
+            confidence_threshold_low=raw.get("routing", {}).get("confidence_threshold_low", 0.15),
+            score_divisor_single=raw.get("routing", {}).get("score_divisor_single", 60),
+            strong_score_threshold=raw.get("routing", {}).get("strong_score_threshold", 60),
+            strong_gap_ratio=raw.get("routing", {}).get("strong_gap_ratio", 0.20),
+            very_high_score=raw.get("routing", {}).get("very_high_score", 80),
+            max_score_divisor=raw.get("routing", {}).get("max_score_divisor", 100),
+            magnitude_divisor=raw.get("routing", {}).get("magnitude_divisor", 70),
+            gap_confidence_small=raw.get("routing", {}).get("gap_confidence_small", 0.2),
+            gap_confidence_medium=raw.get("routing", {}).get("gap_confidence_medium", 0.4),
+            gap_confidence_large=raw.get("routing", {}).get("gap_confidence_large", 1.5),
+            cross_table_boost=raw.get("routing", {}).get("cross_table_boost", 0.25),
+            top_alternatives_count=raw.get("routing", {}).get("top_alternatives_count", 5),
+            min_table_ref_length=raw.get("routing", {}).get("min_table_ref_length", 3),
+            min_word_overlap_ratio=raw.get("routing", {}).get("min_word_overlap_ratio", 0.5),
+            rag_top_k=raw.get("routing", {}).get("rag_top_k", 3),
+            rag_score_threshold=raw.get("routing", {}).get("rag_score_threshold", 0.5),
+            llm_router_timeout=raw.get("routing", {}).get("llm_router_timeout", 10),
+        ),
+        healing=HealingConfig(
+            fuzzy_match_threshold=raw.get("healing", {}).get("fuzzy_match_threshold", 0.85),
+            table_overlap_ratio=raw.get("healing", {}).get("table_overlap_ratio", 0.5),
+        ),
+        formatting=FormattingConfig(
+            currency_symbol=raw.get("formatting", {}).get("currency_symbol", "₹"),
+            crore_divisor=raw.get("formatting", {}).get("crore_divisor", 10000000),
+            lakh_divisor=raw.get("formatting", {}).get("lakh_divisor", 100000),
+            thousand_divisor=raw.get("formatting", {}).get("thousand_divisor", 1000),
+            min_word_threshold=raw.get("formatting", {}).get("min_word_threshold", 10),
+        ),
     )
 
 
@@ -271,6 +350,21 @@ def get_llm_config() -> LLMConfig:
 def get_voice_config() -> VoiceConfig:
     """Get voice/TTS configuration."""
     return get_config().voice
+
+
+def get_routing_config() -> RoutingConfig:
+    """Get routing thresholds configuration."""
+    return get_config().routing
+
+
+def get_healing_config() -> HealingConfig:
+    """Get healing thresholds configuration."""
+    return get_config().healing
+
+
+def get_formatting_config() -> FormattingConfig:
+    """Get formatting configuration."""
+    return get_config().formatting
 
 
 # =============================================================================
@@ -355,8 +449,38 @@ def print_startup_validation() -> None:
     warnings = validate_config()
 
     if warnings:
-        print("\n  Configuration Warnings:")
+        logger.warning("Configuration Warnings:")
         for warning in warnings:
-            print(f"    {warning}")
+            logger.warning("  %s", warning)
     else:
-        print("  Configuration: [OK] All validated")
+        logger.info("Configuration: [OK] All validated")
+
+
+# =============================================================================
+# Shared Gemini Client (google-genai)
+# =============================================================================
+
+_genai_client = None
+_genai_client_lock = threading.Lock()
+
+
+def get_genai_client():
+    """
+    Get or create singleton google-genai Client instance.
+    Thread-safe with double-checked locking.
+    """
+    global _genai_client
+    if _genai_client is not None:
+        return _genai_client
+    with _genai_client_lock:
+        if _genai_client is not None:
+            return _genai_client
+        from google import genai
+        config = get_llm_config()
+        api_key = (os.getenv(config.api_key_env) or "").strip()
+        if not api_key:
+            raise ValueError(
+                f"Gemini API key not found. Set the {config.api_key_env} environment variable."
+            )
+        _genai_client = genai.Client(api_key=api_key)
+        return _genai_client

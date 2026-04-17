@@ -3,7 +3,7 @@ Centralized formatting utilities for Thara AI.
 Consolidates number formatting, currency formatting, and date formatting logic.
 """
 
-from typing import Union, Optional
+from typing import Union
 
 
 def format_indian_number(value: Union[int, float], use_words: bool = True,
@@ -98,62 +98,6 @@ def format_indian_number(value: Union[int, float], use_words: bool = True,
             return f"{sign}{currency_symbol}{int(value)}"
 
 
-def format_indian_commas(value: Union[int, float]) -> str:
-    """
-    Add Indian-style comma separators to numbers.
-    Indian format: 1,23,45,678 (groups of 2 after first 3 digits)
-
-    Args:
-        value: Number to format
-
-    Returns:
-        String with Indian comma separators
-
-    Example:
-        >>> format_indian_commas(12345678)
-        "1,23,45,678"
-    """
-    if value is None:
-        return "0"
-
-    # Handle negative numbers
-    sign = ""
-    if value < 0:
-        sign = "-"
-        value = abs(value)
-
-    # Convert to string and split integer/decimal
-    if isinstance(value, float):
-        str_value = f"{value:.2f}"
-        if "." in str_value:
-            integer_part, decimal_part = str_value.split(".")
-            decimal_suffix = f".{decimal_part}"
-        else:
-            integer_part = str_value
-            decimal_suffix = ""
-    else:
-        integer_part = str(int(value))
-        decimal_suffix = ""
-
-    # Apply Indian comma formatting
-    if len(integer_part) <= 3:
-        result = integer_part
-    else:
-        # Last 3 digits
-        result = integer_part[-3:]
-        remaining = integer_part[:-3]
-
-        # Add remaining digits in groups of 2 from right to left
-        while remaining:
-            if len(remaining) <= 2:
-                result = remaining + "," + result
-                remaining = ""
-            else:
-                result = remaining[-2:] + "," + result
-                remaining = remaining[:-2]
-
-    return f"{sign}{result}{decimal_suffix}"
-
 
 def format_percentage(value: Union[int, float], decimal_places: int = 1) -> str:
     """
@@ -205,39 +149,3 @@ def humanize_metric_name(metric: str) -> str:
     return readable
 
 
-def format_number_smart(value: Union[int, float], metric_type: Optional[str] = None) -> str:
-    """
-    Smart number formatting based on metric type.
-    Chooses appropriate formatting based on context.
-
-    Args:
-        value: Number to format
-        metric_type: Type hint ('currency', 'percentage', 'count', 'ratio')
-
-    Returns:
-        Appropriately formatted string
-    """
-    if value is None:
-        return "N/A"
-
-    # Auto-detect metric type if not provided
-    if metric_type is None:
-        if isinstance(value, float) and 0 < value < 1:
-            metric_type = 'ratio'
-        elif abs(value) >= 1000:
-            metric_type = 'currency'  # Assume large numbers are currency
-        else:
-            metric_type = 'count'
-
-    # Format based on type
-    if metric_type == 'percentage':
-        return format_percentage(value)
-    elif metric_type == 'currency':
-        return format_indian_number(value, use_words=True, currency=True)
-    elif metric_type == 'ratio':
-        return format_percentage(value * 100)
-    else:  # count or default
-        if abs(value) >= 1000:
-            return format_indian_number(value, use_words=True, currency=False)
-        else:
-            return str(int(value)) if value == int(value) else f"{value:.2f}"

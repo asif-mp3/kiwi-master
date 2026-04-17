@@ -20,6 +20,9 @@ import requests
 
 from data_sources.base_connector import BaseConnector
 from data_sources.connector_factory import is_google_sheets_url
+from utils.logger import get_logger
+
+logger = get_logger("gdrive_connector")
 
 
 class GoogleDriveConnector(BaseConnector):
@@ -170,7 +173,7 @@ class GoogleDriveConnector(BaseConnector):
                         tmp.write(chunk)
                 tmp_path = tmp.name
 
-            print(f"[GDriveConnector] Downloaded file (type: {file_type})")
+            logger.info("Downloaded file (type: %s)", file_type)
             return tmp_path, file_type
 
         except requests.RequestException as e:

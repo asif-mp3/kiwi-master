@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { STORAGE_KEYS } from '../config/storage-keys';
 
 export interface AppSettings {
   voiceSpeed: number;        // 0.5 - 2.0
@@ -18,7 +19,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: 'auto',
 };
 
-const SETTINGS_KEY = 'thara_settings';
+const SETTINGS_KEY = STORAGE_KEYS.SETTINGS;
 
 export function useSettings() {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);

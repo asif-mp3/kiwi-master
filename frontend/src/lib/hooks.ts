@@ -2,20 +2,47 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Message, AuthState, AppConfig, MessageRole, ChatTab } from './types';
+import { STORAGE_KEYS } from '../config/storage-keys';
+import { SESSION } from '../config/timing';
+import { DEFAULT_SESSION_NAME } from './constants';
 
-const AUTH_KEY = 'thara_auth';
-const CHAT_KEY = 'thara_chat';
-const CONFIG_KEY = 'thara_config';
-const CHAT_TABS_KEY = 'thara_tabs';
-const SESSION_LAST_ACTIVITY_KEY = 'thara_last_activity';
-const SESSION_NAME_KEY = 'thara_session_name'; // "Call me X" - clears on session timeout
+const AUTH_KEY = STORAGE_KEYS.AUTH;
+const CHAT_KEY = STORAGE_KEYS.CHAT;
+const CONFIG_KEY = STORAGE_KEYS.CONFIG;
+const CHAT_TABS_KEY = STORAGE_KEYS.TABS;
+const SESSION_LAST_ACTIVITY_KEY = STORAGE_KEYS.LAST_ACTIVITY;
+const SESSION_NAME_KEY = STORAGE_KEYS.SESSION_NAME;
 
-// Session timeout: 1 hour of inactivity
-const SESSION_TIMEOUT_MS = 3600 * 1000;
+const SESSION_TIMEOUT_MS = SESSION.TIMEOUT_MS;
 
-// Debug: Log timeout value when module loads
-if (typeof window !== 'undefined') {
-  console.log(`[Session] Module loaded - timeout set to ${SESSION_TIMEOUT_MS}ms (${SESSION_TIMEOUT_MS / 1000 / 60} minutes)`);
+// Max messages to persist per chat tab (prevents localStorage quota overflow)
+const MAX_PERSISTED_MESSAGES = 50;
+
+/** Wrap localStorage.setItem — catches QuotaExceededError instead of crashing. */
+function safeSetItem(key: string, value: string): boolean {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    console.error(`localStorage quota exceeded for key "${key}" (${(value.length / 1024).toFixed(0)}KB)`);
+    return false;
+  }
+}
+
+/** Strip heavy metadata.data from older messages and cap per-chat message count. */
+function trimForStorage(tabs: ChatTab[]): ChatTab[] {
+  return tabs.map(tab => ({
+    ...tab,
+    messages: tab.messages
+      .slice(-MAX_PERSISTED_MESSAGES)
+      .map((msg, idx, arr) => {
+        // Keep full metadata on the last 5 messages (recent context)
+        if (idx >= arr.length - 5 || !msg.metadata?.data) return msg;
+        // Strip data rows from older messages — they can be huge
+        const { data, ...restMeta } = msg.metadata;
+        return { ...msg, metadata: restMeta };
+      }),
+  }));
 }
 
 export function useAppState() {
@@ -33,7 +60,7 @@ export function useAppState() {
   const [isInitializing, setIsInitializing] = useState(true);
 
   // Session-based name for "Call me X" feature - defaults to "Boss", clears on timeout
-  const [sessionName, setSessionNameState] = useState<string>('Boss');
+  const [sessionName, setSessionNameState] = useState<string>(DEFAULT_SESSION_NAME);
 
   useEffect(() => {
     // Safe JSON parse helper - returns null on error and clears corrupted data
@@ -42,8 +69,7 @@ export function useAppState() {
         const data = localStorage.getItem(key);
         if (!data) return null;
         return JSON.parse(data) as T;
-      } catch (e) {
-        console.warn(`[Storage] Corrupted data for ${key}, clearing...`);
+      } catch {
         localStorage.removeItem(key);
         return null;
       }
@@ -51,7 +77,7 @@ export function useAppState() {
 
     // SECURITY: Validate access token exists and is valid format (64 char hex)
     const validateToken = (): boolean => {
-      const token = localStorage.getItem('thara_access_token');
+      const token = localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN);
       if (!token) return false;
       // Token must be 64 character hex string (SHA256 hash)
       if (token.length !== 64) return false;
@@ -62,10 +88,9 @@ export function useAppState() {
     // Clear all auth data if token is invalid
     const clearAllAuthData = () => {
       localStorage.removeItem(AUTH_KEY);
-      localStorage.removeItem(CHAT_KEY);
       localStorage.removeItem(CONFIG_KEY);
       localStorage.removeItem(CHAT_TABS_KEY);
-      localStorage.removeItem('thara_access_token');
+      localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
       localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
     };
 
@@ -73,44 +98,34 @@ export function useAppState() {
     const isSessionExpired = (): boolean => {
       const lastActivity = localStorage.getItem(SESSION_LAST_ACTIVITY_KEY);
       if (!lastActivity) {
-        console.log('[Session] No activity timestamp found - session expired');
         return true;
       }
       const lastActivityTime = parseInt(lastActivity, 10);
       if (isNaN(lastActivityTime)) {
-        console.log('[Session] Invalid activity timestamp - session expired');
         return true;
       }
       const now = Date.now();
       const elapsed = now - lastActivityTime;
       const isExpired = elapsed > SESSION_TIMEOUT_MS;
-      console.log(`[Session] Check: elapsed=${Math.round(elapsed/1000)}s, timeout=${Math.round(SESSION_TIMEOUT_MS/1000)}s, expired=${isExpired}`);
       return isExpired;
     };
 
     // CRITICAL: Only restore auth if valid token exists AND session not expired
     const tokenValid = validateToken();
     const sessionExpired = isSessionExpired();
-    console.log(`[Session] Init check: tokenValid=${tokenValid}, sessionExpired=${sessionExpired}`);
 
     if (!tokenValid || sessionExpired) {
-      console.log(`[Session] Clearing auth - tokenValid=${tokenValid}, sessionExpired=${sessionExpired}`);
       clearAllAuthData();
       setIsInitializing(false);
       return;
     }
 
     const savedAuth = safeJsonParse<AuthState>(AUTH_KEY);
-    const savedChat = safeJsonParse<Message[]>(CHAT_KEY);
     const savedConfig = safeJsonParse<AppConfig>(CONFIG_KEY);
     const savedTabs = safeJsonParse<ChatTab[]>(CHAT_TABS_KEY);
 
     if (savedAuth) {
       setAuth(savedAuth);
-    }
-
-    if (savedChat && Array.isArray(savedChat)) {
-      setMessages(savedChat);
     }
 
     if (savedConfig) {
@@ -121,8 +136,13 @@ export function useAppState() {
       setChatTabs(savedTabs);
       if (savedTabs.length > 0) {
         setActiveChatId(savedTabs[0].id);
+        // Load messages from the active tab (single source of truth)
+        setMessages(savedTabs[0].messages);
       }
     }
+
+    // Migrate: remove legacy CHAT_KEY if still present
+    localStorage.removeItem(CHAT_KEY);
 
     // Load session name (for "Call me X" feature)
     const savedSessionName = localStorage.getItem(SESSION_NAME_KEY);
@@ -146,32 +166,27 @@ export function useAppState() {
     const checkSessionExpiry = () => {
       const lastActivity = localStorage.getItem(SESSION_LAST_ACTIVITY_KEY);
       if (!lastActivity) {
-        console.log('[Session] Periodic check: No activity timestamp - logging out');
         handleSessionTimeout();
         return;
       }
       const lastActivityTime = parseInt(lastActivity, 10);
       if (isNaN(lastActivityTime)) {
-        console.log('[Session] Periodic check: Invalid timestamp - logging out');
         handleSessionTimeout();
         return;
       }
       const now = Date.now();
       const elapsed = now - lastActivityTime;
       if (elapsed > SESSION_TIMEOUT_MS) {
-        console.log(`[Session] Periodic check: Expired (${Math.round(elapsed/1000)}s > ${Math.round(SESSION_TIMEOUT_MS/1000)}s) - logging out`);
         handleSessionTimeout();
       }
     };
 
     const handleSessionTimeout = () => {
-      console.log(`[Session] Timeout triggered - timeout was ${Math.round(SESSION_TIMEOUT_MS/1000)}s (${SESSION_TIMEOUT_MS}ms)`);
       // Clear all auth data
       localStorage.removeItem(AUTH_KEY);
-      localStorage.removeItem(CHAT_KEY);
       localStorage.removeItem(CONFIG_KEY);
       localStorage.removeItem(CHAT_TABS_KEY);
-      localStorage.removeItem('thara_access_token');
+      localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
       localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
       localStorage.removeItem(SESSION_NAME_KEY); // Clear "Call me X" name
       // Reset state
@@ -180,7 +195,7 @@ export function useAppState() {
       setChatTabs([]);
       setActiveChatId(null);
       setConfig({ googleSheetUrl: null });
-      setSessionNameState('Boss'); // Reset to default
+      setSessionNameState(DEFAULT_SESSION_NAME); // Reset to default
     };
 
     // Set initial activity timestamp on login
@@ -193,7 +208,7 @@ export function useAppState() {
     let lastUpdate = Date.now();
     const throttledUpdateActivity = () => {
       const now = Date.now();
-      if (now - lastUpdate > 10000) { // 10 seconds throttle
+      if (now - lastUpdate > SESSION.ACTIVITY_THROTTLE_MS) {
         updateActivity();
         lastUpdate = now;
       }
@@ -204,8 +219,7 @@ export function useAppState() {
       window.addEventListener(event, throttledUpdateActivity, { passive: true });
     });
 
-    // Check session expiry every 30 seconds
-    const expiryCheckInterval = setInterval(checkSessionExpiry, 30000);
+    const expiryCheckInterval = setInterval(checkSessionExpiry, SESSION.EXPIRY_CHECK_INTERVAL_MS);
 
     // Cleanup
     return () => {
@@ -222,21 +236,23 @@ export function useAppState() {
     }
   }, [auth, isInitializing]);
 
-  useEffect(() => {
-    if (!isInitializing) {
-      localStorage.setItem(CHAT_KEY, JSON.stringify(messages));
-    }
-  }, [messages, isInitializing]);
+  // Messages are stored ONLY inside chatTabs (single source of truth).
+  // No separate CHAT_KEY persistence — that caused double-storage and quota overflow.
 
   useEffect(() => {
     if (!isInitializing) {
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      safeSetItem(CONFIG_KEY, JSON.stringify(config));
     }
   }, [config, isInitializing]);
 
   useEffect(() => {
     if (!isInitializing) {
-      localStorage.setItem(CHAT_TABS_KEY, JSON.stringify(chatTabs));
+      const trimmed = trimForStorage(chatTabs);
+      if (!safeSetItem(CHAT_TABS_KEY, JSON.stringify(trimmed))) {
+        // Last resort: keep only the 3 most recent chats
+        const reduced = trimForStorage(chatTabs.slice(0, 3));
+        safeSetItem(CHAT_TABS_KEY, JSON.stringify(reduced));
+      }
     }
   }, [chatTabs, isInitializing]);
 
@@ -256,7 +272,6 @@ export function useAppState() {
   const setSessionName = (name: string) => {
     setSessionNameState(name);
     localStorage.setItem(SESSION_NAME_KEY, name);
-    console.log(`[Session] Name set to: ${name}`);
   };
 
   const logout = () => {
@@ -265,12 +280,11 @@ export function useAppState() {
     setChatTabs([]);
     setActiveChatId(null);
     setConfig({ googleSheetUrl: null });
-    setSessionNameState('Boss'); // Reset to default
+    setSessionNameState(DEFAULT_SESSION_NAME); // Reset to default
     localStorage.removeItem(AUTH_KEY);
-    localStorage.removeItem(CHAT_KEY);
     localStorage.removeItem(CONFIG_KEY);
     localStorage.removeItem(CHAT_TABS_KEY);
-    localStorage.removeItem('thara_access_token');
+    localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
     localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
     localStorage.removeItem(SESSION_NAME_KEY);
   };
@@ -354,7 +368,6 @@ export function useAppState() {
   ) => {
     const chatIdToUpdate = targetChatId || activeChatId;
     if (!chatIdToUpdate) {
-      console.warn('[setDatasetForChat] No active chat to update');
       return;
     }
 
@@ -416,8 +429,8 @@ export function useAppState() {
     try {
       const { api } = await import('../services/api');
       await api.clearCache();
-    } catch (e) {
-      console.warn('[Session] Failed to clear backend cache:', e);
+    } catch {
+      // Error handled silently
     }
   };
 

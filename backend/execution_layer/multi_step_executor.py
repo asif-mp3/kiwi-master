@@ -21,6 +21,9 @@ from datetime import datetime
 
 from analytics_engine.duckdb_manager import DuckDBManager
 from execution_layer.sql_compiler import compile_sql
+from utils.logger import get_logger
+
+logger = get_logger("multi_step")
 
 
 # ============================================
@@ -100,9 +103,7 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
             "success": False
         }
     
-    print(f"\n{'='*60}")
-    print(f"[MULTI-STEP] Starting execution of {len(steps)} steps")
-    print(f"{'='*60}\n")
+    logger.info("Starting multi-step execution of %s steps", len(steps))
     
     # Get DuckDB connection
     db = DuckDBManager()
@@ -118,19 +119,35 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
             step_id = step.get('step_id', i)
             description = step.get('description', f'Step {step_id}')
             
-            print(f"\n[STEP {i}/{len(steps)}] {description}")
-            print(f"  Table: {step.get('table', 'N/A')}")
-            print(f"  Type: {step.get('query_type', 'N/A')}")
+            logger.info("Step %s/%s: %s", i, len(steps), description)
+            logger.debug("  Table: %s", step.get('table', 'N/A'))
+            logger.debug("  Type: %s", step.get('query_type', 'N/A'))
             
             # Substitute variables in this step
             substituted_step = _substitute_variables(step, variables)
-            
+
+            # HARD VALIDATION: Verify all filter columns exist in target table
+            # This prevents cross-table column mismatch (e.g., filtering Attendance by "Branch")
+            validation_error = _validate_step_columns(substituted_step, db)
+            if validation_error:
+                logger.error("Column validation failed: %s", validation_error)
+                return {
+                    "data": [],
+                    "analysis": {
+                        "error": validation_error,
+                        "failed_step": step_id,
+                        "step_description": description
+                    },
+                    "success": False,
+                    "steps_executed": executed_steps
+                }
+
             # Execute the step
             step_result = _execute_single_step(substituted_step, conn)
             
             if step_result.get('error'):
                 error_msg = step_result.get('error')
-                print(f"  [FAIL] Step {step_id} failed: {error_msg}")
+                logger.error("Step %s failed: %s", step_id, error_msg)
 
                 # Build helpful error message
                 helpful_msg = f"Cross-table query failed at step {step_id} ({description}): {error_msg}"
@@ -157,7 +174,7 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
                 extracted_value = _extract_variable(step_result, extract_col)
                 if extracted_value is not None:
                     variables[output_var] = extracted_value
-                    print(f"  [OK] Extracted ${{{output_var}}} = {extracted_value}")
+                    logger.info("Extracted ${%s} = %s", output_var, extracted_value)
 
                     # Validate extracted date exists in target table's date range
                     # This prevents cross-table queries from failing silently
@@ -183,7 +200,7 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
                                                 f"The date {extracted_str} doesn't have data in {next_table}. "
                                                 f"Available range: {min_str} to {max_str}"
                                             )
-                                            print(f"  [WARN] {warning_msg}")
+                                            logger.warning("%s", warning_msg)
                                             return {
                                                 "data": [],
                                                 "analysis": {
@@ -194,12 +211,12 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
                                                 "steps_executed": executed_steps
                                             }
                             except Exception as e:
-                                print(f"  [WARN] Could not validate date range: {e}")
+                                logger.warning("Could not validate date range: %s", e)
                 else:
                     # Variable extraction failed - this is critical for multi-step queries
                     warning_msg = f"Could not extract variable ${{{output_var}}} from column '{extract_col}'"
-                    print(f"  [WARN] {warning_msg}")
-                    print(f"  [INFO] Step returned {len(step_result.get('data', []))} rows")
+                    logger.warning("%s", warning_msg)
+                    logger.info("Step returned %s rows", len(step_result.get('data', [])))
                     if len(step_result.get('data', [])) == 0:
                         return {
                             "data": [],
@@ -212,8 +229,8 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
                         }
             
             step_elapsed = (time.time() - step_start) * 1000
-            print(f"  [TIME] Step completed in {step_elapsed:.0f}ms")
-            print(f"  [DATA] Rows returned: {len(step_result.get('data', []))}")
+            logger.debug("Step completed in %.0fms", step_elapsed)
+            logger.debug("Rows returned: %s", len(step_result.get('data', [])))
             
             # Store step result
             executed_steps.append({
@@ -224,9 +241,7 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
             })
         
         total_elapsed = (time.time() - start_time) * 1000
-        print(f"\n{'='*60}")
-        print(f"[MULTI-STEP] All steps completed in {total_elapsed:.0f}ms")
-        print(f"{'='*60}\n")
+        logger.info("All %s steps completed in %.0fms", len(steps), total_elapsed)
         
         # Return final step's data as main result
         final_data = executed_steps[-1]['data'] if executed_steps else []
@@ -246,9 +261,7 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        print(f"\n[ERROR] Multi-step execution failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Multi-step execution failed: %s", e)
         return {
             "data": [],
             "analysis": {
@@ -258,6 +271,63 @@ def execute_multi_step_query(plan: dict) -> Dict[str, Any]:
             "success": False,
             "steps_executed": executed_steps
         }
+
+
+def _validate_step_columns(step: Dict[str, Any], db) -> Optional[str]:
+    """
+    Validate that all filter columns exist in the target table's schema.
+
+    Returns None if valid, or an error message string if invalid.
+    This prevents cross-table column mismatches like filtering
+    Attendance by "Branch" when that column doesn't exist.
+    """
+    table_name = step.get('table')
+    if not table_name:
+        return None
+
+    # Get actual columns from the target table
+    try:
+        schema_df = db.query(f'DESCRIBE "{table_name}"')
+        actual_columns = set(
+            col.lower() for col in schema_df['column_name'].tolist()
+        ) if 'column_name' in schema_df.columns else set()
+    except Exception:
+        return None  # Can't validate — let execution handle errors
+
+    if not actual_columns:
+        return None
+
+    # Check all filter columns exist
+    filters = step.get('filters', [])
+    for f in filters:
+        col_name = f.get('column', '')
+        if col_name and col_name.lower() not in actual_columns:
+            available = sorted(actual_columns)
+            return (
+                f"Column '{col_name}' does not exist in table '{table_name}'. "
+                f"Available columns: {', '.join(available[:10])}. "
+                f"This often happens in cross-table queries where columns from one table "
+                f"are mistakenly applied to another."
+            )
+
+    # Check order_by columns
+    for ob in step.get('order_by', []):
+        col_name = ob.get('column', '')
+        if col_name and col_name.lower() not in actual_columns:
+            # Skip aggregation aliases like "COUNT", "SUM" etc.
+            if col_name.upper() not in ('COUNT', 'SUM', 'AVG', 'MIN', 'MAX'):
+                return (
+                    f"Order-by column '{col_name}' does not exist in table '{table_name}'."
+                )
+
+    # Check group_by columns
+    for col_name in step.get('group_by', []):
+        if col_name and col_name.lower() not in actual_columns:
+            return (
+                f"Group-by column '{col_name}' does not exist in table '{table_name}'."
+            )
+
+    return None
 
 
 def _substitute_variables(step: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
@@ -297,7 +367,7 @@ def _execute_single_step(step: Dict[str, Any], conn) -> Dict[str, Any]:
         # Use standard SQL compiler
         sql = compile_sql(step)
         
-        print(f"  [SQL] {sql[:100]}..." if len(sql) > 100 else f"  [SQL] {sql}")
+        logger.debug("SQL: %s", sql[:100] + "..." if len(sql) > 100 else sql)
         
         # Execute query
         result = conn.execute(sql).fetchall()

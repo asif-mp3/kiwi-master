@@ -21,6 +21,9 @@ import pandas as pd
 import requests
 
 from data_sources.base_connector import BaseConnector
+from utils.logger import get_logger
+
+logger = get_logger("gdrive_folder_connector")
 
 # Cache directory for folder metadata (relative to backend directory)
 _BACKEND_DIR = Path(__file__).parent.parent.parent  # connectors -> data_sources -> backend
@@ -101,7 +104,7 @@ class GoogleDriveFolderConnector(BaseConnector):
                 with open(cache_path, 'r') as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[GDriveFolderConnector] Cache read error: {e}")
+                logger.error("Cache read error: %s", e)
         return None
 
     def _save_cache(self, files: List[Dict]):
@@ -115,9 +118,9 @@ class GoogleDriveFolderConnector(BaseConnector):
             }
             with open(cache_path, 'w') as f:
                 json.dump(cache_data, f, indent=2)
-            print(f"[GDriveFolderConnector] Cache saved: {len(files)} files")
+            logger.info("Cache saved: %d files", len(files))
         except Exception as e:
-            print(f"[GDriveFolderConnector] Cache write error: {e}")
+            logger.error("Cache write error: %s", e)
 
     def _compute_files_hash(self, files: List[Dict]) -> str:
         """Compute a hash of file metadata to detect changes."""
@@ -144,7 +147,7 @@ class GoogleDriveFolderConnector(BaseConnector):
         """
         cache = self._load_cache()
         if not cache:
-            print("[GDriveFolderConnector] No cache found - will sync")
+            logger.info("No cache found - will sync")
             return True
 
         # Clear cached files to force fresh API call
@@ -161,10 +164,10 @@ class GoogleDriveFolderConnector(BaseConnector):
 
         if current_hash != cached_hash:
             cached_count = len(cache.get("files", []))
-            print(f"[GDriveFolderConnector] Files changed ({cached_count} -> {len(current_files)}) - will sync")
+            logger.info("Files changed (%d -> %d) - will sync", cached_count, len(current_files))
             return True
 
-        print(f"[GDriveFolderConnector] No changes detected ({len(current_files)} files) - skipping sync")
+        logger.info("No changes detected (%d files) - skipping sync", len(current_files))
         return False
 
     def list_files(self) -> List[Dict]:
@@ -187,7 +190,7 @@ class GoogleDriveFolderConnector(BaseConnector):
         api_url = f"https://www.googleapis.com/drive/v3/files"
         params = {
             "q": f"'{folder_id}' in parents and trashed = false",
-            "key": os.getenv("GOOGLE_API_KEY", "").strip(),  # Optional API key (strip whitespace)
+            "key": (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip(),
             "fields": "files(id,name,mimeType,size,modifiedTime)",
             "pageSize": 100
         }
@@ -205,7 +208,7 @@ class GoogleDriveFolderConnector(BaseConnector):
             return self._scrape_folder_files(folder_id)
 
         except Exception as e:
-            print(f"[GDriveFolderConnector] Error listing files: {e}")
+            logger.error("Error listing files: %s", e)
             # Try scraping as fallback
             return self._scrape_folder_files(folder_id)
 
@@ -253,11 +256,11 @@ class GoogleDriveFolderConnector(BaseConnector):
                     unique_files.append(f)
 
             self._files = unique_files
-            print(f"[GDriveFolderConnector] Found {len(unique_files)} files in folder")
+            logger.info("Found %d files in folder", len(unique_files))
             return unique_files
 
         except Exception as e:
-            print(f"[GDriveFolderConnector] Error scraping folder: {e}")
+            logger.error("Error scraping folder: %s", e)
             return []
 
     def _guess_mime_type(self, filename: str) -> str:
@@ -281,7 +284,7 @@ class GoogleDriveFolderConnector(BaseConnector):
         files = self.list_files()
 
         if not files:
-            print("[GDriveFolderConnector] No files found in folder")
+            logger.info("No files found in folder")
             return {}
 
         all_tables = {}
@@ -292,7 +295,7 @@ class GoogleDriveFolderConnector(BaseConnector):
 
             # Check if file is supported
             if not any(file_name.lower().endswith(ext) for ext in self.SUPPORTED_EXTENSIONS):
-                print(f"[GDriveFolderConnector] Skipping unsupported file: {file_name}")
+                logger.debug("Skipping unsupported file: %s", file_name)
                 continue
 
             try:
@@ -300,9 +303,9 @@ class GoogleDriveFolderConnector(BaseConnector):
                 tables = self._download_and_parse(file_id, file_name)
                 if tables:
                     all_tables.update(tables)
-                    print(f"[GDriveFolderConnector] Loaded: {file_name}")
+                    logger.info("Loaded: %s", file_name)
             except Exception as e:
-                print(f"[GDriveFolderConnector] Error loading {file_name}: {e}")
+                logger.error("Error loading %s: %s", file_name, e)
 
         # Save cache after successful load
         if all_tables:
@@ -331,7 +334,7 @@ class GoogleDriveFolderConnector(BaseConnector):
                 last_error = e
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2  # 2, 4 seconds
-                    print(f"[GDriveFolderConnector] Download attempt {attempt + 1} failed, retrying in {wait_time}s...")
+                    logger.warning("Download attempt %d failed, retrying in %ds...", attempt + 1, wait_time)
                     time.sleep(wait_time)
                 else:
                     raise ValueError(f"Failed to download after {max_retries} attempts: {last_error}")
