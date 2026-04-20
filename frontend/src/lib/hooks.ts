@@ -289,13 +289,14 @@ export function useAppState() {
     localStorage.removeItem(SESSION_NAME_KEY);
   };
 
-  const addMessage = (content: string, role: MessageRole = 'user', metadata?: Message['metadata'], targetChatId?: string) => {
+  const addMessage = (content: string, role: MessageRole = 'user', metadata?: Message['metadata'], targetChatId?: string, latencyMs?: number) => {
     const newMessage: Message = {
       id: Math.random().toString(36).substring(7),
       role,
       content,
       timestamp: Date.now(),
       metadata,
+      latencyMs,
     };
     setMessages((prev) => [...prev, newMessage]);
 

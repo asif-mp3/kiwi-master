@@ -21,10 +21,10 @@ google_sheets:
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
-  explainer_max_tokens: 300
+  explainer_max_tokens: 600
   max_retries: 2
-  model: gemini-2.0-flash
-  model_complex: gemini-2.0-flash
+  model: gemini-2.5-flash
+  model_complex: gemini-2.5-flash
   planner_max_tokens: 1500
   provider: gemini
   request_timeout_seconds: 20
@@ -52,10 +52,15 @@ table_routing:
   has_product_dimension: 15
   is_transactional: 15
 voice:
-  default_voice_id: pNInz6obpgDQGcFmaJgB
+  tts_provider: elevenlabs
   elevenlabs_api_key_env: ELEVENLABS_API_KEY
-  request_timeout_seconds: 20
-  tamil_voice_id: XrExE9yKIg1WjnnlVkGX
+  default_voice_id: pNInz6obpgDQGcFmaJgB
+  tamil_voice_id: pNInz6obpgDQGcFmaJgB
+  request_timeout_seconds: 30
+  # murf_ai (DISABLED):
+  # murf_api_key_env: MURF_API_KEY
+  # default_voice_id: en-US-marcus
+  # tamil_voice_id: ta-IN-aditi
 routing:
   # Confidence thresholds
   confidence_threshold_high: 0.6

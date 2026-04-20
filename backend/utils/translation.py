@@ -3,10 +3,10 @@ Translation utilities using Gemini Flash for Tamil <-> English translation.
 """
 
 import time
-from google.genai import types
 from typing import Optional
 from utils.logger import get_logger
-from utils.config_loader import get_llm_config, get_genai_client
+from utils.config_loader import get_llm_config
+from utils import gemini_client
 
 logger = get_logger("translation")
 
@@ -17,8 +17,7 @@ def translate_to_english(text: str) -> str:
     """
     try:
         start = time.time()
-        client = get_genai_client()
-        response = client.models.generate_content(
+        english_text = gemini_client.generate_content(
             model=get_llm_config().model,
             contents=f"""Translate the following Tamil query to English strictly for data analysis.
 
@@ -60,9 +59,10 @@ EXAMPLES:
 
 Output ONLY the English translation, no explanations.
 
-Text: {text}"""
-        )
-        english_text = response.text.strip()
+Text: {text}""",
+            temperature=0.0,
+            max_output_tokens=300,
+        ).strip()
         elapsed = (time.time() - start) * 1000
         logger.info("Translation (Tamil -> English): %s -> %s [%dms]", text, english_text, elapsed)
         return english_text
@@ -77,12 +77,12 @@ def translate_to_tamil(text: str) -> str:
     """
     try:
         start = time.time()
-        client = get_genai_client()
-        response = client.models.generate_content(
+        tamil_text = gemini_client.generate_content(
             model=get_llm_config().model,
             contents=f"Translate to Tamil. STRICT RULE: Convert ALL numbers to Tamil words (e.g. 6450 -> ஆறாயிரத்து நானூற்று ஐம்பது). NO DIGITS ALLOWED.\n\nText: {text}",
-        )
-        tamil_text = response.text.strip()
+            temperature=0.0,
+            max_output_tokens=400,
+        ).strip()
         elapsed = (time.time() - start) * 1000
         logger.info("Translation (English -> Tamil): %s -> %s [%dms]", text, tamil_text, elapsed)
         return tamil_text

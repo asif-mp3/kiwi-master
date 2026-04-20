@@ -460,7 +460,7 @@ def _compile_rank(plan):
 
 
 def _compile_list(plan):
-    """Compile list/show all query"""
+    """Compile list/show all query — uses DISTINCT for single-column dimension lookups."""
     table = quote_identifier(plan["table"])
 
     select_columns = plan.get("select_columns", ["*"])
@@ -468,18 +468,26 @@ def _compile_list(plan):
     # Handle case where select_columns might be string "*" instead of list ["*"]
     if select_columns == "*" or select_columns == ["*"] or not select_columns:
         columns = "*"
+        use_distinct = False
     else:
-        # Ensure select_columns is a list
         if isinstance(select_columns, str):
             select_columns = [select_columns]
         columns = ", ".join([quote_identifier(col) for col in select_columns])
+        # Use DISTINCT when listing dimension values (avoids thousands of duplicate rows)
+        use_distinct = True
 
-    limit = plan.get("limit")  # None = no limit (return all rows)
+    distinct_kw = "DISTINCT " if use_distinct else ""
+    where = _build_where_clause(plan.get("filters", []))
+    limit = plan.get("limit")
 
+    order_by = ""
+    if use_distinct:
+        order_by = f" ORDER BY {columns}"
+
+    sql = f"SELECT {distinct_kw}{columns} FROM {table}{where}{order_by}"
     if limit is not None:
-        return f"SELECT {columns} FROM {table} LIMIT {limit}".strip()
-    else:
-        return f"SELECT {columns} FROM {table}".strip()
+        sql += f" LIMIT {limit}"
+    return sql.strip()
 
 
 def _compile_aggregation_on_subset(plan):

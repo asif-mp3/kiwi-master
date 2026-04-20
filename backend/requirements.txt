@@ -1,5 +1,6 @@
 # Core Dependencies
-google-genai==1.64.0
+# google-genai==1.64.0  # REMOVED — using direct HTTP REST API (utils/gemini_client.py)
+gdown==5.2.0
 pyyaml==6.0.2
 jsonschema==4.23.0
 python-dotenv==1.0.1
@@ -24,8 +25,8 @@ numpy==1.26.4
 openpyxl==3.1.5
 et-xmlfile==2.0.0
 
-# Voice & Audio (ElevenLabs only)
-elevenlabs==1.14.0
+# Voice & Audio
+# elevenlabs==1.14.0  # DISABLED — replaced by Murf AI (utils/voice_utils.py)
 langdetect==1.0.9
 
 # Utilities

@@ -12,12 +12,11 @@ CRITICAL RULES:
 """
 
 import os
-from google.genai import types
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import json
 from utils.logger import get_logger
-from utils.config_loader import get_genai_client
+from utils import gemini_client
 
 logger = get_logger("memory_detector")
 
@@ -149,27 +148,21 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         return {"has_memory_intent": False}
 
     try:
-        try:
-            client = get_genai_client()
-        except ValueError:
-            logger.warning("GEMINI_API_KEY not found, memory detection disabled")
-            return {"has_memory_intent": False}
-
         from utils.config_loader import get_llm_config
-
-        # Call API with system instruction and JSON output
-        response = client.models.generate_content(
-            model=get_llm_config().model,
-            contents=f"User input: {question}\n\nDetect memory intent and output JSON:",
-            config=types.GenerateContentConfig(
+        try:
+            response_text = gemini_client.generate_content(
+                model=get_llm_config().model,
+                contents=f"User input: {question}\n\nDetect memory intent and output JSON:",
                 system_instruction=MEMORY_DETECTION_PROMPT,
                 temperature=0.0,
                 response_mime_type="application/json",
-            ),
-        )
+            )
+        except Exception as e:
+            logger.warning("Memory detection API error: %s", e)
+            return {"has_memory_intent": False}
         
-        # Parse JSON response
-        result = json.loads(response.text)
+        # Parse JSON response (response_text is now a str from gemini_client)
+        result = json.loads(response_text)
         
         # Validate structure
         if not isinstance(result, dict):

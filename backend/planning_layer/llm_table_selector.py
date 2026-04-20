@@ -13,11 +13,10 @@ Key advantages:
 
 import os
 import json
-from google.genai import types
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 from utils.logger import get_logger
-from utils.config_loader import get_genai_client
+from utils import gemini_client
 
 logger = get_logger("llm_selector")
 
@@ -141,19 +140,16 @@ Return JSON with these fields:
 IMPORTANT: Output ONLY valid JSON, no other text."""
 
 
-def _call_selector(prompt: str):
+def _call_selector(prompt: str) -> str:
     """Call Gemini for table selection with system instruction."""
     from utils.config_loader import get_llm_config
-    client = get_genai_client()
-    return client.models.generate_content(
+    return gemini_client.generate_content(
         model=get_llm_config().model,
         contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=TABLE_SELECTOR_PROMPT,
-            temperature=0.0,
-            response_mime_type="application/json",
-            max_output_tokens=500,
-        ),
+        system_instruction=TABLE_SELECTOR_PROMPT,
+        temperature=0.0,
+        response_mime_type="application/json",
+        max_output_tokens=500,
     )
 
 
@@ -316,8 +312,8 @@ Output JSON only."""
 
         elapsed = time.time() - start_time
 
-        # Parse JSON response
-        response_text = response.text.strip()
+        # Parse JSON response (_call_selector now returns str directly)
+        response_text = response.strip() if isinstance(response, str) else response.text.strip()
 
         # Remove markdown if present
         if response_text.startswith("```"):

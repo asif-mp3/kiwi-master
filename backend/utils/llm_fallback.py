@@ -40,13 +40,8 @@ def gemini_general_fallback(
         A natural language response from Gemini.
     """
     try:
-        from google.genai import types
-        from utils.config_loader import get_genai_client
-
-        try:
-            client = get_genai_client()
-        except ValueError:
-            return ""
+        from utils import gemini_client as _gc
+        from utils.config_loader import get_llm_config
 
         table_context = ""
         if routed_table:
@@ -72,15 +67,12 @@ Rules:
 - NEVER make up data numbers — only describe what data is available
 - Do NOT ask questions back — give a helpful statement"""
 
-        response = client.models.generate_content(
+        return _gc.generate_content(
             model=get_llm_config().model,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=200,
-            ),
-        )
-        return response.text.strip()
+            temperature=0.7,
+            max_output_tokens=300,
+        ).strip()
 
     except Exception as e:
         logger.warning("Gemini fallback failed: %s", e)

@@ -226,7 +226,7 @@ export const api = {
   },
 
   /**
-   * Convert text to speech using ElevenLabs (blocking - waits for full audio).
+   * Convert text to speech using Murf AI (blocking - waits for full audio).
    * Backend endpoint: POST /api/text-to-speech
    * @deprecated Use textToSpeechStream for better latency (saves 2-4 seconds)
    */
@@ -296,7 +296,7 @@ export const api = {
    * Backend endpoint: POST /api/text-to-speech/stream
    *
    * @param text - Text to convert to speech
-   * @param voiceId - Optional ElevenLabs voice ID
+   * @param voiceId - Optional Murf AI voice ID
    * @param onStart - Callback when audio starts playing
    * @param onEnd - Callback when audio finishes
    * @param onError - Callback on error

@@ -55,7 +55,7 @@ class LLMConfig:
     """LLM (Gemini) configuration."""
     api_key_env: str = "GEMINI_API_KEY"
     max_retries: int = 3
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-2.5-flash"
     provider: str = "gemini"
     temperature: float = 0.0
     request_timeout_seconds: int = 60
@@ -100,6 +100,7 @@ class CacheConfig:
 @dataclass
 class VoiceConfig:
     """Voice/TTS configuration."""
+    tts_provider: str = "elevenlabs"
     elevenlabs_api_key_env: str = "ELEVENLABS_API_KEY"
     default_voice_id: str = "pNInz6obpgDQGcFmaJgB"
     tamil_voice_id: str = "pNInz6obpgDQGcFmaJgB"
@@ -225,7 +226,7 @@ def _parse_config(raw: dict) -> Config:
         llm=LLMConfig(
             api_key_env=raw.get("llm", {}).get("api_key_env", "GEMINI_API_KEY"),
             max_retries=raw.get("llm", {}).get("max_retries", 3),
-            model=raw.get("llm", {}).get("model", "gemini-2.0-flash"),
+            model=raw.get("llm", {}).get("model", "gemini-2.5-flash"),
             provider=raw.get("llm", {}).get("provider", "gemini"),
             temperature=raw.get("llm", {}).get("temperature", 0.0),
             request_timeout_seconds=raw.get("llm", {}).get("request_timeout_seconds", 60),
@@ -255,6 +256,7 @@ def _parse_config(raw: dict) -> Config:
             schema_cache_ttl_seconds=raw.get("cache", {}).get("schema_cache_ttl_seconds", 3600),
         ),
         voice=VoiceConfig(
+            tts_provider=raw.get("voice", {}).get("tts_provider", "elevenlabs"),
             elevenlabs_api_key_env=raw.get("voice", {}).get("elevenlabs_api_key_env", "ELEVENLABS_API_KEY"),
             default_voice_id=raw.get("voice", {}).get("default_voice_id", "pNInz6obpgDQGcFmaJgB"),
             tamil_voice_id=raw.get("voice", {}).get("tamil_voice_id", "pNInz6obpgDQGcFmaJgB"),
@@ -457,30 +459,15 @@ def print_startup_validation() -> None:
 
 
 # =============================================================================
-# Shared Gemini Client (google-genai)
+# Gemini API Key Helper
 # =============================================================================
 
-_genai_client = None
-_genai_client_lock = threading.Lock()
-
-
-def get_genai_client():
-    """
-    Get or create singleton google-genai Client instance.
-    Thread-safe with double-checked locking.
-    """
-    global _genai_client
-    if _genai_client is not None:
-        return _genai_client
-    with _genai_client_lock:
-        if _genai_client is not None:
-            return _genai_client
-        from google import genai
-        config = get_llm_config()
-        api_key = (os.getenv(config.api_key_env) or "").strip()
-        if not api_key:
-            raise ValueError(
-                f"Gemini API key not found. Set the {config.api_key_env} environment variable."
-            )
-        _genai_client = genai.Client(api_key=api_key)
-        return _genai_client
+def get_gemini_api_key() -> str:
+    """Return the GEMINI_API_KEY, raising if not set."""
+    config = get_llm_config()
+    key = (os.getenv(config.api_key_env) or "").strip()
+    if not key:
+        raise ValueError(
+            f"Gemini API key not found. Set {config.api_key_env} in .env"
+        )
+    return key

@@ -7,6 +7,7 @@ export interface Message {
   timestamp: number;
   audioUrl?: string;
   isSpeaking?: boolean;
+  latencyMs?: number;
   metadata?: {
     plan?: QueryPlan | null;
     data?: Record<string, unknown>[] | null;

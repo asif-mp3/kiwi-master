@@ -4,12 +4,11 @@ import yaml
 import time
 import threading
 import concurrent.futures
-from google.genai import types
 from pathlib import Path
 from planning_layer.planner_prompt import PLANNER_SYSTEM_PROMPT
 from dotenv import load_dotenv
 from utils.logger import get_logger
-from utils.config_loader import get_genai_client
+from utils import gemini_client
 
 logger = get_logger("planner")
 
@@ -74,8 +73,8 @@ def invalidate_planner_model():
 
 # ============================================
 # ADAPTIVE MODEL SELECTION FOR LATENCY
-# Simple queries: gemini-2.0-flash (2-3x faster)
-# Complex queries: gemini-2.0-flash (more accurate)
+# Simple queries: gemini-2.5-flash (2-3x faster)
+# Complex queries: gemini-2.5-flash (more accurate)
 # ============================================
 
 def estimate_query_complexity(question: str, entities: dict = None) -> str:
@@ -128,9 +127,9 @@ def get_model_for_complexity(complexity: str, config: dict):
         tuple: (model_name, max_tokens)
     """
     if complexity == 'simple':
-        return "gemini-2.0-flash", 1000
+        return "gemini-2.5-flash", 1000
     else:
-        return config.get("model", "gemini-2.0-flash"), config.get("planner_max_tokens", 1500)
+        return config.get("model", "gemini-2.5-flash"), config.get("planner_max_tokens", 1500)
 
 
 def format_schema_context(schema_context) -> str:
@@ -232,36 +231,28 @@ def parse_json_response(response_text: str) -> dict:
             raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse: {text}")
 
 
-def call_llm_with_timeout(prompt: str, model_name: str, gen_config: types.GenerateContentConfig, timeout_seconds: int = 60):
-    """
-    Call LLM with a timeout to prevent hanging.
-
-    Args:
-        prompt: The prompt to send
-        model_name: Gemini model name (e.g. 'gemini-2.0-flash')
-        gen_config: GenerateContentConfig with temperature, system_instruction, etc.
-        timeout_seconds: Maximum time to wait (default 60s from config)
-
-    Returns:
-        The model response
-
-    Raises:
-        TimeoutError: If the call takes longer than timeout_seconds
-        Exception: Any error from the model
-    """
-    client = get_genai_client()
-
+def call_llm_with_timeout(
+    prompt: str,
+    model_name: str,
+    gen_config: dict,
+    timeout_seconds: int = 60,
+) -> str:
+    """Call Gemini via HTTP with a timeout. Returns response text."""
     def _call():
-        return client.models.generate_content(
+        return gemini_client.generate_content(
             model=model_name,
             contents=prompt,
-            config=gen_config,
+            system_instruction=gen_config.get("system_instruction"),
+            temperature=gen_config.get("temperature", 0.7),
+            max_output_tokens=gen_config.get("max_output_tokens", 1500),
+            response_mime_type=gen_config.get("response_mime_type"),
+            timeout=timeout_seconds,
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_call)
         try:
-            return future.result(timeout=timeout_seconds)
+            return future.result(timeout=timeout_seconds + 5)
         except concurrent.futures.TimeoutError:
             raise TimeoutError(f"LLM request timed out after {timeout_seconds} seconds")
 
@@ -302,12 +293,12 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
 
     # Build generation config with system prompt
     system_prompt = _get_system_prompt()
-    gen_config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=config.get("temperature", 0.0),
-        response_mime_type="application/json",
-        max_output_tokens=max_tokens,
-    )
+    gen_config = {
+        "system_instruction": system_prompt,
+        "temperature": config.get("temperature", 0.0),
+        "response_mime_type": "application/json",
+        "max_output_tokens": max_tokens,
+    }
 
     # Format schema context
     schema_text = format_schema_context(schema_context)
@@ -422,8 +413,8 @@ Output the query plan as JSON:"""
             # Call Gemini API with timeout protection
             response = call_llm_with_timeout(user_prompt, model_name, gen_config, timeout_seconds)
 
-            # Extract text from response
-            response_text = response.text
+            # call_llm_with_timeout returns str directly
+            response_text = response if isinstance(response, str) else response.text
 
             # Parse JSON
             plan = parse_json_response(response_text)

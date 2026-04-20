@@ -562,6 +562,15 @@ export function MessageBubble({ message, onPlay, onStop, onRetry }: MessageBubbl
                 <span className="hidden sm:inline">Retry</span>
               </motion.button>
             )}
+
+            {/* Latency badge */}
+            {message.latencyMs !== undefined && (
+              <span className="ml-auto text-[9px] sm:text-[10px] text-muted-foreground/50 tabular-nums">
+                {message.latencyMs >= 1000
+                  ? `${(message.latencyMs / 1000).toFixed(1)}s`
+                  : `${message.latencyMs}ms`}
+              </span>
+            )}
           </motion.div>
         )}
 

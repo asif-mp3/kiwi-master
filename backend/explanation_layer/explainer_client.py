@@ -2,11 +2,10 @@ import os
 import json
 import yaml
 import threading
-from google.genai import types
 from pathlib import Path
 from explanation_layer.explanation_prompt import EXPLANATION_SYSTEM_PROMPT
 from utils.logger import get_logger
-from utils.config_loader import get_genai_client
+from utils import gemini_client
 
 logger = get_logger("explainer_client")
 
@@ -69,20 +68,16 @@ def invalidate_explainer_model():
         _config_cache = None
 
 
-def _call_explainer(prompt: str):
-    """Call Gemini API for explanation generation."""
+def _call_explainer(prompt: str) -> str:
+    """Call Gemini API for explanation generation. Returns response text."""
     config = load_config()
-    client = get_genai_client()
     system_prompt = _get_system_prompt()
-
-    return client.models.generate_content(
-        model=config.get("model", "gemini-2.0-flash"),
+    return gemini_client.generate_content(
+        model=config.get("model", "gemini-2.5-flash"),
         contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=config.get("temperature", 0.0),
-            max_output_tokens=config.get("explainer_max_tokens", 300),
-        ),
+        system_instruction=system_prompt,
+        temperature=config.get("temperature", 0.7),
+        max_output_tokens=config.get("explainer_max_tokens", 600),
     )
 
 
@@ -392,12 +387,7 @@ Response:"""
 
         try:
             # Use Gemini to generate contextual no-data response
-            response = _call_explainer(no_data_prompt)
-            explanation = response.text.strip()
-
-            # Ensure response is not too long
-            if len(explanation) > 300:
-                explanation = explanation[:297] + "..."
+            explanation = _call_explainer(no_data_prompt).strip()
 
             logger.info("Gemini generated no-data response: %s...", explanation[:50])
             return explanation
@@ -587,8 +577,7 @@ Generate a crispy, TTS-friendly response:"""
     for attempt in range(max_retries):
         try:
             # Generate explanation via Gemini
-            response = _call_explainer(prompt)
-            explanation = response.text.strip()
+            explanation = _call_explainer(prompt).strip()
 
             elapsed = (time.time() - _start) * 1000
             logger.info("LLM Explanation generated [%dms]", elapsed)
@@ -914,17 +903,13 @@ For EMPTY/UNCLEAR/GIBBERISH (short or meaningless text):
 Generate a natural, conversational response:"""
 
     try:
-        client = get_genai_client()
         config = load_config()
-        response = client.models.generate_content(
-            model=config.get("model", "gemini-2.0-flash"),
+        result = gemini_client.generate_content(
+            model=config.get("model", "gemini-2.5-flash"),
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=200,
-            ),
+            temperature=0.7,
+            max_output_tokens=400,
         )
-        result = response.text.strip()
 
         elapsed = (time.time() - _start) * 1000
         logger.info("Off-topic LLM response generated [%dms]", elapsed)

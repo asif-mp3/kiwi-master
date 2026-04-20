@@ -320,10 +320,12 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
     setIsCurrentInputVoice(isVoiceInput);
     setHasTamilInput(containsTamil);
 
+    const queryStartTime = Date.now();
     addMessage(content, 'user');
 
     try {
       const response = await api.sendMessage(content, sessionName);
+      const latencyMs = Date.now() - queryStartTime;
 
       if (response.success) {
         const explanationText = response.explanation || "Here's what I found.";
@@ -338,7 +340,7 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
           schema_context: response.schema_context,
           data_refreshed: response.data_refreshed,
           visualization: response.visualization
-        });
+        }, undefined, latencyMs);
 
         if (isVoiceInput) {
           setLiveCaption({ text: explanationText, type: 'assistant' });

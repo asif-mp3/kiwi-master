@@ -43,9 +43,5 @@ export const getApiBaseUrl = () => {
 };
 
 export const getElevenLabsVoiceId = () => {
-  const voiceId = process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID;
-  if (!voiceId) {
-    return ''; // Return empty instead of hardcoded fallback
-  }
-  return voiceId;
+  return process.env.NEXT_PUBLIC_ELEVENLABS_VOICE_ID || '';
 };

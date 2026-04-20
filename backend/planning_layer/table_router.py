@@ -578,7 +578,8 @@ class TableRouter:
         Returns:
             table_name: The best matching table, or None if LLM can't determine
         """
-        from utils.config_loader import get_genai_client, get_llm_config
+        from utils.config_loader import get_llm_config
+        from utils import gemini_client as _gc
 
         try:
             # Get ALL available tables with their basic info
@@ -610,19 +611,13 @@ Respond with ONLY the exact table name, nothing else. If none match, respond wit
 
 Table name:"""
 
-            # Call Gemini
-            try:
-                client = get_genai_client()
-            except ValueError:
-                logger.error("LLM Fallback: No GEMINI_API_KEY found")
-                return None
-
             logger.info("LLM Fallback: Asking Gemini to pick best table from %d options...", len(all_tables))
-            response = client.models.generate_content(
+            suggested_table = _gc.generate_content(
                 model=get_llm_config().model,
                 contents=prompt,
-            )
-            suggested_table = response.text.strip()
+                temperature=0.0,
+                max_output_tokens=100,
+            ).strip()
 
             # Validate the suggested table exists
             if suggested_table == "NONE":
