@@ -143,6 +143,7 @@ class ProcessQueryResponse(BaseModel):
     # Debug fields
     debug_server: Optional[str] = None
     debug_data_count: Optional[int] = None
+    debug_timings: Optional[dict] = None
 
 
 class TranscribeResponse(BaseModel):

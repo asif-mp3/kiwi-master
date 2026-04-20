@@ -200,8 +200,35 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             return {
                 'success': False,
                 'error': 'Empty or invalid input',
-                'explanation': "I didn't catch that — the input was too short.",
+                'explanation': app_state.personality.handle_error('invalid_input', "I didn't catch that — the input was too short."),
                 'error_type': 'invalid_input'
+            }
+
+        # Check for pure emojis/punctuation (no actual words)
+        import re
+        words_only = re.sub(r'[^\w\s]', '', question_clean).strip()
+        if not words_only and len(question_clean) > 0:
+            logger.error(f"  [FAIL] Input contains only emojis/punctuation: {question_clean}")
+            return {
+                'success': False,
+                'error': 'Invalid request',
+                'explanation': app_state.personality.handle_error('invalid_input', "I didn't catch any words there. Could you ask the question again?"),
+                'error_type': 'invalid_input'
+            }
+            
+        # Basic SQL Injection & Malicious Input prevention
+        sql_injection_patterns = [
+            ' DROP ', ' DELETE ', ' UPDATE ', ' INSERT ', ' TRUNCATE ',
+            '--', '1=1', ';\n', ';\r'
+        ]
+        q_upper = f" {question_clean.upper()} "
+        if any(pattern in q_upper for pattern in sql_injection_patterns):
+            logger.warning(f"  [WARN] Potential SQL injection detected: {question_clean}")
+            return {
+                'success': False,
+                'error': 'Invalid request',
+                'explanation': app_state.personality.handle_error('invalid_input', "I can't process that type of request. Please ask a normal business question."),
+                'error_type': 'security_block'
             }
 
         # Allow short inputs (1-2 chars) ONLY when clarification is pending OR it's a greeting
@@ -230,6 +257,29 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             logger.info(f"  [INFO] Long query detected ({len(question_clean)} chars): {question_clean[:100]}...")
         else:
             logger.info(f"  [INFO] Query: {question_clean}")
+
+        # === CONVERSATIONAL EDGE CASES ===
+        if ctx.is_reset_instruction(question_clean):
+            if hasattr(ctx, 'clear'):
+                ctx.clear()
+            logger.info("  [OK] Context reset memory instruction received.")
+            return {
+                'success': True,
+                'response': "Got it. I've cleared my memory of our previous conversation. What would you like to focus on now?",
+                'explanation': "Got it. I've cleared my memory of our previous conversation. What would you like to focus on now?",
+                'type': 'conversational',
+                'needs_tts': True
+            }
+
+        if ctx.is_contradictory_followup(question_clean):
+            logger.info("  [OK] Contradictory follow-up intercepted.")
+            return {
+                'success': True,
+                'response': "No problem, scratch that. What should we look at instead?",
+                'explanation': "No problem, scratch that. What should we look at instead?",
+                'type': 'conversational',
+                'needs_tts': True
+            }
 
 
         # === TABLE CLARIFICATION FEATURE REMOVED ===
@@ -815,253 +865,281 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 'error_type': 'no_data'
             }
 
-        # === INTELLIGENT TABLE ROUTING ===
-        _step_start = _time.time()
-        logger.info("\n[STEP 7/8] TABLE ROUTING & PLANNING...")
-        # This is the CORE FIX - no more top_k=50 schema dump!
-        previous_context = {
-            'entities': ctx.active_entities,
-            'table': ctx.active_table
-        } if is_followup else None
-
-        # Domain switching detection for follow-ups
-        if is_followup:
-            domain_switch_keywords = {
-                'attendance': ['attendance', 'present', 'absent', 'leave', 'check_in', 'check_out'],
-                'sales': ['sales', 'revenue', 'profit', 'transaction', 'branch'],
-                'payroll': ['payroll', 'salary', 'bonus', 'deduction', 'net'],
-            }
-            for domain, keywords in domain_switch_keywords.items():
-                if any(kw in processing_query.lower() for kw in keywords):
-                    # Check if previous table was in a different domain
-                    prev_table = (ctx.active_table or '').lower()
-                    if domain not in prev_table:
-                        logger.info(f"  [OK] Domain switch detected: {prev_table} -> {domain}")
-                        previous_context = None  # Clear context to force re-routing
-                        break
-
-        routing_result = app_state.table_router.route(processing_query, previous_context)
-
-        # Unpack routing result
-        best_table = routing_result.table
-        routing_entities = routing_result.entities
-        confidence = routing_result.confidence
-
-        logger.info(f"  [OK] Router result: {best_table} (confidence: {confidence:.0%})")
-        _log_timing("table_routing", _step_start)
-
-        # === CONVERSATIONAL: LLM router determined this isn't a data query ===
-        # The LLM router (primary) returns table=None, confidence=0.0 for conversational
-        # queries. The scoring fallback also caps confidence at 0.10 when no data intent.
-        # Both paths converge here.
-        rc = get_routing_config()
-        has_data_intent = bool(
-            entities.get('month') or entities.get('metric') or
-            entities.get('comparison') or entities.get('time_period') or
-            entities.get('explicit_table') or entities.get('dimension_keywords') or
-            entities.get('trend_intent') or entities.get('summary_intent') or
-            entities.get('cross_table_intent')
+        # === SEMANTIC CACHE CHECK ===
+        from planning_layer.plan_cache import get_cached_plan, set_cached_plan
+        cached_plan = None
+        
+        # Don't cache queries with relative time tracking to avoid stale dates
+        has_relative_time = bool(
+            (entities and entities.get('time_period')) or
+            'today' in processing_query.lower() or
+            'yesterday' in processing_query.lower() or
+            'week' in processing_query.lower() or
+            'month' in processing_query.lower() or
+            'var' in processing_query.lower()
         )
+        
+        if not is_followup and not has_relative_time:
+            cached_plan = get_cached_plan(processing_query)
 
-        if routing_result.table is None and confidence == 0.0:
-            logger.info("  [CONVERSATIONAL] Router returned no table — sending to LLM for conversational response")
-            response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
+        routing_result = None
+        
+        if cached_plan:
+            logger.info("\n[STEP 7/8] [CACHE HIT] Found cached query plan. Skipping LLM routing/planning.")
+            plan = cached_plan
+            best_table = plan.get('table')
+            confidence = 1.0
+            schema_context = []
+            _log_timing("semantic_cache", _time.time())
+            
+        if not cached_plan:
+            # === INTELLIGENT TABLE ROUTING ===
+            _step_start = _time.time()
+            logger.info("\n[STEP 7/8] TABLE ROUTING & PLANNING...")
+            # This is the CORE FIX - no more top_k=50 schema dump!
+            previous_context = {
+                'entities': ctx.active_entities,
+                'table': ctx.active_table
+            } if is_followup else None
 
-            # Translate if needed
-            if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
-                response = translate_to_tamil(response)
-
-            _log_timing("conversational_llm_fallback", _step_start)
-            _total_time = (_time.time() - _query_start) * 1000
-            logger.debug(f"\n  [TIME]  TIMING SUMMARY (ROUTING → CONVERSATIONAL):")
-            for step, ms in _timings.items():
-                logger.debug(f"      {step}: {ms:.0f}ms")
-            logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
-            logger.debug("=" * 60 + "\n")
-            return {
-                'success': True,
-                'explanation': response,
-                'data': None,
-                'plan': None,
-                'schema_context': [],
-                'data_refreshed': False,
-                'is_greeting': True,
-                'is_conversational': True,
-            }
-
-        # Safety net for scoring fallback path: if scoring returned a table
-        # but entities show no data intent and confidence is very low, go conversational
-        if not has_data_intent and confidence < rc.confidence_threshold_low:
-            logger.info("  [CONVERSATIONAL] Safety net: scoring fallback has no data intent "
-                        f"(conf={confidence:.0%}) — sending to LLM")
-            response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
-            if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
-                response = translate_to_tamil(response)
-            _log_timing("conversational_safety_net", _step_start)
-            _total_time = (_time.time() - _query_start) * 1000
-            logger.debug(f"\n  [TIME]  TIMING SUMMARY (ROUTING → CONVERSATIONAL SAFETY NET):")
-            for step, ms in _timings.items():
-                logger.debug(f"      {step}: {ms:.0f}ms")
-            logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
-            logger.debug("=" * 60 + "\n")
-            return {
-                'success': True,
-                'explanation': response,
-                'data': None,
-                'plan': None,
-                'schema_context': [],
-                'data_refreshed': False,
-                'is_greeting': True,
-                'is_conversational': True,
-            }
-
-        # For low confidence, log a warning (but still try execution since data intent was detected)
-        if confidence < 0.25:
-            logger.info(f"  ! Low confidence ({confidence:.0%}) — proceeding with best candidate")
-
-        # === TABLE CLARIFICATION DISABLED ===
-        # Instead of asking "Which table?", just pick the best candidate automatically.
-        # User can correct via "check from X table" if wrong.
-        if routing_result.needs_clarification:
-            logger.info(f"  ! AMBIGUITY DETECTED - auto-selecting best candidate (clarification disabled)")
-            candidates = routing_result.get_clarification_options()
-            if candidates:
-                best_table = candidates[0]  # Pick first (best scored) candidate
-                logger.debug(f"  -> Auto-selected table: {best_table}")
-
-        # === SCHEMA CONTEXT GENERATION ===
-        if best_table and routing_result.is_confident:
-            # High confidence - use single table schema
-            schema_context = app_state.table_router.get_table_schema(best_table)
-            logger.info(f"  [OK] Using focused schema for: {best_table}")
-        elif routing_result.should_fallback:
-            # Very low confidence - try INTELLIGENT LLM FALLBACK first!
-            logger.debug(f"  ! Very low confidence - trying LLM-based intelligent table selection...")
-            llm_suggested_table = app_state.table_router.get_llm_fallback_table(processing_query)
-
-            if llm_suggested_table:
-                # LLM successfully picked a table - use it!
-                schema_context = app_state.table_router.get_table_schema(llm_suggested_table)
-                best_table = llm_suggested_table  # Update best_table for execution
-                logger.info(f"  [OK] LLM Fallback SUCCESS - using: {llm_suggested_table}")
-            else:
-                # LLM couldn't pick - fall back to top 5 candidates
-                schema_context = app_state.table_router.get_fallback_schema(processing_query, top_k=5)
-                logger.error(f"  ! LLM Fallback failed - using top 5 candidates")
-        else:
-            # Medium confidence - use the best match
-            schema_context = app_state.table_router.get_table_schema(best_table)
-            logger.info(f"  [OK] Using best match schema for: {best_table} (medium confidence)")
-
-        # Add previous context to schema if follow-up
-        if is_followup:
-            context_prompt = ctx.get_context_prompt()
-            if context_prompt:
-                schema_context = f"{context_prompt}\n\n---\n\n{schema_context}"
-
-        # === CRITICAL: PRE-VALIDATE DATE FOR "TODAY/YESTERDAY" QUERIES ===
-        # Check BEFORE planning to avoid hallucination with wrong data
-        time_period = (entities.get('time_period') or '').lower() if entities else ''
-
-        # FALLBACK: Also check raw question for today/yesterday keywords (belt and suspenders)
-        query_lower = processing_query.lower()
-        if not time_period:
-            if 'today' in query_lower or "today's" in query_lower:
-                time_period = 'today'
-                logger.info(f"  [DEBUG] Detected 'today' from query text (entity extraction missed it)")
-            elif 'yesterday' in query_lower or "yesterday's" in query_lower:
-                time_period = 'yesterday'
-                logger.info(f"  [DEBUG] Detected 'yesterday' from query text (entity extraction missed it)")
-
-        logger.debug(f"  [DEBUG] Date validation check: time_period='{time_period}', entities keys={list(entities.keys()) if entities else 'None'}")
-        if time_period in ['today', 'yesterday', 'this_week', 'last_week'] and best_table:
-            from datetime import datetime, timedelta
-            from schema_intelligence.profile_store import ProfileStore
-
-            try:
-                # Use app_state's profile_store if available, else create new one
-                profile_store = app_state.profile_store if app_state.profile_store else ProfileStore()
-                profile = profile_store.get_profile(best_table)
-                logger.debug(f"  [DEBUG] Profile for {best_table}: date_range={profile.get('date_range') if profile else 'No profile'}")
-                if not profile:
-                    # Try case-insensitive lookup
-                    all_tables = profile_store.get_table_names()
-                    logger.debug(f"  [DEBUG] Available tables in profile_store: {all_tables}")
-                    for t in all_tables:
-                        if t.lower() == best_table.lower():
-                            profile = profile_store.get_profile(t)
-                            logger.info(f"  [DEBUG] Found profile via case-insensitive match: {t}")
+            # Domain switching detection for follow-ups
+            if is_followup:
+                domain_switch_keywords = {
+                    'attendance': ['attendance', 'present', 'absent', 'leave', 'check_in', 'check_out'],
+                    'sales': ['sales', 'revenue', 'profit', 'transaction', 'branch'],
+                    'payroll': ['payroll', 'salary', 'bonus', 'deduction', 'net'],
+                }
+                for domain, keywords in domain_switch_keywords.items():
+                    if any(kw in processing_query.lower() for kw in keywords):
+                        # Check if previous table was in a different domain
+                        prev_table = (ctx.active_table or '').lower()
+                        if domain not in prev_table:
+                            logger.info(f"  [OK] Domain switch detected: {prev_table} -> {domain}")
+                            previous_context = None  # Clear context to force re-routing
                             break
 
-                if profile and profile.get('date_range'):
-                    date_range = profile['date_range']
-                    # CRITICAL: Properly handle None values - don't convert None to 'None' string
-                    raw_min = date_range.get('min')
-                    raw_max = date_range.get('max')
-                    min_date = str(raw_min)[:10] if raw_min is not None else None
-                    max_date = str(raw_max)[:10] if raw_max is not None else None
-                    logger.debug(f"  [DEBUG] Date range: min={min_date}, max={max_date} (raw: {raw_min}, {raw_max})")
+            routing_result = app_state.table_router.route(processing_query, previous_context)
 
-                    # Calculate the requested date
-                    now = datetime.now()
-                    if time_period == 'today':
-                        requested_date = now.strftime('%Y-%m-%d')
-                        date_label = f"Today ({requested_date})"
-                    elif time_period == 'yesterday':
-                        requested_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-                        date_label = f"Yesterday ({requested_date})"
-                    else:
-                        requested_date = now.strftime('%Y-%m-%d')
-                        date_label = time_period.replace('_', ' ').title()
+            # Unpack routing result
+            best_table = routing_result.table
+            routing_entities = routing_result.entities
+            confidence = routing_result.confidence
 
-                    logger.debug(f"  [DEBUG] Requested date: {requested_date}, label: {date_label}")
+            logger.info(f"  [OK] Router result: {best_table} (confidence: {confidence:.0%})")
+            _log_timing("table_routing", _step_start)
 
-                    # Check if requested date is outside the data range
-                    # Only validate if we have valid date range (not None)
-                    if min_date and max_date and min_date != 'None' and max_date != 'None':
-                        if requested_date < min_date or requested_date > max_date:
-                            error_msg = f"Boss, {date_label} is outside the available data range. The dataset only has data from {min_date} to {max_date}. Try asking about a date within that range!"
-                            logger.error(f"  [WARN] DATE VALIDATION FAILED: {error_msg}")
+            # === CONVERSATIONAL: LLM router determined this isn't a data query ===
+            # The LLM router (primary) returns table=None, confidence=0.0 for conversational
+            # queries. The scoring fallback also caps confidence at 0.10 when no data intent.
+            # Both paths converge here.
+            rc = get_routing_config()
+            has_data_intent = bool(
+                entities.get('month') or entities.get('metric') or
+                entities.get('comparison') or entities.get('time_period') or
+                entities.get('explicit_table') or entities.get('dimension_keywords') or
+                entities.get('trend_intent') or entities.get('summary_intent') or
+                entities.get('cross_table_intent')
+            )
 
-                            _total_time = (_time.time() - _query_start) * 1000
-                            logger.debug(f"\n  [TIME]  TIMING SUMMARY (DATE OUT OF RANGE):")
-                            for step, ms in _timings.items():
-                                logger.debug(f"      {step}: {ms:.0f}ms")
-                            logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
-                            logger.debug("=" * 60 + "\n")
+            if routing_result.table is None and confidence == 0.0:
+                logger.info("  [CONVERSATIONAL] Router returned no table — sending to LLM for conversational response")
+                response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
 
-                            return {
-                                'success': True,
-                                'explanation': error_msg,
-                                'data': None,
-                                'plan': None,
-                                'table_used': best_table,
-                                'date_out_of_range': True,
-                                'available_range': {'min': min_date, 'max': max_date},
-                                'requested_date': requested_date
-                            }
-                        else:
-                            logger.debug(f"  [DEBUG] Date {requested_date} is within range [{min_date} to {max_date}]")
-                    else:
-                        logger.warning(f"  [DEBUG] Skipping date validation - no valid date range (min={min_date}, max={max_date})")
+                # Translate if needed
+                if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+                    response = translate_to_tamil(response)
+
+                _log_timing("conversational_llm_fallback", _step_start)
+                _total_time = (_time.time() - _query_start) * 1000
+                logger.debug(f"\n  [TIME]  TIMING SUMMARY (ROUTING → CONVERSATIONAL):")
+                for step, ms in _timings.items():
+                    logger.debug(f"      {step}: {ms:.0f}ms")
+                logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                logger.debug("=" * 60 + "\n")
+                return {
+                    'success': True,
+                    'explanation': response,
+                    'data': None,
+                    'plan': None,
+                    'schema_context': [],
+                    'data_refreshed': False,
+                    'is_greeting': True,
+                    'is_conversational': True,
+                }
+
+            # Safety net for scoring fallback path: if scoring returned a table
+            # but entities show no data intent and confidence is very low, go conversational
+            if not has_data_intent and confidence < rc.confidence_threshold_low:
+                logger.info("  [CONVERSATIONAL] Safety net: scoring fallback has no data intent "
+                            f"(conf={confidence:.0%}) — sending to LLM")
+                response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
+                if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+                    response = translate_to_tamil(response)
+                _log_timing("conversational_safety_net", _step_start)
+                _total_time = (_time.time() - _query_start) * 1000
+                logger.debug(f"\n  [TIME]  TIMING SUMMARY (ROUTING → CONVERSATIONAL SAFETY NET):")
+                for step, ms in _timings.items():
+                    logger.debug(f"      {step}: {ms:.0f}ms")
+                logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                logger.debug("=" * 60 + "\n")
+                return {
+                    'success': True,
+                    'explanation': response,
+                    'data': None,
+                    'plan': None,
+                    'schema_context': [],
+                    'data_refreshed': False,
+                    'is_greeting': True,
+                    'is_conversational': True,
+                }
+
+            # For low confidence, log a warning (but still try execution since data intent was detected)
+            if confidence < 0.25:
+                logger.info(f"  ! Low confidence ({confidence:.0%}) — proceeding with best candidate")
+
+            # === TABLE CLARIFICATION DISABLED ===
+            # Instead of asking "Which table?", just pick the best candidate automatically.
+            # User can correct via "check from X table" if wrong.
+            if routing_result.needs_clarification:
+                logger.info(f"  ! AMBIGUITY DETECTED - auto-selecting best candidate (clarification disabled)")
+                candidates = routing_result.get_clarification_options()
+                if candidates:
+                    best_table = candidates[0]  # Pick first (best scored) candidate
+                    logger.debug(f"  -> Auto-selected table: {best_table}")
+
+            # === SCHEMA CONTEXT GENERATION ===
+            if best_table and routing_result.is_confident:
+                # High confidence - use single table schema
+                schema_context = app_state.table_router.get_table_schema(best_table)
+                logger.info(f"  [OK] Using focused schema for: {best_table}")
+            elif routing_result.should_fallback:
+                # Very low confidence - try INTELLIGENT LLM FALLBACK first!
+                logger.debug(f"  ! Very low confidence - trying LLM-based intelligent table selection...")
+                llm_suggested_table = app_state.table_router.get_llm_fallback_table(processing_query)
+
+                if llm_suggested_table:
+                    # LLM successfully picked a table - use it!
+                    schema_context = app_state.table_router.get_table_schema(llm_suggested_table)
+                    best_table = llm_suggested_table  # Update best_table for execution
+                    logger.info(f"  [OK] LLM Fallback SUCCESS - using: {llm_suggested_table}")
                 else:
-                    logger.debug(f"  [DEBUG] No date_range in profile for {best_table}")
-            except Exception as e:
-                logger.warning(f"  [WARN] Could not validate date range: {e}")
-                import traceback
-                traceback.print_exc()
+                    # LLM couldn't pick - fall back to top 5 candidates
+                    schema_context = app_state.table_router.get_fallback_schema(processing_query, top_k=5)
+                    logger.error(f"  ! LLM Fallback failed - using top 5 candidates")
+            else:
+                # Medium confidence - use the best match
+                schema_context = app_state.table_router.get_table_schema(best_table)
+                logger.info(f"  [OK] Using best match schema for: {best_table} (medium confidence)")
 
-        # === PLANNING ===
-        _step_start = _time.time()
-        logger.debug("  -> Generating query plan via LLM...")
-        plan = generate_plan(processing_query, schema_context, entities=entities)
-        validate_plan(plan)
-        _log_timing("llm_planning", _step_start)
-        logger.info(f"  [OK] Plan generated:")
-        logger.debug(f"    Query type: {plan.get('query_type', 'unknown')}")
-        logger.debug(f"    Table: {plan.get('table', 'unknown')}")
-        logger.debug(f"    Metrics: {plan.get('metrics', [])}")
-        logger.debug(f"    Filters: {plan.get('filters', [])}")
+            # Add previous context to schema if follow-up
+            if is_followup:
+                context_prompt = ctx.get_context_prompt()
+                if context_prompt:
+                    schema_context = f"{context_prompt}\n\n---\n\n{schema_context}"
+
+            # === CRITICAL: PRE-VALIDATE DATE FOR "TODAY/YESTERDAY" QUERIES ===
+            # Check BEFORE planning to avoid hallucination with wrong data
+            time_period = (entities.get('time_period') or '').lower() if entities else ''
+
+            # FALLBACK: Also check raw question for today/yesterday keywords (belt and suspenders)
+            query_lower = processing_query.lower()
+            if not time_period:
+                if 'today' in query_lower or "today's" in query_lower:
+                    time_period = 'today'
+                    logger.info(f"  [DEBUG] Detected 'today' from query text (entity extraction missed it)")
+                elif 'yesterday' in query_lower or "yesterday's" in query_lower:
+                    time_period = 'yesterday'
+                    logger.info(f"  [DEBUG] Detected 'yesterday' from query text (entity extraction missed it)")
+
+            logger.debug(f"  [DEBUG] Date validation check: time_period='{time_period}', entities keys={list(entities.keys()) if entities else 'None'}")
+            if time_period in ['today', 'yesterday', 'this_week', 'last_week'] and best_table:
+                from datetime import datetime, timedelta
+                from schema_intelligence.profile_store import ProfileStore
+
+                try:
+                    # Use app_state's profile_store if available, else create new one
+                    profile_store = app_state.profile_store if app_state.profile_store else ProfileStore()
+                    profile = profile_store.get_profile(best_table)
+                    logger.debug(f"  [DEBUG] Profile for {best_table}: date_range={profile.get('date_range') if profile else 'No profile'}")
+                    if not profile:
+                        # Try case-insensitive lookup
+                        all_tables = profile_store.get_table_names()
+                        logger.debug(f"  [DEBUG] Available tables in profile_store: {all_tables}")
+                        for t in all_tables:
+                            if t.lower() == best_table.lower():
+                                profile = profile_store.get_profile(t)
+                                logger.info(f"  [DEBUG] Found profile via case-insensitive match: {t}")
+                                break
+
+                    if profile and profile.get('date_range'):
+                        date_range = profile['date_range']
+                        # CRITICAL: Properly handle None values - don't convert None to 'None' string
+                        raw_min = date_range.get('min')
+                        raw_max = date_range.get('max')
+                        min_date = str(raw_min)[:10] if raw_min is not None else None
+                        max_date = str(raw_max)[:10] if raw_max is not None else None
+                        logger.debug(f"  [DEBUG] Date range: min={min_date}, max={max_date} (raw: {raw_min}, {raw_max})")
+
+                        # Calculate the requested date
+                        now = datetime.now()
+                        if time_period == 'today':
+                            requested_date = now.strftime('%Y-%m-%d')
+                            date_label = f"Today ({requested_date})"
+                        elif time_period == 'yesterday':
+                            requested_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+                            date_label = f"Yesterday ({requested_date})"
+                        else:
+                            requested_date = now.strftime('%Y-%m-%d')
+                            date_label = time_period.replace('_', ' ').title()
+
+                        logger.debug(f"  [DEBUG] Requested date: {requested_date}, label: {date_label}")
+
+                        # Check if requested date is outside the data range
+                        # Only validate if we have valid date range (not None)
+                        if min_date and max_date and min_date != 'None' and max_date != 'None':
+                            if requested_date < min_date or requested_date > max_date:
+                                error_msg = f"Boss, {date_label} is outside the available data range. The dataset only has data from {min_date} to {max_date}. Try asking about a date within that range!"
+                                logger.error(f"  [WARN] DATE VALIDATION FAILED: {error_msg}")
+
+                                _total_time = (_time.time() - _query_start) * 1000
+                                logger.debug(f"\n  [TIME]  TIMING SUMMARY (DATE OUT OF RANGE):")
+                                for step, ms in _timings.items():
+                                    logger.debug(f"      {step}: {ms:.0f}ms")
+                                logger.debug(f"      TOTAL: {_total_time:.0f}ms ({_total_time/1000:.2f}s)")
+                                logger.debug("=" * 60 + "\n")
+
+                                return {
+                                    'success': True,
+                                    'explanation': error_msg,
+                                    'data': None,
+                                    'plan': None,
+                                    'table_used': best_table,
+                                    'date_out_of_range': True,
+                                    'available_range': {'min': min_date, 'max': max_date},
+                                    'requested_date': requested_date
+                                }
+                            else:
+                                logger.debug(f"  [DEBUG] Date {requested_date} is within range [{min_date} to {max_date}]")
+                        else:
+                            logger.warning(f"  [DEBUG] Skipping date validation - no valid date range (min={min_date}, max={max_date})")
+                    else:
+                        logger.debug(f"  [DEBUG] No date_range in profile for {best_table}")
+                except Exception as e:
+                    logger.warning(f"  [WARN] Could not validate date range: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # === PLANNING ===
+            _step_start = _time.time()
+            logger.debug("  -> Generating query plan via LLM...")
+            plan = generate_plan(processing_query, schema_context, entities=entities)
+            validate_plan(plan)
+            _log_timing("llm_planning", _step_start)
+            logger.info(f"  [OK] Plan generated:")
+            logger.debug(f"    Query type: {plan.get('query_type', 'unknown')}")
+            logger.debug(f"    Table: {plan.get('table', 'unknown')}")
+            logger.debug(f"    Metrics: {plan.get('metrics', [])}")
+            logger.debug(f"    Filters: {plan.get('filters', [])}")
 
         # === EXECUTION WITH HEALING ===
         _step_start = _time.time()
@@ -1193,6 +1271,12 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                     logger.warning(f"  [WARN] Could not check date range: {e}")
         else:
             logger.info(f"  [OK] Query returned {row_count} rows")
+
+        # Save to cache if successful and valid
+        if not no_results and not is_followup and not has_relative_time and not cached_plan:
+            if plan and plan.get('query_type') != 'unknown':
+                set_cached_plan(processing_query, plan)
+                logger.info("  [CACHE] Saved successful query plan for future use")
         _log_timing("sql_execution", _step_start)
 
         # === EXPLANATION WITH PERSONALITY ===
@@ -1335,7 +1419,8 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             'data_refreshed': data_was_refreshed,  # True if data was refreshed before this query
             'no_results': no_results,  # Flag for empty result set
             'visualization': visualization,  # Chart config for visual analytics
-            'healing_applied': healing_notes if healing_notes else None  # What the query healer changed
+            'healing_applied': healing_notes if 'healing_notes' in locals() and healing_notes else None,
+            'debug_timings': _timings
         }
 
         # Sanitize entire response to handle numpy types in plan, entities, etc.

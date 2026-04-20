@@ -299,7 +299,50 @@ class EntityExtractor:
         'contributes to', 'contribution', 'effect on',
         'what causes', 'why is', 'reason for',
         'பாதிக்கிறது', 'காரணம்'  # Tamil: affects, reason
+        'பாதிக்கிறது', 'காரணம்'  # Tamil: affects, reason
     ]
+
+    def _apply_fuzzy_synonyms(self, text: str) -> str:
+        """Map common typos and synonyms to standard terms."""
+        text_padded = f" {text.lower()} "
+        
+        synonyms = {
+            # Typos & Variants
+            'totl sales': 'total sales',
+            'revenu': 'revenue',
+            'proffit': 'profit',
+            'employes': 'employees',
+            r'\battendence\b': 'attendance',
+            'tamilnadu': 'tamil nadu',
+            'banglore': 'bangalore',
+            'chenai': 'chennai',
+            
+            # Semantic Synonyms
+            'money made': 'revenue',
+            'earnings': 'revenue',
+            'income': 'revenue',
+            'workers': 'employees',
+            'staff': 'employees',
+            'shops': 'branches',
+            'stores': 'branches',
+            'items': 'products',
+            'goods': 'products',
+            'best selling': 'top by quantity',
+            'worst performing': 'bottom',
+            'most popular': 'top by count',
+            'money stuff': 'financial summary',
+            'how much did we make': 'total revenue',
+            'give me a breakdown': 'category breakdown',
+        }
+        
+        for k, v in synonyms.items():
+            if k.startswith(r'\b'):
+                pattern = k
+            else:
+                pattern = rf'\b{k}\b'
+            text_padded = re.sub(pattern, v, text_padded)
+            
+        return text_padded.strip()
 
     def extract(self, question: str) -> Dict[str, Any]:
         """
@@ -315,6 +358,7 @@ class EntityExtractor:
         - time_period: Special time references like "top 5", "last week"
         - explicit_table: If user mentions specific table/sheet
         """
+        question = self._apply_fuzzy_synonyms(question)
         q_lower = question.lower()
 
         return {

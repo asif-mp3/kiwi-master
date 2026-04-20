@@ -13,7 +13,7 @@ export const NO_SPEECH_CANCEL_TIMEOUT = 5000; // Cancel voice mode if no speech 
 
 // Voice Activity Detection (VAD) settings for phone-call-like experience
 export const VAD_SILENCE_THRESHOLD = 8; // Audio level below this = silence (lower = more sensitive)
-export const VAD_SILENCE_DURATION = 1500; // Stop after 1.5 seconds of silence (avoids premature cutoff)
+export const VAD_SILENCE_DURATION = 1000; // Stop after 1.0 seconds of silence (matches checklist)
 export const VAD_MIN_SPEECH_DURATION = 500; // Minimum speech before checking silence (ms)
 export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms) - faster polling
 

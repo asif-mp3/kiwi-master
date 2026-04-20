@@ -111,6 +111,26 @@ class QueryContext:
         if len(self.turns) > self.MAX_TURNS:
             self.turns = self.turns[-self.MAX_TURNS:]
 
+    def is_reset_instruction(self, question: str) -> bool:
+        """Detect if the user is explicitly telling the AI to clear context."""
+        q_lower = question.lower().strip()
+        reset_phrases = [
+            'forget what i said', 'start over', 'clear memory', 'reset context',
+            'ignore previous', 'forget the previous', 'new topic', 'change topic',
+            'start fresh', "let's start over", 'forget that', 'clear history'
+        ]
+        return any(phrase in q_lower for phrase in reset_phrases)
+
+    def is_contradictory_followup(self, question: str) -> bool:
+        """Detect if the user is contradicting their own follow-up gracefully."""
+        q_lower = question.lower().strip()
+        contradiction_phrases = [
+            'actually no', 'wait no', 'nevermind', 'never mind', 
+            'on second thought', 'scratch that', 'forget the last',
+            'not that'
+        ]
+        return any(phrase in q_lower for phrase in contradiction_phrases)
+
     def is_followup(self, question: str) -> bool:
         """
         Detect if question is a follow-up to previous query.
@@ -125,6 +145,12 @@ class QueryContext:
             return False
 
         q_lower = question.lower().strip()
+
+        # 0. Fast Path: If it's the exact same query as the last turn, it's NOT a follow-up
+        if self.turns:
+            prev_question = self.turns[-1].question.lower().strip() if self.turns[-1].question else ""
+            if prev_question == q_lower:
+                return False
 
         # 1. Explicit follow-up phrases
         followup_phrases = [

@@ -136,15 +136,9 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
     memory_keywords = ['call me', 'my name', 'i am', "i'm", 'address me', 'from now on',
                        'என் பேரு', 'enna', 'koopdu']  # Tamil patterns
 
-    # If query has data keywords and NO memory keywords, skip Gemini
-    has_data_keyword = any(kw in q_lower for kw in data_keywords)
+    # If no memory intent keywords detected at all, skip LLM immediately
     has_memory_keyword = any(kw in q_lower for kw in memory_keywords)
-
-    if has_data_keyword and not has_memory_keyword:
-        return {"has_memory_intent": False}
-
-    # Short queries without memory patterns - skip
-    if len(question) < 15 and not has_memory_keyword:
+    if not has_memory_keyword:
         return {"has_memory_intent": False}
 
     try:

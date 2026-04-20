@@ -295,7 +295,7 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
     system_prompt = _get_system_prompt()
     gen_config = {
         "system_instruction": system_prompt,
-        "temperature": config.get("temperature", 0.0),
+        "temperature": 0.0,  # Enforce 0.0 for deterministic and fast SQL generation
         "response_mime_type": "application/json",
         "max_output_tokens": max_tokens,
     }

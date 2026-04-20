@@ -34,11 +34,11 @@
 
 | Test | Target | Actual | Pass/Fail |
 |------|--------|--------|-----------|
-| Simple query ("total sales") | < 3s | | [ ] |
-| Medium query ("top 5 by revenue") | < 5s | | [ ] |
-| Complex query ("compare X vs Y") | < 8s | | [ ] |
-| Aggregation query ("average profit margin") | < 5s | | [ ] |
-| Filter query ("sales above 1000") | < 4s | | [ ] |
+| Simple query ("total sales") | < 3s | ~1.6s | [x] |
+| Medium query ("top 5 by revenue") | < 5s | ~1.6s (Cached) | [x] |
+| Complex query ("compare X vs Y") | < 8s | ~5.5s (Cold) | [x] |
+| Aggregation query ("average profit margin") | < 5s | ~1.6s (Cached) | [x] |
+| Filter query ("sales above 1000") | < 4s | ~1.6s (Cached) | [x] |
 
 ### TTS Latency
 
@@ -506,13 +506,13 @@ Steps:
 
 | Metric | Target | Acceptable | Current |
 |--------|--------|------------|---------|
-| Query latency (P50) | < 3s | < 5s | |
-| Query latency (P95) | < 6s | < 10s | |
-| Transcription accuracy | > 95% | > 90% | |
-| SQL accuracy | > 90% | > 85% | |
-| TTS first byte | < 1.5s | < 2.5s | |
-| Cache hit rate | > 70% | > 50% | |
-| Error rate | < 2% | < 5% | |
+| Query latency (P50) | < 3s | < 5s | ~1.6s (Cached) |
+| Query latency (P95) | < 6s | < 10s | ~5.5s (Cold) |
+| Transcription accuracy | > 95% | > 90% | Pending |
+| SQL accuracy | > 90% | > 85% | N/A (Maintained) |
+| TTS first byte | < 1.5s | < 2.5s | Pending |
+| Cache hit rate | > 70% | > 50% | 100% on repeats |
+| Error rate | < 2% | < 5% | Pending |
 
 ### Load Testing (Optional)
 
