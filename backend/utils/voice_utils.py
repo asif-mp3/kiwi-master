@@ -106,7 +106,7 @@ class ElevenLabsSTTProvider(STTProvider):
 
     def transcribe(self, audio_file_path: str, language: Optional[str] = None) -> str:
         with open(audio_file_path, 'rb') as f:
-            kwargs = {"file": f, "model_id": "scribe_v2"}
+            kwargs = {"file": f, "model_id": "scribe_v1"}
             if language:
                 kwargs["language_code"] = language
             result = self._client.speech_to_text.convert(**kwargs)

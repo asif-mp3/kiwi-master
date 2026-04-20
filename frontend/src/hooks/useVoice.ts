@@ -87,8 +87,10 @@ export function useVoice(options: UseVoiceOptions) {
   const [isAlwaysOnMode, setIsAlwaysOnMode] = useState(false);
   const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [voiceLatencyMs, setVoiceLatencyMs] = useState<number | null>(null);
 
   // ===== Refs =====
+  const vadStopTimestampRef = useRef<number | null>(null);
   const shouldResumeRecording = useRef(false);
   const isAlwaysOnModeRef = useRef(false);
   const userAbortedRef = useRef(false);
@@ -178,6 +180,7 @@ export function useVoice(options: UseVoiceOptions) {
           } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
             stopVAD();
             if (recorder.state === 'recording') {
+              vadStopTimestampRef.current = performance.now();
               recorder.stop();
               setIsRecording(false);
             }
@@ -245,6 +248,11 @@ export function useVoice(options: UseVoiceOptions) {
         undefined, // use default voice
         // onStart — audio began playing
         () => {
+          // Calculate exact latency: VAD stop to first byte of TTS playback
+          if (vadStopTimestampRef.current) {
+            setVoiceLatencyMs(performance.now() - vadStopTimestampRef.current);
+            vadStopTimestampRef.current = null;
+          }
           // Clear processing state (seamless transition)
           optionsRef.current.setIsProcessingQuery(false);
           setIsProcessingVoice(false);
@@ -428,6 +436,8 @@ export function useVoice(options: UseVoiceOptions) {
     setIsAlwaysOnMode(false);
     shouldResumeRecording.current = false;
     hadSpeechRef.current = false;
+    vadStopTimestampRef.current = null;
+    setVoiceLatencyMs(null);
 
     setIsProcessingVoice(false);
     setIsVoiceMode(false);
@@ -581,6 +591,8 @@ export function useVoice(options: UseVoiceOptions) {
         setIsAlwaysOnMode(false);
         shouldResumeRecording.current = false;
         hadSpeechRef.current = false;
+        vadStopTimestampRef.current = null;
+        setVoiceLatencyMs(null);
         stopVAD();
 
         if (recordingTimeoutRef.current) {
@@ -613,6 +625,7 @@ export function useVoice(options: UseVoiceOptions) {
     isVoiceEnabledInChat,
     setIsVoiceEnabledInChat,
     speakingMessageId,
+    voiceLatencyMs,
     // Functions
     handleVoiceToggle,
     abruptEndVoiceMode,

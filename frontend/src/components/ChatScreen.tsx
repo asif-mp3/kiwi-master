@@ -919,8 +919,8 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
 
                 {/* Input Box with Voice and Send */}
                 <div className="absolute bottom-3 sm:bottom-6 left-0 right-0 px-3 sm:px-6 pointer-events-none">
-                  <div className="max-w-4xl mx-auto pointer-events-auto">
-                    <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-xl sm:rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl h-[48px] sm:h-[56px] overflow-hidden">
+                  <div className="max-w-4xl mx-auto pointer-events-auto flex flex-col items-center">
+                    <div className="flex w-full items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 rounded-xl sm:rounded-2xl glass border border-border bg-card/80 backdrop-blur-xl h-[48px] sm:h-[56px] overflow-hidden">
                       <Input
                         value={inputMessage}
                         onChange={(e) => setInputMessage(e.target.value)}
@@ -1017,6 +1017,20 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                         <Send className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
                       </motion.button>
                     </div>
+                    {/* Latency Pill */}
+                    <AnimatePresence>
+                      {voice.voiceLatencyMs && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          className="mt-2 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/40 border border-white/5 text-[10px] sm:text-xs"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                          <span className="text-white/70 font-medium">{(voice.voiceLatencyMs / 1000).toFixed(1)}s latency</span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
               </motion.div>
