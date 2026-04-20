@@ -88,11 +88,15 @@ export function useVoice(options: UseVoiceOptions) {
   const [isFullscreenVoice, setIsFullscreenVoice] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
 
+  // ===== State =====
+  const [voiceLatencyMs, setVoiceLatencyMs] = useState<number | null>(null);
+
   // ===== Refs =====
   const shouldResumeRecording = useRef(false);
   const isAlwaysOnModeRef = useRef(false);
   const userAbortedRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const recordingStoppedAtRef = useRef<number | null>(null);
   const voiceModeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -178,6 +182,7 @@ export function useVoice(options: UseVoiceOptions) {
           } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
             stopVAD();
             if (recorder.state === 'recording') {
+              recordingStoppedAtRef.current = Date.now();
               recorder.stop();
               setIsRecording(false);
             }
@@ -196,6 +201,7 @@ export function useVoice(options: UseVoiceOptions) {
     recordingTimeoutRef.current = setTimeout(() => {
       stopVAD();
       if (recorder.state === 'recording') {
+        recordingStoppedAtRef.current = Date.now();
         recorder.stop();
         setIsRecording(false);
       }
@@ -245,6 +251,12 @@ export function useVoice(options: UseVoiceOptions) {
         undefined, // use default voice
         // onStart — audio began playing
         () => {
+          // Measure voice-to-voice latency (stop speaking → Thara starts speaking)
+          if (recordingStoppedAtRef.current !== null) {
+            setVoiceLatencyMs(Date.now() - recordingStoppedAtRef.current);
+            recordingStoppedAtRef.current = null;
+          }
+
           // Clear processing state (seamless transition)
           optionsRef.current.setIsProcessingQuery(false);
           setIsProcessingVoice(false);
@@ -613,6 +625,7 @@ export function useVoice(options: UseVoiceOptions) {
     isVoiceEnabledInChat,
     setIsVoiceEnabledInChat,
     speakingMessageId,
+    voiceLatencyMs,
     // Functions
     handleVoiceToggle,
     abruptEndVoiceMode,

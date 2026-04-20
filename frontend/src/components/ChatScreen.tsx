@@ -757,6 +757,23 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
                       </AnimatePresence>
                     </motion.button>
 
+                    {/* Voice Latency Badge */}
+                    {voice.voiceLatencyMs !== null && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-800/60 border border-zinc-700/40"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
+                          {voice.voiceLatencyMs >= 1000
+                            ? `${(voice.voiceLatencyMs / 1000).toFixed(1)}s`
+                            : `${voice.voiceLatencyMs}ms`}
+                        </span>
+                        <span className="text-[9px] text-zinc-600">latency</span>
+                      </motion.div>
+                    )}
+
                     {/* Mobile Caption Display */}
                     <MobileCaptions
                       caption={liveCaption}
