@@ -55,7 +55,7 @@ class TTSProvider(ABC):
 
 class STTProvider(ABC):
     @abstractmethod
-    def transcribe(self, audio_file_path: str, language: Optional[str] = None) -> str:
+    def transcribe(self, audio_file_path: str, language: Optional[str] = "eng") -> str:
         """Transcribe audio file to text."""
 
 
@@ -104,7 +104,7 @@ class ElevenLabsSTTProvider(STTProvider):
         from elevenlabs.client import ElevenLabs
         self._client = ElevenLabs(api_key=api_key)
 
-    def transcribe(self, audio_file_path: str, language: Optional[str] = None) -> str:
+    def transcribe(self, audio_file_path: str, language: Optional[str] = "eng") -> str:
         with open(audio_file_path, 'rb') as f:
             kwargs = {"file": f, "model_id": "scribe_v1"}
             if language:
@@ -246,7 +246,7 @@ def text_to_speech_streaming(text: str, voice_id: Optional[str] = None) -> Itera
         logger.info("TTS STREAM: Complete %d bytes [%dms]", len(complete), int((time.time() - start) * 1000))
 
 
-def transcribe_audio(audio_file_path: str, language: Optional[str] = None) -> str:
+def transcribe_audio(audio_file_path: str, language: Optional[str] = "eng") -> str:
     """
     Transcribe audio to text.
     Currently raises RuntimeError — configure a STT provider first.

@@ -28,7 +28,7 @@ llm:
   planner_max_tokens: 1500
   provider: gemini
   request_timeout_seconds: 20
-  temperature: 0.7
+  temperature: 0.0
 project:
   environment: development  # Single source of truth (was duplicated in .env)
   name: thara_ai

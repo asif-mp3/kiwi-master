@@ -102,3 +102,59 @@ def generate_content(
         return parts[0]["text"]
     except (KeyError, IndexError) as e:
         raise RuntimeError(f"Unexpected Gemini response structure: {data}") from e
+
+
+def generate_content_stream(
+    model: str,
+    contents: "str | list",
+    system_instruction: str = None,
+    temperature: float = 0.7,
+    max_output_tokens: int = 600,
+    timeout: int = 60,
+):
+    """
+    Call Gemini REST API and yield text tokens via SSE.
+    """
+    import json
+    api_key = _get_api_key()
+    url = f"{_BASE_URL}/{model}:streamGenerateContent?alt=sse&key={api_key}"
+
+    if isinstance(contents, str):
+        contents_list = [{"role": "user", "parts": [{"text": contents}]}]
+    else:
+        contents_list = contents
+
+    body: dict = {"contents": contents_list}
+    if system_instruction:
+        body["system_instruction"] = {"parts": [{"text": system_instruction}]}
+
+    body["generationConfig"] = {
+        "temperature": temperature,
+        "maxOutputTokens": max_output_tokens,
+        "thinkingConfig": {"thinkingBudget": 0},
+    }
+
+    start = time.time()
+    resp = requests.post(url, json=body, timeout=timeout, stream=True)
+
+    if not resp.ok:
+        raise RuntimeError(f"Gemini streaming error {resp.status_code}: {resp.text[:300]}")
+
+    elapsed = int((time.time() - start) * 1000)
+    logger.debug("Gemini %s stream connected in %dms", model, elapsed)
+
+    for line in resp.iter_lines():
+        if line:
+            decoded_line = line.decode('utf-8')
+            if decoded_line.startswith('data: '):
+                data_str = decoded_line[6:]
+                if data_str.strip() == '[DONE]':
+                    break
+                try:
+                    data = json.loads(data_str)
+                    candidate = data["candidates"][0]
+                    parts = candidate.get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        yield parts[0]["text"]
+                except Exception:
+                    pass
