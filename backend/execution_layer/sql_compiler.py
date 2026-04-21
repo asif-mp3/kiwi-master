@@ -480,11 +480,16 @@ def _compile_list(plan):
     where = _build_where_clause(plan.get("filters", []))
     limit = plan.get("limit")
 
-    order_by = ""
-    if use_distinct:
-        order_by = f" ORDER BY {columns}"
+    order_by_clause = f"ORDER BY {columns}" if use_distinct else ""
 
-    sql = f"SELECT {distinct_kw}{columns} FROM {table}{where}{order_by}"
+    # Build parts cleanly — filter out empty strings to avoid double spaces
+    parts = [f"SELECT {distinct_kw}{columns}", f"FROM {table}"]
+    if where:
+        parts.append(where)
+    if order_by_clause:
+        parts.append(order_by_clause)
+
+    sql = " ".join(parts)
     if limit is not None:
         sql += f" LIMIT {limit}"
     return sql.strip()

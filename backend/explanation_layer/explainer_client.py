@@ -231,6 +231,21 @@ def _build_simple_aggregation_response(result_df, query_plan, user_name, emotion
     if result_value is None:
         return None
 
+    # Detect NaN / NULL values — SUM/AVG of empty result set returns NULL in DuckDB
+    # When there is no matching data for the filter, treat as "no data found"
+    import math
+    try:
+        import pandas as pd
+        if pd.isna(result_value):
+            return None
+    except Exception:
+        pass
+    try:
+        if isinstance(result_value, float) and math.isnan(result_value):
+            return None
+    except Exception:
+        pass
+
     # Humanize the metric name
     metric_display = _humanize_name(agg_col) if agg_col else "the value"
 
@@ -350,6 +365,11 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
         if template_response:
             logger.info("Simple aggregation — used template (skipped LLM) [%dms]", elapsed)
             return template_response
+        else:
+            # template returned None = NaN/NULL result = no matching data for this filter
+            # Treat it the same as an empty result set
+            logger.info("Simple aggregation returned NaN/NULL — treating as no data found")
+            result_df = result_df.iloc[0:0]  # Make it effectively empty for the no-data path
 
     if result_df.empty:
         # IMPORTANT: Use Gemini LLM to generate helpful "no data" responses

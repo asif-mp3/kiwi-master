@@ -321,7 +321,30 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
         if entities.get('category'):
             hint_parts.append(f"- Filter by category: {entities['category']}")
         if entities.get('month'):
-            hint_parts.append(f"- Time context: {entities['month']}")
+            from datetime import datetime
+            import calendar
+            month_num_str = entities['month']  # e.g. "01", "12"
+            try:
+                month_num = int(month_num_str)
+                # Use current year as default; if it's a future month, stay in same year
+                now = datetime.now()
+                year = now.year
+                # Build start and end dates for the whole month
+                month_start = f"{year}-{month_num:02d}-01"
+                # End = first day of next month
+                if month_num == 12:
+                    month_end = f"{year + 1}-01-01"
+                else:
+                    month_end = f"{year}-{month_num + 1:02d}-01"
+                month_name = datetime(year, month_num, 1).strftime('%B')
+                hint_parts.append(
+                    f"- **MONTH FILTER ({month_name} {year})**: MUST use TWO date filters: "
+                    f"Date >= '{month_start}' AND Date < '{month_end}'. "
+                    f"Do NOT use a single = or LIKE filter for the date. "
+                    f"Use operator '>=' for start and '<' for end."
+                )
+            except (ValueError, TypeError):
+                hint_parts.append(f"- Time context: {entities['month']}")
         if entities.get('metric'):
             hint_parts.append(f"- Metric focus: {entities['metric']}")
         if entities.get('cross_table_intent'):
