@@ -107,7 +107,11 @@ from execution_layer.executor import execute_plan
 from execution_layer.query_healer import QueryExecutionError
 from execution_layer.sql_compiler import compile_sql
 from explanation_layer.explainer_client import explain_results, generate_off_topic_response
-from utils.translation import translate_to_english, translate_to_tamil
+from utils.translation import (
+    translate_to_english, translate_to_tamil,
+    translate_hindi_to_english, translate_to_hindi,
+)
+from utils.language import detect_language
 from utils.voice_utils import transcribe_audio
 from utils.memory_detector import detect_memory_intent
 from utils.permanent_memory import update_memory
@@ -246,12 +250,13 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             logger.info("\n[STEP 0.6a/9] CHECKING PENDING CORRECTION...")
             pending_correction = ctx.get_pending_correction_state()
             # User was asked what to correct - process their response
+            language = detect_language(question)
             correction_response = _handle_pending_correction_response(
                 user_response=question,
                 pending_correction=pending_correction,
                 ctx=ctx,
                 app_state=app_state,
-                is_tamil=bool(re.search(r'[\u0B80-\u0BFF]', question))
+                is_tamil=language == 'ta'
             )
             if correction_response:
                 ctx.clear_pending_correction_state()
@@ -274,8 +279,8 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 logger.debug(f"    Confidence: {correction_intent.confidence:.0%}")
                 _log_timing("correction_detection", _step_start)
 
-                # Detect Tamil
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                # Detect language
+                language = detect_language(question)
 
                 # Handle the correction
                 correction_result = _handle_correction(
@@ -284,7 +289,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                     question=question,
                     ctx=ctx,
                     app_state=app_state,
-                    is_tamil=is_tamil
+                    is_tamil=language == 'ta'
                 )
                 if correction_result:
                     return correction_result
@@ -317,8 +322,8 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 logger.debug(f"    Confidence: {projection_intent.confidence:.0%}")
                 _log_timing("projection_detection", _step_start)
 
-                # Detect Tamil
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                # Detect language
+                language = detect_language(question)
 
                 # Handle the projection
                 projection_result = _handle_projection(
@@ -327,7 +332,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                     question=question,
                     ctx=ctx,
                     app_state=app_state,
-                    is_tamil=is_tamil
+                    is_tamil=language == 'ta'
                 )
                 if projection_result:
                     _total_time = (_time.time() - _query_start) * 1000
@@ -364,13 +369,13 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         # routing — if no table matches, LLM responds naturally (Step 7).
         _step_start = _time.time()
         logger.info("\n[STEP 1/8] QUICK GREETING CHECK...")
-        is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        language = detect_language(question)
 
         if is_greeting(question):
             logger.info(f"  [OK] Obvious greeting detected - generating LLM response")
 
             # Use LLM for ALL conversational responses (natural, not hardcoded)
-            response = generate_off_topic_response(question, is_tamil=is_tamil_text)
+            response = generate_off_topic_response(question, language=language)
 
             _log_timing("conversational_detection", _step_start)
             _total_time = (_time.time() - _query_start) * 1000
@@ -403,8 +408,8 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             # Store date context in conversation for subsequent queries
             if date_info:
                 ctx.set_date_context(date_info)
-            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
-            response = get_date_context_response(date_info, is_tamil=is_tamil)
+            language = detect_language(question)
+            response = get_date_context_response(date_info, is_tamil=language == 'ta')
             _log_timing("date_context", _step_start)
             logger.debug("  -> Returning date context acknowledgment")
             logger.debug("=" * 60 + "\n")
@@ -510,8 +515,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         if schema_intent:
             # Get user language preference
-            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
-            language = 'ta' if is_tamil else 'en'
+            language = detect_language(question)
 
             # Generate response from profile store (template-based, no LLM)
             # Each question type gets a DISTINCT response — not the same summary
@@ -631,8 +635,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
             if has_meta and not has_data_action and app_state.profile_store:
                 logger.info("  [OK] Meta-question fallback triggered")
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
-                language = 'ta' if is_tamil else 'en'
+                language = detect_language(question)
 
                 is_quality_q = any(kw in q_lower for kw in [
                     'quality', 'completeness', 'integrity', 'health',
@@ -731,10 +734,10 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         logger.info("\n[STEP 4-5/8] PARALLEL: TRANSLATION + ENTITY EXTRACTION...")
 
         processing_query = question
-        is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        language = detect_language(question)
         entities = {}
 
-        if is_tamil:
+        if language == 'ta':
             logger.info(f"  [OK] Tamil detected - running translation + entity extraction in parallel")
             logger.debug(f"    Original: {question[:50]}...")
             ctx.set_language('ta')
@@ -763,6 +766,35 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             if processing_query != question:
                 translated_entities = app_state.entity_extractor.extract(processing_query)
                 # Merge: prefer translated entities but keep Tamil-detected ones
+                for key, value in translated_entities.items():
+                    if value and (not entities.get(key) or key in ['time_period', 'locations', 'categories']):
+                        entities[key] = value
+        elif language == 'hi':
+            logger.info(f"  [OK] Hindi detected - running translation + entity extraction in parallel")
+            logger.debug(f"    Original: {question[:50]}...")
+            ctx.set_language('hi')
+
+            # Run translation and entity extraction in parallel
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_translation = executor.submit(translate_hindi_to_english, question)
+                future_entities = executor.submit(app_state.entity_extractor.extract, question)
+
+                try:
+                    processing_query = future_translation.result(timeout=10)
+                    logger.info(f"    Translated: {processing_query[:50]}...")
+                except Exception as e:
+                    logger.error(f"  ! Translation failed: {e}, using original")
+                    processing_query = question
+
+                try:
+                    entities = future_entities.result(timeout=5)
+                except Exception as e:
+                    logger.error(f"  ! Entity extraction failed: {e}")
+                    entities = {}
+
+            # Re-extract entities from translated text for better accuracy
+            if processing_query != question:
+                translated_entities = app_state.entity_extractor.extract(processing_query)
                 for key, value in translated_entities.items():
                     if value and (not entities.get(key) or key in ['time_period', 'locations', 'categories']):
                         entities[key] = value
@@ -819,9 +851,11 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         _step_start = _time.time()
         logger.info("\n[STEP 7/8] TABLE ROUTING & PLANNING...")
         # This is the CORE FIX - no more top_k=50 schema dump!
+        _last_turn = ctx.get_last_turn() if ctx.turns else None
         previous_context = {
             'entities': ctx.active_entities,
-            'table': ctx.active_table
+            'table': ctx.active_table,
+            'confidence': _last_turn.confidence if _last_turn else 0.0,
         } if is_followup else None
 
         # Domain switching detection for follow-ups
@@ -865,11 +899,13 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         if routing_result.table is None and confidence == 0.0:
             logger.info("  [CONVERSATIONAL] Router returned no table — sending to LLM for conversational response")
-            response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
+            response = generate_off_topic_response(processing_query, language=language)
 
             # Translate if needed
-            if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+            if language == 'ta' and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
                 response = translate_to_tamil(response)
+            elif language == 'hi' and not bool(re.search(r'[\u0900-\u097F]', response)):
+                response = translate_to_hindi(response)
 
             _log_timing("conversational_llm_fallback", _step_start)
             _total_time = (_time.time() - _query_start) * 1000
@@ -894,9 +930,11 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         if not has_data_intent and confidence < rc.confidence_threshold_low:
             logger.info("  [CONVERSATIONAL] Safety net: scoring fallback has no data intent "
                         f"(conf={confidence:.0%}) — sending to LLM")
-            response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
-            if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+            response = generate_off_topic_response(processing_query, language=language)
+            if language == 'ta' and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
                 response = translate_to_tamil(response)
+            elif language == 'hi' and not bool(re.search(r'[\u0900-\u097F]', response)):
+                response = translate_to_hindi(response)
             _log_timing("conversational_safety_net", _step_start)
             _total_time = (_time.time() - _query_start) * 1000
             logger.debug(f"\n  [TIME]  TIMING SUMMARY (ROUTING → CONVERSATIONAL SAFETY NET):")
@@ -1054,7 +1092,8 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         # === PLANNING ===
         _step_start = _time.time()
         logger.debug("  -> Generating query plan via LLM...")
-        plan = generate_plan(processing_query, schema_context, entities=entities)
+        plan = generate_plan(processing_query, schema_context, entities=entities,
+                             table=best_table or '', user_name=ctx.user_name or '')
         validate_plan(plan)
         _log_timing("llm_planning", _step_start)
         logger.info(f"  [OK] Plan generated:")
@@ -1243,9 +1282,14 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         # === TRANSLATION (POST-PROCESS) ===
         _step_start = _time.time()
-        if is_tamil:
+        if language == 'ta':
             logger.debug("  -> Translating response to Tamil...")
             explanation = translate_to_tamil(explanation)
+            logger.info("  [OK] Response translated")
+            _log_timing("translation_response", _step_start)
+        elif language == 'hi':
+            logger.debug("  -> Translating response to Hindi...")
+            explanation = translate_to_hindi(explanation)
             logger.info("  [OK] Response translated")
             _log_timing("translation_response", _step_start)
         else:

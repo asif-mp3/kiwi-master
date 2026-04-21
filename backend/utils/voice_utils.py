@@ -14,11 +14,9 @@ import requests
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Iterator
-from dotenv import load_dotenv
 from utils.logger import get_logger
 from utils.tts_cache import get_cached_tts_audio, cache_tts_audio
 
-load_dotenv()
 logger = get_logger("voice_utils")
 
 
@@ -63,6 +61,17 @@ class STTProvider(ABC):
 # ELEVENLABS PROVIDER (active)
 # ============================================
 
+_TAMIL_RE = re.compile(r'[\u0B80-\u0BFF]')
+_HINDI_RE = re.compile(r'[\u0900-\u097F]')
+
+
+def _detect_tts_language(text: str) -> str:
+    """Return ElevenLabs language_code for the text. Tamil or English only — never Hindi/Telugu."""
+    if _TAMIL_RE.search(text):
+        return "ta"
+    return "en"
+
+
 class ElevenLabsTTSProvider(TTSProvider):
     """ElevenLabs TTS."""
 
@@ -73,24 +82,28 @@ class ElevenLabsTTSProvider(TTSProvider):
     def generate_speech(self, text: str, voice_id: str) -> bytes:
         start = time.time()
         model_id = "eleven_flash_v2_5"
+        lang = _detect_tts_language(text)
         audio_stream = self._client.text_to_speech.convert(
             voice_id=voice_id,
             text=text,
             model_id=model_id,
             output_format="mp3_44100_128",
+            language_code=lang,
         )
         audio_bytes = b"".join(chunk for chunk in audio_stream if chunk)
         elapsed = int((time.time() - start) * 1000)
-        logger.info("ElevenLabs TTS: %d bytes [%dms]", len(audio_bytes), elapsed)
+        logger.info("ElevenLabs TTS [%s]: %d bytes [%dms]", lang, len(audio_bytes), elapsed)
         return audio_bytes
 
     def generate_speech_stream(self, text: str, voice_id: str) -> Iterator[bytes]:
         model_id = "eleven_flash_v2_5"
+        lang = _detect_tts_language(text)
         audio_stream = self._client.text_to_speech.convert(
             voice_id=voice_id,
             text=text,
             model_id=model_id,
             output_format="mp3_44100_128",
+            language_code=lang,
         )
         for chunk in audio_stream:
             if chunk:
@@ -98,19 +111,36 @@ class ElevenLabsTTSProvider(TTSProvider):
 
 
 class ElevenLabsSTTProvider(STTProvider):
-    """ElevenLabs STT (Scribe v2)."""
+    """ElevenLabs STT (Scribe v1)."""
+
+    # Minimum file size to attempt transcription — avoids sending near-empty recordings
+    _MIN_AUDIO_BYTES = 8_000  # ~0.5s of webm/opus audio
 
     def __init__(self, api_key: str):
         from elevenlabs.client import ElevenLabs
         self._client = ElevenLabs(api_key=api_key)
 
     def transcribe(self, audio_file_path: str, language: Optional[str] = None) -> str:
+        import os
+        # Skip tiny files — they're almost always empty recordings or VAD noise
+        file_size = os.path.getsize(audio_file_path)
+        if file_size < self._MIN_AUDIO_BYTES:
+            logger.debug("STT skipped: file too small (%d bytes)", file_size)
+            return ""
+
+        start = time.time()
         with open(audio_file_path, 'rb') as f:
-            kwargs = {"file": f, "model_id": "scribe_v1"}
-            if language:
-                kwargs["language_code"] = language
-            result = self._client.speech_to_text.convert(**kwargs)
-        return result.text if hasattr(result, 'text') else str(result)
+            result = self._client.speech_to_text.convert(
+                file=f,
+                model_id="scribe_v1",
+                # Don't set language_code — auto-detect handles Tamil+English well.
+                # tag_audio_events=False keeps it fast (no event tagging overhead).
+                tag_audio_events=False,
+                diarize=False,
+            )
+        text = result.text if hasattr(result, 'text') else str(result)
+        logger.info("STT: %d bytes → %d chars [%.0fms]", file_size, len(text), (time.time() - start) * 1000)
+        return text
 
 
 # ============================================

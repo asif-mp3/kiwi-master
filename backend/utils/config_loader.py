@@ -102,8 +102,8 @@ class VoiceConfig:
     """Voice/TTS configuration."""
     tts_provider: str = "elevenlabs"
     elevenlabs_api_key_env: str = "ELEVENLABS_API_KEY"
-    default_voice_id: str = "pNInz6obpgDQGcFmaJgB"
-    tamil_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+    default_voice_id: str = "mGboHvCVOXWYeFL8KTR0"
+    tamil_voice_id: str = "mGboHvCVOXWYeFL8KTR0"
     request_timeout_seconds: int = 30
 
 
@@ -258,8 +258,8 @@ def _parse_config(raw: dict) -> Config:
         voice=VoiceConfig(
             tts_provider=raw.get("voice", {}).get("tts_provider", "elevenlabs"),
             elevenlabs_api_key_env=raw.get("voice", {}).get("elevenlabs_api_key_env", "ELEVENLABS_API_KEY"),
-            default_voice_id=raw.get("voice", {}).get("default_voice_id", "pNInz6obpgDQGcFmaJgB"),
-            tamil_voice_id=raw.get("voice", {}).get("tamil_voice_id", "pNInz6obpgDQGcFmaJgB"),
+            default_voice_id=raw.get("voice", {}).get("default_voice_id", "mGboHvCVOXWYeFL8KTR0"),
+            tamil_voice_id=raw.get("voice", {}).get("tamil_voice_id", "mGboHvCVOXWYeFL8KTR0"),
             request_timeout_seconds=raw.get("voice", {}).get("request_timeout_seconds", 30),
         ),
         table_routing=TableRoutingConfig(

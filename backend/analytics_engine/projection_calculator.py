@@ -654,6 +654,36 @@ def extract_trend_context(previous_turn: Any) -> Optional[TrendContext]:
     if not analysis:
         analysis = result_values
 
+    # --- Handle comparison query analysis ---
+    # Comparison queries store period_a_value/period_b_value instead of slope/values
+    period_a_value = analysis.get('period_a_value')
+    period_b_value = analysis.get('period_b_value')
+    if period_a_value is not None and period_b_value is not None:
+        try:
+            val_a = float(period_a_value)
+            val_b = float(period_b_value)
+            if val_a > 0 and val_b > 0:
+                pct_change = float(analysis.get('percentage_change') or ((val_b - val_a) / val_a * 100))
+                direction = analysis.get('direction', 'increased' if val_b > val_a else 'decreased')
+                logger.debug("Comparison analysis detected: val_a=%.2f, val_b=%.2f, pct=%.2f%%", val_a, val_b, pct_change)
+                return TrendContext(
+                    direction=direction,
+                    slope=val_b - val_a,
+                    normalized_slope=pct_change / 100,
+                    start_value=val_a,
+                    end_value=val_b,
+                    percentage_change=pct_change,
+                    data_points=2,
+                    min_value=min(val_a, val_b),
+                    max_value=max(val_a, val_b),
+                    avg_value=(val_a + val_b) / 2,
+                    confidence='medium',
+                    time_unit=_detect_time_unit(query_plan),
+                    values=[val_a, val_b],
+                )
+        except (TypeError, ValueError):
+            pass  # Fall through to generic extraction
+
     # Try to extract required fields
     direction = (
         analysis.get('direction') or
@@ -698,6 +728,11 @@ def extract_trend_context(previous_turn: Any) -> Optional[TrendContext]:
     # Get other fields with defaults
     start_value = float(analysis.get('start_value') or (values[0] if values else 0))
     end_value = float(analysis.get('end_value') or (values[-1] if values else 0))
+
+    # Guard: can't project from zero base
+    if end_value == 0 and not values:
+        logger.debug("end_value is 0 and no values — cannot project, returning None")
+        return None
 
     return TrendContext(
         direction=direction,

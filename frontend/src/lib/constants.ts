@@ -9,13 +9,16 @@ export const APP_VERSION = '2.0.0';
 export const VOICE_RECORDING_TIMEOUT = 15000; // 15 seconds max recording (fallback)
 export const VOICE_MODE_TIMEOUT = 30000; // 30 seconds before disabling voice mode
 export const TTS_COMPLETION_WAIT = 1500; // Wait time after TTS playback
-export const NO_SPEECH_CANCEL_TIMEOUT = 5000; // Cancel voice mode if no speech detected within 5s
+export const NO_SPEECH_CANCEL_TIMEOUT = 10000; // Cancel voice mode if no audio detected within 10s
 
-// Voice Activity Detection (VAD) settings for phone-call-like experience
-export const VAD_SILENCE_THRESHOLD = 8; // Audio level below this = silence (lower = more sensitive)
-export const VAD_SILENCE_DURATION = 1500; // Stop after 1.5 seconds of silence (avoids premature cutoff)
-export const VAD_MIN_SPEECH_DURATION = 500; // Minimum speech before checking silence (ms)
-export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms) - faster polling
+// Voice Activity Detection (VAD) settings
+// Using speech-band energy (300-3000 Hz only) instead of full-spectrum average.
+// This is far more accurate — a simple full-spectrum average is always diluted
+// by silent high-frequency bins even during active speech.
+export const VAD_SILENCE_THRESHOLD = 15; // Speech-band RMS below this = silence
+export const VAD_SILENCE_DURATION = 1200; // Stop after 1.2s of silence (more forgiving)
+export const VAD_MIN_SPEECH_DURATION = 400; // Min recording before silence check (ms)
+export const VAD_CHECK_INTERVAL = 50; // How often to check audio levels (ms)
 
 // API URLs — production URL MUST come from env var (NEXT_PUBLIC_API_BASE_URL)
 const LOCALHOST_API_URL = 'http://localhost:8000';

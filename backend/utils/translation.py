@@ -61,7 +61,7 @@ Output ONLY the English translation, no explanations.
 
 Text: {text}""",
             temperature=0.0,
-            max_output_tokens=300,
+            max_output_tokens=150,
         ).strip()
         elapsed = (time.time() - start) * 1000
         logger.info("Translation (Tamil -> English): %s -> %s [%dms]", text, english_text, elapsed)
@@ -81,7 +81,7 @@ def translate_to_tamil(text: str) -> str:
             model=get_llm_config().model,
             contents=f"Translate to Tamil. STRICT RULE: Convert ALL numbers to Tamil words (e.g. 6450 -> ஆறாயிரத்து நானூற்று ஐம்பது). NO DIGITS ALLOWED.\n\nText: {text}",
             temperature=0.0,
-            max_output_tokens=400,
+            max_output_tokens=200,
         ).strip()
         elapsed = (time.time() - start) * 1000
         logger.info("Translation (English -> Tamil): %s -> %s [%dms]", text, tamil_text, elapsed)
@@ -89,3 +89,55 @@ def translate_to_tamil(text: str) -> str:
     except Exception as e:
         logger.error("Translation Error (to Tamil): %s", e)
         return text  # Fallback to original
+
+
+def translate_hindi_to_english(text: str) -> str:
+    """Translates Hindi text to English for RAG processing."""
+    try:
+        start = time.time()
+        english_text = gemini_client.generate_content(
+            model=get_llm_config().model,
+            contents=f"""Translate this Hindi query to English for data analysis.
+
+RULES:
+1. Business terms: "बिक्री" = "sales", "लाभ" = "profit", "राजस्व" = "revenue"
+2. Preserve comparison structure (vs, compared to, or)
+3. Months: 'जनवरी'='January', 'दिसंबर'='December', etc.
+4. Locations/names: keep as-is unless they have English equivalents
+5. Preserve filter prepositions: "में" (in) = filter
+
+EXAMPLES:
+- "कितनी बिक्री हुई?" → "How much sales?"
+- "दिसंबर में चेन्नई की बिक्री कितनी थी?" → "How much sales in Chennai in December?"
+- "बैंगलोर से चेन्नई ज्यादा बेहतर है?" → "Is Chennai better than Bangalore?"
+
+Output ONLY the English translation.
+
+Text: {text}""",
+            temperature=0.0,
+            max_output_tokens=150,
+        ).strip()
+        elapsed = (time.time() - start) * 1000
+        logger.info("Translation (Hindi -> English): %s -> %s [%dms]", text, english_text, elapsed)
+        return english_text
+    except Exception as e:
+        logger.error("Translation Error (Hindi to English): %s", e)
+        return text
+
+
+def translate_to_hindi(text: str) -> str:
+    """Translates English answer to Hindi for user response."""
+    try:
+        start = time.time()
+        hindi_text = gemini_client.generate_content(
+            model=get_llm_config().model,
+            contents=f"Translate to Hindi (Devanagari script). Keep numbers as digits (e.g. 6450 stays as 6450). Keep the warm, friendly tone.\n\nText: {text}",
+            temperature=0.0,
+            max_output_tokens=200,
+        ).strip()
+        elapsed = (time.time() - start) * 1000
+        logger.info("Translation (English -> Hindi): %s -> %s [%dms]", text, hindi_text, elapsed)
+        return hindi_text
+    except Exception as e:
+        logger.error("Translation Error (to Hindi): %s", e)
+        return text

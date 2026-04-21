@@ -212,16 +212,10 @@ export function ChatScreen({ onLogout, username }: ChatScreenProps) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
     };
-    scrollToBottom();
-    const t1 = setTimeout(scrollToBottom, 50);
-    const t2 = setTimeout(scrollToBottom, 150);
-    const t3 = setTimeout(scrollToBottom, 350);
-    const t4 = setTimeout(scrollToBottom, 600);
+    requestAnimationFrame(scrollToBottom);
+    const t1 = setTimeout(scrollToBottom, 150);
     return () => {
       clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
     };
   }, [messages.length, showChat, activeChatId]);
 

@@ -144,7 +144,8 @@ export const api = {
    */
   transcribeAudio: async (audioBlob: Blob): Promise<string> => {
     const formData = new FormData();
-    formData.append('audio', audioBlob, 'recording.wav');
+    // Use .webm extension — actual format is audio/webm;codecs=opus from MediaRecorder
+    formData.append('audio', audioBlob, 'recording.webm');
 
     const response = await handleResponse(
       await fetch(`${API_BASE_URL}/api/transcribe`, {
@@ -296,7 +297,7 @@ export const api = {
    * Backend endpoint: POST /api/text-to-speech/stream
    *
    * @param text - Text to convert to speech
-   * @param voiceId - Optional Murf AI voice ID
+   * @param voiceId - Optional voice ID
    * @param onStart - Callback when audio starts playing
    * @param onEnd - Callback when audio finishes
    * @param onError - Callback on error

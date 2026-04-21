@@ -12,15 +12,12 @@ CRITICAL RULES:
 """
 
 import os
-from dotenv import load_dotenv
 from typing import Optional, Dict, Any
 import json
 from utils.logger import get_logger
 from utils import gemini_client
 
 logger = get_logger("memory_detector")
-
-load_dotenv()
 
 # Detection prompt
 MEMORY_DETECTION_PROMPT = """You are a memory intent detector for a conversational AI system.
@@ -129,7 +126,10 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
         'highest', 'lowest', 'peak', 'maximum', 'minimum', 'compare',
         'trend', 'month', 'january', 'february', 'march', 'april', 'may',
         'june', 'july', 'august', 'september', 'october', 'november', 'december',
-        'காட்டு', 'மொத்தம்', 'எத்தனை', 'யார்'  # Tamil: show, total, how many, who
+        'give me', 'fetch', 'get', 'find', 'display', 'revenue', 'profit',
+        'top', 'bottom', 'rank', 'last', 'this', 'which', 'where', 'when',
+        'காட்டு', 'மொத்தம்', 'எத்தனை', 'யார்',  # Tamil: show, total, how many, who
+        'எவ்வளவு', 'எங்கே', 'எது', 'என்ன', 'கொடு',  # Tamil: how much, where, which, what, give
     ]
 
     # Memory keywords - might be memory intents (need LLM to verify)
@@ -141,6 +141,10 @@ def detect_memory_intent(question: str) -> Optional[Dict[str, Any]]:
     has_memory_keyword = any(kw in q_lower for kw in memory_keywords)
 
     if has_data_keyword and not has_memory_keyword:
+        return {"has_memory_intent": False}
+
+    # Long queries (>20 chars) without any memory trigger words are overwhelmingly data queries
+    if not has_memory_keyword and len(question) > 20:
         return {"has_memory_intent": False}
 
     # Short queries without memory patterns - skip

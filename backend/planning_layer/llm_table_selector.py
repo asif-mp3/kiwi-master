@@ -14,14 +14,10 @@ Key advantages:
 import os
 import json
 from typing import Dict, List, Any, Optional, Tuple
-from dotenv import load_dotenv
 from utils.logger import get_logger
 from utils import gemini_client
 
 logger = get_logger("llm_selector")
-
-# Load environment variables
-load_dotenv()
 
 
 TABLE_SELECTOR_PROMPT = """You are an expert database table selector. Your job is to analyze a user's question and select the BEST table from the available tables to answer it — OR determine that the question is conversational (not about data).

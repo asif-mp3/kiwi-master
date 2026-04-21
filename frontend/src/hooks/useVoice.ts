@@ -7,10 +7,6 @@ import {
   VOICE_RECORDING_TIMEOUT,
   VOICE_MODE_TIMEOUT,
   NO_SPEECH_CANCEL_TIMEOUT,
-  VAD_SILENCE_THRESHOLD,
-  VAD_SILENCE_DURATION,
-  VAD_MIN_SPEECH_DURATION,
-  VAD_CHECK_INTERVAL
 } from '@/lib/constants';
 
 // ============================================================================
@@ -120,8 +116,6 @@ export function useVoice(options: UseVoiceOptions) {
       if (voiceModeTimeoutRef.current) clearTimeout(voiceModeTimeoutRef.current);
       if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
       if (noSpeechTimeoutRef.current) clearTimeout(noSpeechTimeoutRef.current);
-      if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
     };
   }, []);
 
@@ -138,62 +132,55 @@ export function useVoice(options: UseVoiceOptions) {
 
   // ===== Internal Helpers =====
 
-  const stopVAD = () => {
-    if (vadIntervalRef.current) {
-      clearInterval(vadIntervalRef.current);
-      vadIntervalRef.current = null;
-    }
-    silenceStartRef.current = null;
-    speechStartRef.current = null;
-  };
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  const stopVAD = () => {}; // No-op — chunk-based VAD auto-detaches via recorder events
 
-  const setupVAD = (stream: MediaStream, recorder: MediaRecorder) => {
-    try {
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
+  /**
+   * Chunk-size silence detection — attached directly to MediaRecorder.
+   *
+   * webm/opus compresses silence to ~300-800 bytes per 250ms chunk.
+   * Speech compresses to ~2500-8000 bytes per 250ms chunk.
+   * No Web Audio API needed — works everywhere, no silent failures.
+   *
+   * Returns a cleanup function to call if recording is aborted early.
+   */
+  const setupChunkVAD = (recorder: MediaRecorder, onSilenceDetected: () => void) => {
+    // Thresholds (bytes per 250ms chunk)
+    const SPEECH_CHUNK_MIN = 1800;   // chunks above this = speech
+    const SILENCE_CHUNKS_NEEDED = 5; // 5 × 250ms = 1.25s of silence after speech
 
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.3;
-      source.connect(analyser);
-      analyserRef.current = analyser;
+    let spokenOnce = false;
+    let silentCount = 0;
+    let done = false;
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      speechStartRef.current = Date.now();
-      silenceStartRef.current = null;
+    const handleChunk = (event: BlobEvent) => {
+      if (done || recorder.state !== 'recording') return;
+      const size = event.data.size;
 
-      vadIntervalRef.current = setInterval(() => {
-        if (!analyserRef.current || recorder.state !== 'recording') {
-          stopVAD();
-          return;
-        }
-
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        const now = Date.now();
-        const speechDuration = now - (speechStartRef.current || now);
-
-        if (speechDuration < VAD_MIN_SPEECH_DURATION) return;
-
-        if (average < VAD_SILENCE_THRESHOLD) {
-          if (!silenceStartRef.current) {
-            silenceStartRef.current = now;
-          } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
-            stopVAD();
-            if (recorder.state === 'recording') {
-              recordingStoppedAtRef.current = Date.now();
-              recorder.stop();
-              setIsRecording(false);
-            }
+      if (size >= SPEECH_CHUNK_MIN) {
+        // Speech detected
+        if (!spokenOnce) {
+          spokenOnce = true;
+          hadSpeechRef.current = true;
+          // Cancel the no-speech timer — user is clearly speaking
+          if (noSpeechTimeoutRef.current) {
+            clearTimeout(noSpeechTimeoutRef.current);
+            noSpeechTimeoutRef.current = null;
           }
-        } else {
-          silenceStartRef.current = null;
         }
-      }, VAD_CHECK_INTERVAL);
-    } catch (vadError) {
-      // Error handled silently
-    }
+        silentCount = 0;
+      } else if (spokenOnce) {
+        // Silence after speech
+        silentCount++;
+        if (silentCount >= SILENCE_CHUNKS_NEEDED) {
+          done = true;
+          onSilenceDetected();
+        }
+      }
+    };
+
+    recorder.addEventListener('dataavailable', handleChunk);
+    return () => recorder.removeEventListener('dataavailable', handleChunk);
   };
 
   const setRecordingTimeout = (recorder: MediaRecorder) => {
@@ -272,20 +259,16 @@ export function useVoice(options: UseVoiceOptions) {
           setSpeakingMessageId(null);
           audioRef.current = null;
 
-          // Clear caption after delay (if not resuming recording)
-          setTimeout(() => {
-            if (!shouldResumeRecording.current) {
-              optionsRef.current.setLiveCaption(null);
-            }
-          }, 2000);
-
-          // Auto-resume recording in always-on mode
           if (shouldResumeRecording.current) {
+            // Always-on mode: auto-resume listening
+            resumeRecording();
+          } else {
+            // Single-shot mode: TTS done → clear caption and close voice UI
             setTimeout(() => {
-              if (shouldResumeRecording.current) {
-                resumeRecording();
-              }
-            }, 100);
+              optionsRef.current.setLiveCaption(null);
+              setIsFullscreenVoice(false);
+              setIsVoiceMode(false);
+            }, 1500);
           }
         },
         // onError
@@ -352,6 +335,12 @@ export function useVoice(options: UseVoiceOptions) {
 
         const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
 
+        // Skip near-empty recordings — not enough audio for STT
+        if (audioBlob.size < 8000) {
+          if (shouldResumeRecording.current) resumeRecording();
+          return;
+        }
+
         try {
           setIsProcessingVoice(true);
           const text = await api.transcribeAudio(audioBlob);
@@ -391,11 +380,28 @@ export function useVoice(options: UseVoiceOptions) {
         }
       };
 
-      recorder.start();
+      // Reset no-speech timer — give a fresh 5s window after TTS ends and mic reopens
+      if (noSpeechTimeoutRef.current) clearTimeout(noSpeechTimeoutRef.current);
+      noSpeechTimeoutRef.current = setTimeout(() => {
+        if (!hadSpeechRef.current) {
+          toast.error("No speech detected", { description: "Voice mode cancelled." });
+          abruptEndVoiceMode();
+        }
+        noSpeechTimeoutRef.current = null;
+      }, NO_SPEECH_CANCEL_TIMEOUT);
+
+      // Timeslice=250ms: ondataavailable fires every 250ms for chunk-size VAD
+      recorder.start(250);
       setMediaRecorder(recorder);
       setIsRecording(true);
 
-      setupVAD(stream, recorder);
+      setupChunkVAD(recorder, () => {
+        if (recorder.state === 'recording') {
+          recordingStoppedAtRef.current = Date.now();
+          recorder.stop();
+          setIsRecording(false);
+        }
+      });
       setRecordingTimeout(recorder);
     } catch (err) {
       console.error('❌ Failed to resume recording:', err);
@@ -485,13 +491,14 @@ export function useVoice(options: UseVoiceOptions) {
       }
 
       if (newIsRecording) {
-        // === Start Recording ===
+        // === Start Recording (single-shot) ===
+        // VAD auto-detects end of speech → stops → sends. No auto-resume loop.
         opts.setExpandedVoiceSection(null);
         userAbortedRef.current = false;
         hadSpeechRef.current = false;
         setIsFullscreenVoice(true);
-        setIsAlwaysOnMode(true);
-        shouldResumeRecording.current = true;
+        setIsAlwaysOnMode(false);
+        shouldResumeRecording.current = false;
 
         // Start no-speech cancel timer — if no speech within 5s, exit voice mode
         if (noSpeechTimeoutRef.current) clearTimeout(noSpeechTimeoutRef.current);
@@ -523,6 +530,13 @@ export function useVoice(options: UseVoiceOptions) {
             }
 
             const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+
+            // Skip near-empty recordings — webm container header alone is ~300-500 bytes.
+            // Anything under 8KB is almost certainly silence/noise with no speech content.
+            if (audioBlob.size < 8000) {
+              setIsProcessingVoice(false);
+              return;
+            }
 
             try {
               setIsProcessingVoice(true);
@@ -574,10 +588,17 @@ export function useVoice(options: UseVoiceOptions) {
             }
           };
 
-          recorder.start();
+          // Timeslice=250ms: ondataavailable fires every 250ms for chunk-size VAD
+          recorder.start(250);
           setMediaRecorder(recorder);
 
-          setupVAD(stream, recorder);
+          setupChunkVAD(recorder, () => {
+            if (recorder.state === 'recording') {
+              recordingStoppedAtRef.current = Date.now();
+              recorder.stop();
+              setIsRecording(false);
+            }
+          });
           setRecordingTimeout(recorder);
         } catch (err) {
           console.error('❌ Microphone access error:', err);

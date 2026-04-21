@@ -11,11 +11,7 @@ logger = get_logger("explainer_client")
 
 # Backend directory for relative paths
 _BACKEND_DIR = Path(__file__).parent.parent
-from dotenv import load_dotenv
 from utils.permanent_memory import format_memory_for_prompt
-
-# Load environment variables
-load_dotenv()
 
 # ============================================
 # CACHED SYSTEM PROMPT (includes permanent memory)
@@ -218,6 +214,10 @@ def _build_simple_aggregation_response(result_df, query_plan, user_name, emotion
     if result_value is None:
         return None
 
+    import math
+    if isinstance(result_value, float) and math.isnan(result_value):
+        return None  # No data found for this filter — fall back to LLM or empty-result handler
+
     # Humanize the metric name
     metric_display = _humanize_name(agg_col) if agg_col else "the value"
 
@@ -269,7 +269,8 @@ def _build_simple_aggregation_response(result_df, query_plan, user_name, emotion
         try:
             min_val = result_df['min_value'].iloc[0]
             max_val = result_df['max_value'].iloc[0]
-            if min_val is not None and max_val is not None and isinstance(min_val, (int, float)):
+            if (min_val is not None and max_val is not None and isinstance(min_val, (int, float))
+                    and not (math.isnan(min_val) or math.isnan(max_val))):
                 min_f = _format_number_natural(min_val)
                 max_f = _format_number_natural(max_val)
                 if min_val != max_val:
@@ -278,6 +279,74 @@ def _build_simple_aggregation_response(result_df, query_plan, user_name, emotion
             pass
 
     return response
+
+
+def _build_grouped_trend_response(analysis: dict, user_name: str,
+                                   emotion_starters: list, language: str) -> str:
+    """
+    Fast-path response for grouped trend queries (e.g., "Which state has declining sales?").
+    Uses pre-computed direction lists — no LLM needed.
+    """
+    import random
+    dec = analysis.get("decreasing_groups", [])
+    inc = analysis.get("increasing_groups", [])
+    sta = analysis.get("stable_groups", [])
+    group_by = analysis.get("group_by", "group")
+    most_dec = analysis.get("most_declining") or {}
+    most_inc = analysis.get("most_growing") or {}
+
+    starter = random.choice(emotion_starters).format(name=user_name) if emotion_starters else f"Okay {user_name},"
+    is_tamil = (language == "Tamil")
+
+    if dec and not inc and not sta:
+        # All declining
+        if is_tamil:
+            return f"{starter} எல்லா {group_by}-லும் trend குறைஞ்சு வருது. Mostly {dec[0]} தான் அதிகமா decline ஆகுது."
+        return f"{starter} all {group_by}s are on a declining trend. {dec[0]} shows the steepest decline."
+
+    if inc and not dec and not sta:
+        # All growing
+        if is_tamil:
+            return f"{starter} எல்லா {group_by}-லும் sales trend நல்லா growth-ல இருக்கு! {inc[-1]} top-ல இருக்கு."
+        return f"{starter} all {group_by}s are showing a growing trend! {inc[-1]} leads the growth."
+
+    if not dec and not inc:
+        # All stable
+        if is_tamil:
+            return f"{starter} எல்லா {group_by}-லும் sales trend நிலையா (stable) இருக்கு — பெரிய மாற்றம் இல்ல."
+        return f"{starter} all {group_by}s show a stable sales trend — no significant change."
+
+    # Mix of declining/growing/stable
+    parts = []
+    if dec:
+        dec_str = ", ".join(dec[:3]) + (" and others" if len(dec) > 3 else "")
+        if is_tamil:
+            pct = most_dec.get('total_pct_change', most_dec.get('percentage_change', ''))
+            pct_str = f" ({abs(float(pct)):.0f}% down)" if pct else ""
+            parts.append(f"{dec_str} decline-ல இருக்கு{pct_str}")
+        else:
+            pct = most_dec.get('total_pct_change', most_dec.get('percentage_change', ''))
+            pct_str = f" (down ~{abs(float(pct)):.0f}%)" if pct else ""
+            parts.append(f"{dec_str} {'is' if len(dec) == 1 else 'are'} declining{pct_str}")
+    if inc:
+        inc_str = ", ".join(inc[:3]) + (" and others" if len(inc) > 3 else "")
+        if is_tamil:
+            pct = most_inc.get('total_pct_change', most_inc.get('percentage_change', ''))
+            pct_str = f" ({abs(float(pct)):.0f}% up)" if pct else ""
+            parts.append(f"{inc_str} growing-ல இருக்கு{pct_str}")
+        else:
+            pct = most_inc.get('total_pct_change', most_inc.get('percentage_change', ''))
+            pct_str = f" (up ~{abs(float(pct)):.0f}%)" if pct else ""
+            parts.append(f"{inc_str} {'is' if len(inc) == 1 else 'are'} growing{pct_str}")
+    if sta and len(sta) <= 5:
+        if is_tamil:
+            parts.append(f"{', '.join(sta)} stable-ஆ இருக்கு")
+        else:
+            parts.append(f"{', '.join(sta)} {'is' if len(sta) == 1 else 'are'} stable")
+
+    if is_tamil:
+        return f"{starter} " + " — ".join(parts) + "."
+    return f"{starter} " + ", while ".join(parts) + "."
 
 
 def explain_results(result_df, query_plan=None, original_question=None, raw_user_message=None, user_name=None):
@@ -337,6 +406,19 @@ def explain_results(result_df, query_plan=None, original_question=None, raw_user
         if template_response:
             logger.info("Simple aggregation — used template (skipped LLM) [%dms]", elapsed)
             return template_response
+
+    # === FAST PATH: Grouped trend — skip LLM (saves 2-4s per query) ===
+    if (query_plan and query_plan.get("query_type") == "trend"
+            and hasattr(result_df, 'attrs') and result_df.attrs.get('is_advanced_query')):
+        grouped_analysis = result_df.attrs.get('analysis', {})
+        if grouped_analysis.get('group_by') and not grouped_analysis.get('error'):
+            fast_resp = _build_grouped_trend_response(
+                grouped_analysis, user_name or 'Boss', emotion_starters, question_language
+            )
+            if fast_resp:
+                elapsed = (time.time() - _start) * 1000
+                logger.info("Grouped trend — used fast-path (skipped LLM) [%dms]", elapsed)
+                return fast_resp
 
     if result_df.empty:
         # IMPORTANT: Use Gemini LLM to generate helpful "no data" responses
@@ -471,6 +553,27 @@ Context:
 {json.dumps(context, indent=2, default=str)}
 """
     
+    # Explicit grouped trend summary — prevents LLM from ignoring declining groups in JSON
+    if query_plan and query_plan.get("query_type") == "trend":
+        grouped_analysis = context.get("analysis", {})
+        if grouped_analysis.get("group_by"):
+            dec = grouped_analysis.get("decreasing_groups", [])
+            inc = grouped_analysis.get("increasing_groups", [])
+            sta = grouped_analysis.get("stable_groups", [])
+            most_dec = grouped_analysis.get("most_declining") or {}
+            most_inc = grouped_analysis.get("most_growing") or {}
+            prompt += f"""
+**GROUPED TREND SUMMARY (read this carefully — DO NOT ignore it):**
+- Groups analyzed: {grouped_analysis.get('analyzed_groups', 0)} {grouped_analysis.get('group_by', 'groups')} total
+- DECLINING ({len(dec)}): {dec if dec else 'none'}
+- GROWING ({len(inc)}): {inc if inc else 'none'}
+- STABLE ({len(sta)}): {sta if sta else 'none'}
+- Most declining: {most_dec.get('group', 'N/A')} (total change: {most_dec.get('total_pct_change', most_dec.get('normalized_slope', 'N/A'))}%)
+- Most growing: {most_inc.get('group', 'N/A')} (total change: {most_inc.get('total_pct_change', most_inc.get('normalized_slope', 'N/A'))}%)
+
+RULE: If DECLINING list is non-empty, you MUST name those states — do NOT say "all stable".
+"""
+
     if original_question:
         prompt += f"\nProcessed Question: {original_question}\n"
         prompt += f"Question Language: {question_language}\n"
@@ -827,31 +930,23 @@ def _humanize_name(name: str) -> str:
     return ' '.join(word.capitalize() for word in clean.split())
 
 
-def generate_off_topic_response(user_message: str, is_tamil: bool = False) -> str:
+def generate_off_topic_response(user_message: str, language: str = "en") -> str:
     """
     Generate an LLM response for off-topic/non-data queries OR unclear messages.
 
-    Uses the LLM to create natural, charming responses that gently redirect
-    the user back to data queries while engaging with their message.
-
-    CRITICAL: This function handles BOTH:
-    1. Clear off-topic messages (weather, jokes, personal questions)
-    2. Unclear/noisy messages that couldn't be understood
-
-    The LLM should NEVER say "I didn't catch that" - instead, respond
-    conversationally and ask what data they want to explore.
-
     Args:
         user_message: The user's message (could be off-topic or unclear)
-        is_tamil: Whether the user is speaking Tamil
-
-    Returns:
-        str: LLM-generated charming, conversational response
+        language: 'ta' (Tamil), 'hi' (Hindi), or 'en' (English, default)
     """
     import time
     _start = time.time()
 
-    language_instruction = "Tamil (use Tamil script with some English words naturally mixed in - Tanglish style)" if is_tamil else "English"
+    if language == "ta":
+        language_instruction = "Tamil (use Tamil script with some English words naturally mixed in - Tanglish style)"
+    elif language == "hi":
+        language_instruction = "Hindi (use Devanagari script with some English words naturally mixed in - Hinglish style)"
+    else:
+        language_instruction = "English"
 
     prompt = f"""You are Thara, a charming, warm, and delightful personal data assistant.
 
@@ -887,6 +982,13 @@ For PERSONAL questions (how are you, did you eat):
 - Answer naturally, then redirect to data
 - "Doing great! What data would you like me to look up?"
 
+For STRATEGY/RECOMMENDATION questions (how to increase sales, what should we do, recommendations, suggestions, advice, tips):
+- Be DIRECT: I analyze data, I don't give business strategy
+- Tell them what data insight I CAN show instead
+- Examples: "I analyze data, not strategy — but I can show you which cities are underperforming, which products lead sales, or where trends are declining. Want to start there?"
+- "My superpower is in the numbers — ask me which locations or categories need attention and I'll show you the data."
+- NEVER ask clarifying questions for these — always give a decisive redirect
+
 For EMPTY/UNCLEAR/GIBBERISH (short or meaningless text):
 - Acknowledge you didn't catch it clearly, ask them to repeat
 - "Didn't quite catch that, Boss — say that again?"
@@ -920,7 +1022,9 @@ Generate a natural, conversational response:"""
         elapsed = (time.time() - _start) * 1000
         logger.warning("Off-topic LLM failed (%s), using fallback [%dms]", e, elapsed)
 
-        if is_tamil:
+        if language == "ta":
             return "Haha interesting! Naan data expert - data queries-la help pannuven, boss!"
+        elif language == "hi":
+            return "हाहा मज़ेदार! मैं data expert हूं - अपने data के बारे में कुछ भी पूछिए, boss!"
         else:
             return "Haha, that's fun! But my superpower is data - ask me anything about your data!"

@@ -624,25 +624,32 @@ def _analyze_trend(values: List[float]) -> Dict[str, Any]:
     # Normalize slope by mean to get percentage change per period
     normalized_slope = (slope / y_mean * 100) if y_mean != 0 else 0
 
-    # Determine direction and confidence
-    if abs(normalized_slope) < 1:  # Less than 1% change per period
+    # Total % change from first to last (more meaningful for business than per-period rate)
+    # With daily data and large means, normalized_slope can be tiny even for large trends
+    total_pct_change = ((values[-1] - values[0]) / values[0] * 100) if values[0] != 0 else normalized_slope
+
+    # Stable only if BOTH per-period slope is tiny AND total change is small (<5%)
+    if abs(normalized_slope) < 0.5 and abs(total_pct_change) < 5:
         direction = "stable"
         emoji = "STABLE"
-        confidence = "high" if abs(normalized_slope) < 0.5 else "medium"
-    elif normalized_slope > 0:
+        confidence = "high"
+    elif normalized_slope > 0 or total_pct_change > 5:
         direction = "increasing"
         emoji = "UP"
-        confidence = "high" if normalized_slope > 5 else "medium" if normalized_slope > 2 else "low"
+        eff = abs(normalized_slope) if abs(normalized_slope) > abs(total_pct_change) / 10 else abs(total_pct_change) / 10
+        confidence = "high" if eff > 5 else "medium" if eff > 2 else "low"
     else:
         direction = "decreasing"
         emoji = "DOWN"
-        confidence = "high" if normalized_slope < -5 else "medium" if normalized_slope < -2 else "low"
+        eff = abs(normalized_slope) if abs(normalized_slope) > abs(total_pct_change) / 10 else abs(total_pct_change) / 10
+        confidence = "high" if eff > 5 else "medium" if eff > 2 else "low"
 
     return {
         "direction": direction,
         "emoji": emoji,
         "slope": round(slope, 2),
         "normalized_slope": round(normalized_slope, 2),
+        "total_pct_change": round(total_pct_change, 1),
         "confidence": confidence
     }
 

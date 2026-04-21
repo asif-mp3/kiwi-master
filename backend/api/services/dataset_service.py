@@ -14,7 +14,7 @@ from data_sources.connector_factory import ConnectorFactory
 from data_sources.gsheet.connector import fetch_sheets_with_tables
 from data_sources.gsheet.change_detector import needs_refresh
 from data_sources.gsheet.snapshot_loader import load_snapshot
-from analytics_engine.duckdb_manager import DuckDBManager
+from analytics_engine.duckdb_manager import DuckDBManager, reset_shared_conn
 from schema_intelligence.data_profiler import DataProfiler
 
 # Project root for config file access
@@ -118,6 +118,7 @@ def load_dataset_service(url: str, user_id: str = None, append: bool = False) ->
             logger.info("APPEND MODE: Adding to existing data...")
             # Load snapshot in append mode (full_reset=False)
             load_snapshot(prefixed_sheets_with_tables, full_reset=False, changed_sheets=list(prefixed_sheets_with_tables.keys()))
+            reset_shared_conn()  # Refresh shared DuckDB conn after write
             logger.info("Appended %d sheets to existing snapshot", len(prefixed_sheets_with_tables))
             # Rebuild vector store incrementally
             store.rebuild()
@@ -137,6 +138,7 @@ def load_dataset_service(url: str, user_id: str = None, append: bool = False) ->
             store.clear_collection()
             logger.info("Loading snapshot...")
             load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+            reset_shared_conn()  # Refresh shared DuckDB conn after write
             logger.info("Rebuilding vector store...")
             store.rebuild()
 
@@ -343,6 +345,7 @@ def load_dataset_from_source(url: str, user_id: str = None, append: bool = False
             logger.info("Source APPEND MODE: Adding to existing data...")
             load_snapshot(prefixed_sheets_with_tables, full_reset=False,
                          changed_sheets=list(prefixed_sheets_with_tables.keys()))
+            reset_shared_conn()
             store.rebuild()
         else:
             if not append:
@@ -356,6 +359,7 @@ def load_dataset_from_source(url: str, user_id: str = None, append: bool = False
 
             store.clear_collection()
             load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+            reset_shared_conn()
             store.rebuild()
 
         # Profile tables using existing profiler (unchanged)
@@ -522,10 +526,12 @@ def sync_drive_folder(folder_url: str, replace: bool = True) -> Dict[str, Any]:
             logger.info("FolderSync REPLACE MODE: Clearing existing data...")
             store.clear_collection()
             load_snapshot(prefixed_sheets_with_tables, full_reset=True)
+            reset_shared_conn()
         else:
             logger.info("FolderSync APPEND MODE: Adding to existing data...")
             load_snapshot(prefixed_sheets_with_tables, full_reset=False,
                          changed_sheets=list(prefixed_sheets_with_tables.keys()))
+            reset_shared_conn()
 
         store.rebuild()
 
@@ -677,6 +683,7 @@ def check_and_refresh_data() -> bool:
             if full_reset:
                 store.clear_collection()
                 load_snapshot(sheets_with_tables, full_reset=True)
+                reset_shared_conn()
                 store.rebuild()
             else:
                 source_ids = []
@@ -687,6 +694,7 @@ def check_and_refresh_data() -> bool:
                             source_ids.append(source_id)
 
                 load_snapshot(sheets_with_tables, full_reset=False, changed_sheets=changed_sheets)
+                reset_shared_conn()
 
                 if source_ids:
                     store.rebuild(source_ids=source_ids)

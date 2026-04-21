@@ -68,6 +68,9 @@ def _setup_utf8_output():
 
 _setup_utf8_output()
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse, JSONResponse
@@ -970,7 +973,11 @@ async def process_query(request: QueryRequest, user: dict = Depends(require_auth
 async def transcribe_audio(audio: UploadFile = File(...), user: dict = Depends(require_auth)):
     """Transcribe audio to text."""
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+        # Use .webm extension — MediaRecorder sends audio/webm;codecs=opus
+        # Saving as .wav was causing ElevenLabs Scribe to misidentify the format
+        filename = audio.filename or 'recording.webm'
+        ext = '.' + filename.rsplit('.', 1)[-1] if '.' in filename else '.webm'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
             content = await audio.read()
             tmp_file.write(content)
             tmp_path = tmp_file.name

@@ -14,20 +14,18 @@ google_sheets:
     enabled: true
     # Google Drive folder - all CSV/Excel files will be auto-loaded on startup
     drive_folder_url: "https://drive.google.com/drive/folders/1iJDe85wVldOIDsS6nzmo8OsuESuI3rGA"
-    # Legacy spreadsheet IDs (not used when drive_folder_url is set)
-    auto_load_spreadsheets: []
   numeric_conversion_threshold: 0.8
   spreadsheet_id: ""
 llm:
   api_key_env: GEMINI_API_KEY
   enable_streaming: true
-  explainer_max_tokens: 600
+  explainer_max_tokens: 500
   max_retries: 2
   model: gemini-2.5-flash
   model_complex: gemini-2.5-flash
-  planner_max_tokens: 1500
+  planner_max_tokens: 1200
   provider: gemini
-  request_timeout_seconds: 20
+  request_timeout_seconds: 15
   temperature: 0.7
 project:
   environment: development  # Single source of truth (was duplicated in .env)
@@ -54,8 +52,8 @@ table_routing:
 voice:
   tts_provider: elevenlabs
   elevenlabs_api_key_env: ELEVENLABS_API_KEY
-  default_voice_id: pNInz6obpgDQGcFmaJgB
-  tamil_voice_id: pNInz6obpgDQGcFmaJgB
+  default_voice_id: mGboHvCVOXWYeFL8KTR0
+  tamil_voice_id: mGboHvCVOXWYeFL8KTR0
   request_timeout_seconds: 30
   # murf_ai (DISABLED):
   # murf_api_key_env: MURF_API_KEY
@@ -89,7 +87,7 @@ routing:
   # Base scores from table_type(+10) + granularity(+5) + quality(0-10) = ~15-25 for non-data queries
   # Real data queries score 60+ from synonym/column matches, so 25 cleanly separates them
   conversational_fallback_score: 25
-  llm_router_timeout: 10
+  llm_router_timeout: 5
 healing:
   fuzzy_match_threshold: 0.90
   table_overlap_ratio: 0.5

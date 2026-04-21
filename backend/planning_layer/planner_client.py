@@ -1,4 +1,6 @@
 import os
+import copy
+import hashlib
 import json
 import yaml
 import time
@@ -6,18 +8,23 @@ import threading
 import concurrent.futures
 from pathlib import Path
 from planning_layer.planner_prompt import PLANNER_SYSTEM_PROMPT
-from dotenv import load_dotenv
 from utils.logger import get_logger
 from utils import gemini_client
 
 logger = get_logger("planner")
 
+# Session-level plan cache — keyed on (question + table + user_name), 5-minute TTL.
+_plan_cache: dict = {}
+_PLAN_CACHE_TTL = 300  # seconds
+
+
+def _plan_cache_key(question: str, table: str, user_name: str) -> str:
+    raw = f"{question.lower().strip()}|{table}|{user_name}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
 # Backend directory for relative paths
 _BACKEND_DIR = Path(__file__).parent.parent
 from utils.permanent_memory import format_memory_for_prompt
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 # ============================================
@@ -127,9 +134,9 @@ def get_model_for_complexity(complexity: str, config: dict):
         tuple: (model_name, max_tokens)
     """
     if complexity == 'simple':
-        return "gemini-2.5-flash", 1000
+        return "gemini-2.5-flash", 800
     else:
-        return config.get("model", "gemini-2.5-flash"), config.get("planner_max_tokens", 1500)
+        return config.get("model", "gemini-2.5-flash"), config.get("planner_max_tokens", 1200)
 
 
 def format_schema_context(schema_context) -> str:
@@ -257,7 +264,8 @@ def call_llm_with_timeout(
             raise TimeoutError(f"LLM request timed out after {timeout_seconds} seconds")
 
 
-def generate_plan(question: str, schema_context: list, max_retries: int = None, entities: dict = None) -> dict:
+def generate_plan(question: str, schema_context: list, max_retries: int = None, entities: dict = None,
+                  table: str = '', user_name: str = '') -> dict:
     """
     Generate query plan using Gemini LLM.
 
@@ -280,6 +288,17 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
     """
     import time
     _start = time.time()
+
+    # --- Session plan cache check ---
+    _cache_key = _plan_cache_key(question, table or '', user_name or '')
+    _cached = _plan_cache.get(_cache_key)
+    if _cached is not None:
+        _plan, _ts = _cached
+        if time.time() - _ts < _PLAN_CACHE_TTL:
+            logger.info("Plan cache HIT [%s...]", question[:50])
+            return copy.deepcopy(_plan)
+        else:
+            del _plan_cache[_cache_key]
 
     # Load configuration
     config = load_config()
@@ -321,7 +340,28 @@ def generate_plan(question: str, schema_context: list, max_retries: int = None, 
         if entities.get('category'):
             hint_parts.append(f"- Filter by category: {entities['category']}")
         if entities.get('month'):
-            hint_parts.append(f"- Time context: {entities['month']}")
+            month_name = entities['month']
+            # Convert month name to full date range so planner uses >= < instead of = '2025-01-01'
+            from datetime import datetime
+            month_map = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                'september': 9, 'october': 10, 'november': 11, 'december': 12,
+            }
+            m_num = month_map.get(month_name.lower())
+            if m_num:
+                year = datetime.now().year
+                start = f"{year}-{m_num:02d}-01"
+                if m_num == 12:
+                    end = f"{year + 1}-01-01"
+                else:
+                    end = f"{year}-{m_num + 1:02d}-01"
+                hint_parts.append(
+                    f"- **MONTH FILTER — {month_name} {year}**: MUST filter Date >= '{start}' AND Date < '{end}'"
+                    f" (use >= and <, NEVER use Date = '{start}')"
+                )
+            else:
+                hint_parts.append(f"- Time context: {month_name}")
         if entities.get('metric'):
             hint_parts.append(f"- Metric focus: {entities['metric']}")
         if entities.get('cross_table_intent'):
@@ -468,6 +508,7 @@ Output the query plan as JSON:"""
 
             elapsed = (time.time() - _start) * 1000
             logger.info("LLM Planning generated [%dms]", int(elapsed))
+            _plan_cache[_cache_key] = (copy.deepcopy(plan), time.time())
             return plan
 
         except TimeoutError as e:
