@@ -76,7 +76,8 @@ import os
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+from statistics import mean
 
 from api.models import (
     LoadDataRequest,
@@ -963,6 +964,129 @@ async def process_query(request: QueryRequest, user: dict = Depends(require_auth
         logger.error("QUERY ERROR - text: %s, conversation_id: %s, exception: %s",
                      request.text, getattr(request, 'conversation_id', 'N/A'), e,
                      exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/eval-smoke")
+async def eval_smoke(request: dict | None = None, user: dict = Depends(require_auth)):
+    """
+    Lightweight quality + latency evaluation endpoint.
+    Runs a curated set of critical questions (or caller-provided questions)
+    and returns pass/fail metrics for quick regression checks.
+    """
+    try:
+        payload = request or {}
+        questions = payload.get("questions")
+        max_questions = int(payload.get("max_questions", 25))
+        latency_threshold_ms = float(payload.get("latency_threshold_ms", 3000))
+        conversation_id = payload.get("conversation_id", "smoke-eval")
+
+        default_questions = [
+            "What is the total sale amount across all transactions?",
+            "Which branch has the highest total sale amount?",
+            "Show month-over-month sales growth",
+            "Are sales increasing or decreasing in Chennai?",
+            "Which category shows consistent growth across months?",
+            "Give me some recommendations to increase sales in Chennai.",
+            "Compare total sales between November and December",
+            "If the same trend continues, what could be projected sales for January?",
+            "What is the total sales in Tamil Nadu?",
+            "Is it higher or lower compared to Karnataka?",
+            "Which SKU has the highest total revenue?",
+            "Is this SKU's sales trend consistently increasing?",
+            "மொத்த sales என்ன?",
+            "சென்னை sales காட்டு",
+            "sales trend எப்படி இருக்கு?",
+        ]
+        eval_questions = (questions if isinstance(questions, list) and questions else default_questions)[:max_questions]
+
+        def _looks_data_query(q: str) -> bool:
+            ql = (q or "").lower()
+            terms = [
+                "sales", "revenue", "profit", "margin", "cost", "gst", "amount", "total",
+                "trend", "increasing", "decreasing", "growth", "compare", "highest", "lowest",
+                "top", "state", "branch", "category", "sku", "payment", "transaction",
+                "attendance", "employee", "department", "salary", "payroll", "bonus",
+                "projection", "forecast", "estimate", "month", "quarter", "show", "list",
+                "count", "average", "sum", "விற்பனை", "வருமான", "லாப", "போக்கு", "காட்டு",
+            ]
+            return any(t in ql for t in terms)
+
+        results: list[dict[str, Any]] = []
+        latencies: list[float] = []
+        failure_count = 0
+        hallucination_risk_count = 0
+
+        for q in eval_questions:
+            t0 = time.perf_counter()
+            try:
+                res = process_query_service(q, conversation_id=conversation_id, user_name=None)
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                latencies.append(elapsed_ms)
+
+                success = bool(res.get("success"))
+                is_llm_fallback = bool(res.get("is_llm_fallback"))
+                data_count = len(res.get("data") or [])
+                explanation = str(res.get("explanation") or "")
+                is_tamil_output = any("\u0b80" <= ch <= "\u0bff" for ch in explanation)
+                is_tamil_input = any("\u0b80" <= ch <= "\u0bff" for ch in q)
+
+                language_mismatch = (is_tamil_input != is_tamil_output) and len(explanation) > 0
+                hallucination_risk = _looks_data_query(q) and (is_llm_fallback or (success and data_count == 0 and "could not" not in explanation.lower()))
+                status = "pass"
+                if (not success) or language_mismatch:
+                    status = "fail"
+                    failure_count += 1
+                if hallucination_risk:
+                    hallucination_risk_count += 1
+
+                results.append({
+                    "question": q,
+                    "status": status,
+                    "latency_ms": round(elapsed_ms, 1),
+                    "success": success,
+                    "data_count": data_count,
+                    "is_llm_fallback": is_llm_fallback,
+                    "language_mismatch": language_mismatch,
+                    "hallucination_risk": hallucination_risk,
+                    "table_used": res.get("table_used"),
+                    "routing_confidence": res.get("routing_confidence"),
+                    "explanation_preview": explanation[:180],
+                })
+            except Exception as ex:
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                latencies.append(elapsed_ms)
+                failure_count += 1
+                results.append({
+                    "question": q,
+                    "status": "fail",
+                    "latency_ms": round(elapsed_ms, 1),
+                    "success": False,
+                    "error": str(ex),
+                })
+
+        avg_latency = mean(latencies) if latencies else 0.0
+        p95_latency = sorted(latencies)[int(0.95 * (len(latencies) - 1))] if latencies else 0.0
+        latency_pass = avg_latency <= latency_threshold_ms
+        quality_pass = failure_count == 0 and hallucination_risk_count == 0
+
+        return {
+            "success": True,
+            "summary": {
+                "total": len(eval_questions),
+                "failed": failure_count,
+                "hallucination_risk": hallucination_risk_count,
+                "avg_latency_ms": round(avg_latency, 1),
+                "p95_latency_ms": round(p95_latency, 1),
+                "latency_threshold_ms": latency_threshold_ms,
+                "latency_pass": latency_pass,
+                "quality_pass": quality_pass,
+                "overall_pass": bool(latency_pass and quality_pass),
+            },
+            "results": results,
+        }
+    except Exception as e:
+        logger.error("Exception in eval_smoke: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

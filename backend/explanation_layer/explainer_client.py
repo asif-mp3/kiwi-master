@@ -612,66 +612,44 @@ Generate a crispy, TTS-friendly response:"""
             # Generate explanation via Gemini STREAMING
             token_generator = _call_explainer_stream(prompt)
             
-            # We buffer the stream into the full string for the JSON response
-            # Simultaneously, we put tokens into a string generator for ElevenLabs backend masking
-            
-            import queue
-            import threading
-            
+            # We buffer the stream into the full string for the JSON response.
+            # After completion, warm TTS cache in a background thread.
             full_text_chunks = []
-            tts_token_queue = queue.Queue()
-            
-            def tts_worker():
-                """Reads from the queue and sends to ElevenLabs."""
-                try:
-                    def stream_producer():
-                        # Yield tokens to ElevenLabs as they arrive
-                        while True:
-                            token = tts_token_queue.get()
-                            if token is None:
-                                break
-                            yield token
-                    
-                    from utils.voice_utils import cache_tts_audio, get_tts_provider, _get_voice_id_for_text
-                    
-                    provider = get_tts_provider()
-                    # We only cache if we can capture the stream bytes and combine them.
-                    # ElevenLabs SDK supports streaming generators natively.
-                    gen = provider.generate_speech_stream(stream_producer(), _get_voice_id_for_text("", None))
-                    
-                    all_audio = []
-                    for chunk in gen:
-                        if chunk:
-                            all_audio.append(chunk)
-                    
-                    # Combine and store
-                    if all_audio:
-                        final_bytes = b"".join(all_audio)
-                        # We must cache under the final assembled string
-                        final_text = "".join(full_text_chunks).strip()
-                        if final_text:
-                            # Preprocess text before computing cache key
-                            from utils.voice_utils import _preprocess_for_tts
-                            processed = _preprocess_for_tts(final_text)
-                            cache_tts_audio(processed, _get_voice_id_for_text(processed, None), final_bytes)
-                            logger.info("Background TTS Streaming Mask complete! Instant replay ready.")
-                            
-                except Exception as ex:
-                    logger.error(f"TTS Mask error: {ex}")
-
-            # Start the background masking thread
-            t = threading.Thread(target=tts_worker, daemon=True)
-            t.start()
 
             # Collect stream
             for token in token_generator:
                 full_text_chunks.append(token)
-                tts_token_queue.put(token)
-                
-            # Signal background thread to finish
-            tts_token_queue.put(None)
             
             explanation = "".join(full_text_chunks).strip()
+            
+            def tts_cache_worker(final_text: str):
+                """Best-effort async cache warmup for the final explanation."""
+                try:
+                    if not final_text:
+                        return
+                    from utils.tts_cache import get_cached_tts_audio
+                    from utils.voice_utils import (
+                        _get_voice_id_for_text,
+                        _preprocess_for_tts,
+                        cache_tts_audio,
+                        get_tts_provider,
+                    )
+
+                    processed = _preprocess_for_tts(final_text)
+                    voice_id = _get_voice_id_for_text(processed, None)
+                    hit, _ = get_cached_tts_audio(processed, voice_id)
+                    if hit:
+                        return
+
+                    provider = get_tts_provider()
+                    final_bytes = provider.generate_speech(processed, voice_id)
+                    if final_bytes:
+                        cache_tts_audio(processed, voice_id, final_bytes)
+                        logger.info("Background TTS cache warmup complete.")
+                except Exception as ex:
+                    logger.error(f"TTS cache warmup error: {ex}")
+
+            threading.Thread(target=tts_cache_worker, args=(explanation,), daemon=True).start()
 
             elapsed = (time.time() - _start) * 1000
             logger.info("LLM Explanation generated via stream [%dms]", elapsed)

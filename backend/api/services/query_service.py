@@ -97,6 +97,7 @@ from api.services.correction_service import (
     _generate_clarification_message
 )
 from api.services.query_executor import _execute_with_forced_table
+from api.services.recommendation_service import maybe_generate_recommendations
 
 # Direct imports still needed by orchestrator
 from planning_layer.table_router import RoutingResult
@@ -120,6 +121,46 @@ from utils.visualization import determine_visualization
 from utils.query_context import QueryTurn, PendingCorrection
 
 logger = get_logger("services")
+
+
+def _is_tamil_text(text: str) -> bool:
+    """
+    Detect Tamil text robustly.
+    Uses ratio instead of a single-character check to avoid false language flips.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    tamil_chars = re.findall(r'[\u0B80-\u0BFF]', s)
+    if not tamil_chars:
+        return False
+    letter_chars = re.findall(r'[A-Za-z\u0B80-\u0BFF]', s)
+    if not letter_chars:
+        return False
+    return (len(tamil_chars) / max(1, len(letter_chars))) >= 0.30
+
+
+def _looks_business_data_query(text: str) -> bool:
+    """
+    Fast heuristic to prevent data questions from being misrouted as conversational.
+    Designed around common QA patterns from the project test checklist.
+    """
+    q = (text or "").lower().strip()
+    if not q:
+        return False
+    data_terms = [
+        "sales", "revenue", "profit", "margin", "cost", "gst", "amount", "total",
+        "trend", "increasing", "decreasing", "growth", "compare", "highest", "lowest",
+        "top", "state", "branch", "category", "sku", "payment", "transaction",
+        "attendance", "employee", "department", "salary", "payroll", "bonus",
+        "deduction", "projection", "forecast", "estimate", "month", "quarter",
+        "show", "list", "count", "average", "sum",
+    ]
+    tamil_data_hints = [
+        "விற்பனை", "வருமான", "லாப", "செலவு", "போக்கு", "ஒப்பிடு", "மாத", "காட்டு",
+        "எவ்வளவு", "எத்தனை", "சராசரி", "அதிக", "குறைவு", "ஊழியர்", "சம்பளம்",
+    ]
+    return any(t in q for t in data_terms) or any(t in q for t in tamil_data_hints)
 
 def process_query_service(question: str, conversation_id: str = None, user_name: str = None) -> Dict[str, Any]:
     """
@@ -301,7 +342,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 pending_correction=pending_correction,
                 ctx=ctx,
                 app_state=app_state,
-                is_tamil=bool(re.search(r'[\u0B80-\u0BFF]', question))
+                is_tamil=_is_tamil_text(question)
             )
             if correction_response:
                 ctx.clear_pending_correction_state()
@@ -325,7 +366,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 _log_timing("correction_detection", _step_start)
 
                 # Detect Tamil
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                is_tamil = _is_tamil_text(question)
 
                 # Handle the correction
                 correction_result = _handle_correction(
@@ -368,7 +409,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
                 _log_timing("projection_detection", _step_start)
 
                 # Detect Tamil
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                is_tamil = _is_tamil_text(question)
 
                 # Handle the projection
                 projection_result = _handle_projection(
@@ -414,7 +455,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         # routing — if no table matches, LLM responds naturally (Step 7).
         _step_start = _time.time()
         logger.info("\n[STEP 1/8] QUICK GREETING CHECK...")
-        is_tamil_text = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        is_tamil_text = _is_tamil_text(question)
 
         if is_greeting(question):
             logger.info(f"  [OK] Obvious greeting detected - generating LLM response")
@@ -453,7 +494,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             # Store date context in conversation for subsequent queries
             if date_info:
                 ctx.set_date_context(date_info)
-            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+            is_tamil = _is_tamil_text(question)
             response = get_date_context_response(date_info, is_tamil=is_tamil)
             _log_timing("date_context", _step_start)
             logger.debug("  -> Returning date context acknowledgment")
@@ -560,7 +601,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
         if schema_intent:
             # Get user language preference
-            is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+            is_tamil = _is_tamil_text(question)
             language = 'ta' if is_tamil else 'en'
 
             # Generate response from profile store (template-based, no LLM)
@@ -681,7 +722,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
 
             if has_meta and not has_data_action and app_state.profile_store:
                 logger.info("  [OK] Meta-question fallback triggered")
-                is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+                is_tamil = _is_tamil_text(question)
                 language = 'ta' if is_tamil else 'en'
 
                 is_quality_q = any(kw in q_lower for kw in [
@@ -781,7 +822,7 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
         logger.info("\n[STEP 4-5/8] PARALLEL: TRANSLATION + ENTITY EXTRACTION...")
 
         processing_query = question
-        is_tamil = bool(re.search(r'[\u0B80-\u0BFF]', question))
+        is_tamil = _is_tamil_text(question)
         entities = {}
 
         if is_tamil:
@@ -836,6 +877,31 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             logger.error("  [FAIL] Not a follow-up (new query)")
 
         _log_timing("parallel_translation_entities", _step_start)
+
+        # === ADVISORY / RECOMMENDATIONS (DATA-GROUNDED) ===
+        # Handle questions like "recommendations to increase sales/revenue in Chennai"
+        # This path computes real trends from DuckDB first, then lets the LLM phrase recommendations.
+        _step_start = _time.time()
+        logger.info("\n[STEP 5.5/8] ADVISORY RECOMMENDATIONS CHECK...")
+        try:
+            advisory = maybe_generate_recommendations(
+                question=processing_query,
+                entities=entities or {},
+                profile_store=app_state.profile_store,
+            )
+            if advisory:
+                # Ensure advisory response language follows current query language.
+                adv_text = str(advisory.get("explanation") or "")
+                adv_has_tamil = _is_tamil_text(adv_text)
+                if is_tamil and adv_text and not adv_has_tamil:
+                    advisory["explanation"] = translate_to_tamil(adv_text)
+                elif (not is_tamil) and adv_text and adv_has_tamil:
+                    advisory["explanation"] = translate_to_english(adv_text)
+                _log_timing("advisory_recommendations", _step_start)
+                return advisory
+        except Exception as e:
+            logger.warning("Advisory recommendations handler failed: %s", e)
+        _log_timing("advisory_recommendations", _step_start)
 
         # === CHECK FOR DATA CHANGES (INVALIDATE STALE CACHE) ===
         _step_start = _time.time()
@@ -942,11 +1008,29 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             )
 
             if routing_result.table is None and confidence == 0.0:
+                if _looks_business_data_query(processing_query):
+                    logger.warning("  [GUARDRAIL] Data-like query was routed conversational; returning safe clarification.")
+                    safe_msg = (
+                        "Boss, this looks like a data question but I could not map it confidently to the right table. "
+                        "Please rephrase with one key entity (state/branch/category/month), and I will answer accurately."
+                    )
+                    if is_tamil:
+                        safe_msg = translate_to_tamil(safe_msg)
+                    return {
+                        'success': True,
+                        'explanation': safe_msg,
+                        'data': None,
+                        'plan': None,
+                        'schema_context': [],
+                        'data_refreshed': False,
+                        'is_greeting': False,
+                        'is_conversational': False,
+                    }
                 logger.info("  [CONVERSATIONAL] Router returned no table — sending to LLM for conversational response")
                 response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
 
                 # Translate if needed
-                if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+                if is_tamil and not _is_tamil_text(response):
                     response = translate_to_tamil(response)
 
                 _log_timing("conversational_llm_fallback", _step_start)
@@ -970,10 +1054,28 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             # Safety net for scoring fallback path: if scoring returned a table
             # but entities show no data intent and confidence is very low, go conversational
             if not has_data_intent and confidence < rc.confidence_threshold_low:
+                if _looks_business_data_query(processing_query):
+                    logger.warning("  [GUARDRAIL] Low-confidence conversational safety-net bypassed for data-like query.")
+                    safe_msg = (
+                        "Boss, I need one clearer data cue to answer accurately. "
+                        "Please include a specific month/state/branch/category and I will give a precise answer."
+                    )
+                    if is_tamil:
+                        safe_msg = translate_to_tamil(safe_msg)
+                    return {
+                        'success': True,
+                        'explanation': safe_msg,
+                        'data': None,
+                        'plan': None,
+                        'schema_context': [],
+                        'data_refreshed': False,
+                        'is_greeting': False,
+                        'is_conversational': False,
+                    }
                 logger.info("  [CONVERSATIONAL] Safety net: scoring fallback has no data intent "
                             f"(conf={confidence:.0%}) — sending to LLM")
                 response = generate_off_topic_response(processing_query, is_tamil=is_tamil)
-                if is_tamil and not bool(re.search(r'[\u0B80-\u0BFF]', response)):
+                if is_tamil and not _is_tamil_text(response):
                     response = translate_to_tamil(response)
                 _log_timing("conversational_safety_net", _step_start)
                 _total_time = (_time.time() - _query_start) * 1000
@@ -1463,6 +1565,21 @@ def process_query_service(question: str, conversation_id: str = None, user_name:
             logger.debug("[FALLBACK 1] Failed: %s", fb1_err)
 
         # === FALLBACK 2: Gemini general LLM answer ===
+        # Guardrail: avoid hallucinations for data-like questions.
+        if _looks_business_data_query(question):
+            safe_msg = (
+                "Boss, I could not produce a reliable data answer for that question yet. "
+                "Please specify one clear filter like month/state/branch/category and I will answer precisely."
+            )
+            if _is_tamil_text(question):
+                safe_msg = translate_to_tamil(safe_msg)
+            return {
+                'success': False,
+                'error': str(e),
+                'explanation': safe_msg,
+                'error_type': 'validation_error_guardrail'
+            }
+
         try:
             from utils.llm_fallback import gemini_general_fallback, get_schema_summary
             _routed = locals().get('best_table')
@@ -1744,7 +1861,85 @@ def transcribe_audio_service(audio_file_path: str) -> Dict[str, Any]:
     Transcribe audio file to text.
     """
     try:
-        transcribed_text = transcribe_audio(audio_file_path)
+        # Try auto-language first, then Tamil, then English.
+        # Do not pick by longest text alone, because that can flip English speech to Tamil.
+        candidates: list[tuple[Optional[str], str]] = []
+        for lang in (None, "tam", "eng"):
+            try:
+                text = (transcribe_audio(audio_file_path, language=lang) or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                candidates.append((lang, text))
+
+        def _has_tamil(s: str) -> bool:
+            return _is_tamil_text(s)
+
+        def _non_latin_ratio(s: str) -> float:
+            txt = (s or "").strip()
+            if not txt:
+                return 0.0
+            letters = re.findall(r"[A-Za-z\u0080-\uFFFF]", txt)
+            if not letters:
+                return 0.0
+            latin = re.findall(r"[A-Za-z]", txt)
+            return 1.0 - (len(latin) / max(1, len(letters)))
+
+        def _english_quality(s: str) -> float:
+            txt = (s or "").strip()
+            if not txt:
+                return 0.0
+            words = re.findall(r"[A-Za-z']+", txt.lower())
+            if not words:
+                return 0.0
+            common = {
+                "what", "how", "is", "are", "the", "in", "for", "show", "give",
+                "sales", "revenue", "trend", "increase", "decrease", "month",
+                "today", "yesterday", "and", "to", "of",
+            }
+            common_hits = sum(1 for w in words if w in common)
+            alpha_chars = len(re.findall(r"[A-Za-z]", txt))
+            return len(words) + (common_hits * 1.5) + (alpha_chars / 40.0)
+
+        transcribed_text = ""
+        if candidates:
+            by_lang = {lang: txt for lang, txt in candidates}
+            auto_text = by_lang.get(None, "")
+            tam_text = by_lang.get("tam", "")
+            eng_text = by_lang.get("eng", "")
+
+            # Start with auto-detect when available.
+            transcribed_text = auto_text or eng_text or tam_text
+
+            # Strong language disambiguation:
+            # if both Tamil and English candidates exist, use script + quality heuristics.
+            if eng_text and tam_text:
+                eng_score = _english_quality(eng_text)
+                auto_is_tamil = _has_tamil(auto_text)
+                tam_is_tamil = _has_tamil(tam_text)
+                eng_is_tamil = _has_tamil(eng_text)
+
+                # Prefer English when English candidate looks valid and Tamil is likely forced mismatch.
+                if (not eng_is_tamil) and eng_score >= 4.0:
+                    if auto_is_tamil and len(eng_text) >= max(5, int(0.45 * len(auto_text or ""))):
+                        transcribed_text = eng_text
+                    elif not auto_text:
+                        transcribed_text = eng_text
+
+                # Prefer Tamil only when Tamil script is clear and English quality is weak.
+                if tam_is_tamil and _english_quality(eng_text) < 3.5 and len(tam_text) >= 8:
+                    if _has_tamil(auto_text) or not auto_text:
+                        transcribed_text = tam_text
+
+            # Generic cross-language guardrail:
+            # if auto transcript is mostly non-Latin (e.g., Hindi script) but
+            # English candidate is strong, prefer English to prevent wrong captions.
+            if auto_text and eng_text:
+                auto_non_latin = _non_latin_ratio(auto_text)
+                eng_score = _english_quality(eng_text)
+                if auto_non_latin >= 0.50 and eng_score >= 4.5:
+                    transcribed_text = eng_text
+
         return {
             'success': True,
             'text': transcribed_text

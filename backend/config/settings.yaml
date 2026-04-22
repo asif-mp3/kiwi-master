@@ -54,8 +54,8 @@ table_routing:
 voice:
   tts_provider: elevenlabs
   elevenlabs_api_key_env: ELEVENLABS_API_KEY
-  default_voice_id: pNInz6obpgDQGcFmaJgB
-  tamil_voice_id: pNInz6obpgDQGcFmaJgB
+  default_voice_id: mGboHvCVOXWYeFL8KTR0
+  tamil_voice_id: mGboHvCVOXWYeFL8KTR0
   request_timeout_seconds: 30
   # murf_ai (DISABLED):
   # murf_api_key_env: MURF_API_KEY

@@ -149,6 +149,11 @@ export function useVoice(options: UseVoiceOptions) {
     try {
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
+      // Some browsers start AudioContext suspended until user gesture.
+      // This hook is always called from a click/tap path, so resume is safe.
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => { /* ignore */ });
+      }
 
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
@@ -157,8 +162,10 @@ export function useVoice(options: UseVoiceOptions) {
       source.connect(analyser);
       analyserRef.current = analyser;
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      speechStartRef.current = Date.now();
+      const freqArray = new Uint8Array(analyser.frequencyBinCount);
+      const timeArray = new Uint8Array(analyser.fftSize);
+      const recordingStart = Date.now();
+      speechStartRef.current = recordingStart;
       silenceStartRef.current = null;
 
       vadIntervalRef.current = setInterval(() => {
@@ -167,14 +174,44 @@ export function useVoice(options: UseVoiceOptions) {
           return;
         }
 
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        // Frequency-domain average is sometimes too insensitive for speech on some mics,
+        // so we combine it with time-domain RMS for more reliable "speech detected".
+        analyser.getByteFrequencyData(freqArray);
+        analyser.getByteTimeDomainData(timeArray);
+
+        const average = freqArray.reduce((a, b) => a + b, 0) / freqArray.length;
+        let sumSquares = 0;
+        for (let i = 0; i < timeArray.length; i++) {
+          const centered = (timeArray[i] - 128) / 128; // [-1, 1]
+          sumSquares += centered * centered;
+        }
+        const rms = Math.sqrt(sumSquares / timeArray.length); // ~0.0 - 1.0
+
         const now = Date.now();
         const speechDuration = now - (speechStartRef.current || now);
+        const elapsedSinceStart = now - recordingStart;
+
+        // Warm-up: avoid making decisions immediately after starting the mic.
+        // This prevents accidental "no speech" / early stops on noisy/silent first frames.
+        if (elapsedSinceStart < 350) return;
+
+        // Mark speech as soon as we see enough energy from the mic.
+        // This is critical: it cancels the "no speech detected" timer even if STT is slow/blank.
+        const speechDetectedNow = average >= VAD_SILENCE_THRESHOLD || rms >= 0.03;
+        if (speechDetectedNow && !hadSpeechRef.current) {
+          hadSpeechRef.current = true;
+          if (noSpeechTimeoutRef.current) {
+            clearTimeout(noSpeechTimeoutRef.current);
+            noSpeechTimeoutRef.current = null;
+          }
+        }
 
         if (speechDuration < VAD_MIN_SPEECH_DURATION) return;
 
-        if (average < VAD_SILENCE_THRESHOLD) {
+        // Silence detection: require BOTH low frequency energy AND low RMS.
+        // This prevents cutting off quiet speakers prematurely.
+        const isSilent = average < VAD_SILENCE_THRESHOLD && rms < 0.02;
+        if (isSilent) {
           if (!silenceStartRef.current) {
             silenceStartRef.current = now;
           } else if (now - silenceStartRef.current > VAD_SILENCE_DURATION) {
@@ -491,15 +528,17 @@ export function useVoice(options: UseVoiceOptions) {
         setIsAlwaysOnMode(true);
         shouldResumeRecording.current = true;
 
-        // Start no-speech cancel timer — if no speech within 5s, exit voice mode
+        // Start no-speech cancel timer.
+        // NOTE: We only cancel if the mic never detects speech energy. (VAD clears this early.)
         if (noSpeechTimeoutRef.current) clearTimeout(noSpeechTimeoutRef.current);
         noSpeechTimeoutRef.current = setTimeout(() => {
           if (!hadSpeechRef.current) {
-            toast.error("No speech detected", { description: "Voice mode cancelled." });
-            abruptEndVoiceMode();
+            toast.error("No speech detected", { description: "Try speaking a bit closer to the mic." });
+            // Keep UI stable; user can simply try again without the whole mode collapsing.
+            setIsProcessingVoice(false);
           }
           noSpeechTimeoutRef.current = null;
-        }, NO_SPEECH_CANCEL_TIMEOUT);
+        }, Math.max(NO_SPEECH_CANCEL_TIMEOUT, 8000));
 
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

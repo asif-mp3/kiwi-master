@@ -462,6 +462,10 @@ class EntityExtractor:
         # Structural words
         'first', 'last', 'next', 'previous', 'above', 'below',
         'same', 'different', 'similar', 'overall', 'entire',
+        # Pronouns (must never become category/location/entity filters)
+        'it', 'its', 'itself', 'this', 'that', 'these', 'those',
+        'they', 'them', 'their', 'theirs', 'we', 'us', 'our',
+        'you', 'your', 'yours', 'he', 'she', 'his', 'her', 'hers',
     }
 
     def _extract_category(self, text_lower: str, original: str) -> Optional[str]:
@@ -484,6 +488,10 @@ class EntityExtractor:
 
         # Collect all matching categories with their position and length
         matches = []
+        pronoun_blocklist = {
+            'it', 'its', 'itself', 'this', 'that', 'these', 'those',
+            'they', 'them', 'their', 'theirs'
+        }
         for cat in self.CATEGORIES:
             cat_lower = cat.lower()
             # Skip if this is a metric keyword (not a real product category)
@@ -491,6 +499,9 @@ class EntityExtractor:
                 continue
             # Skip common English words that cause false entity extraction
             if cat_lower in self.COMMON_WORD_EXCLUSIONS:
+                continue
+            # Never allow pronouns as category entities
+            if cat_lower in pronoun_blocklist:
                 continue
 
             pattern = r'\b' + re.escape(cat) + r'\b'
@@ -855,6 +866,9 @@ class EntityExtractor:
             for val in values:
                 # Skip common words that cause false extraction
                 if val.lower() in self.COMMON_WORD_EXCLUSIONS or val.lower() in self.METRIC_EXCLUSIONS:
+                    continue
+                # Hard-block pronouns as custom entities too
+                if val.lower() in {'it', 'its', 'itself', 'this', 'that', 'these', 'those', 'they', 'them', 'their'}:
                     continue
                 pattern = r'\b' + re.escape(val) + r'\b'
                 if re.search(pattern, text):

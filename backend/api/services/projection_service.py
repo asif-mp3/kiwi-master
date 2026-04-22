@@ -120,19 +120,21 @@ def _handle_projection(
             metric_name = _extract_metric_name_from_result(previous_turn)
 
             if is_tamil:
-                explanation = (
-                    f"{item_name} தற்போது {format_indian(item_value)} {metric_name}-ல் முன்னணியில் உள்ளது. "
-                    f"இந்த pattern தொடர்ந்தால், அடுத்த மாதம் எதிர்பார்க்கப்படும் மதிப்பு "
-                    f"சுமார் {format_indian(projected_value)} ஆக இருக்கும். "
-                    f"(குறிப்பு: இது 5% வளர்ச்சி அனுமானத்தின் அடிப்படையில்)"
-                )
+                explanation = "\n".join([
+                    f"{item_name} தற்போது முன்னணியில் உள்ளது.",
+                    f"இந்த போக்கு தொடர்ந்தால் அடுத்த மாத {metric_name} சுமார் {format_indian(projected_value)} ஆக இருக்கலாம்.",
+                    "முக்கியமாக நல்ல செயல்பாடு தரும் பகுதிகளில் கவனம் வைத்திருங்கள்.",
+                    "பலன் தராத செலவுகளை வாரம் தோறும் குறைத்து மாற்றுங்கள்.",
+                    "இது ஒரு வழிகாட்டி கணிப்பு; புதிய தரவு வந்ததும் மீண்டும் சரிபார்ப்போம்.",
+                ])
             else:
-                explanation = (
-                    f"{item_name} is currently the top performer with {format_indian(item_value)}. "
-                    f"If this pattern continues, the expected {metric_name} for next month would be "
-                    f"approximately {format_indian(projected_value)}. "
-                    f"(Note: This projection assumes ~5% growth based on current performance)"
-                )
+                explanation = "\n".join([
+                    f"{item_name} is currently the top performer.",
+                    f"If this pattern continues, next month {metric_name} is likely around {format_indian(projected_value)}.",
+                    "Prioritize the channels and offers that are already converting well.",
+                    "Reduce spend on weak performers every week and reallocate quickly.",
+                    "Treat this as a directional estimate and refresh with new data.",
+                ])
 
             # Store projection turn
             from utils.query_context import QueryTurn
@@ -306,11 +308,8 @@ def _generate_projection_explanation(
     """
     from explanation_layer.explainer_client import _format_number_indian
 
-    # Format numbers for natural speech
+    # Format numbers for natural speech (minimal metrics)
     projected = _format_number_indian(result.projected_value)
-    base = _format_number_indian(result.base_value)
-    change = _format_number_indian(abs(result.expected_change))
-    change_pct = abs(result.expected_change_percent)
 
     # Confidence qualifiers
     conf_level = result.confidence_level.value
@@ -343,34 +342,20 @@ def _generate_projection_explanation(
         period = ' '.join(word.capitalize() for word in period.split())
 
     if is_tamil:
-        explanation = f"{conf_ta}, {period} மதிப்பு சுமார் {projected} ஆக இருக்கும் என்று எதிர்பார்க்கப்படுகிறது."
+        lines = [
+            f"{conf_ta}, {period} மதிப்பு சுமார் {projected} ஆக இருக்கலாம்.",
+            f"மொத்த போக்கு தற்போது {dir_ta} திசையில் உள்ளது.",
+            "அதிகம் செயல்படும் பகுதிகளில் கவனம் வைத்து தொடர்ந்து முன்னேறுங்கள்.",
+            "பலன் தராத சேனல்கள் மற்றும் ஆஃபர்களை வாரந்தோறும் குறைக்கவும்.",
+            "இதை வழிகாட்டியாகப் பாருங்கள்; புதிய தரவு வந்ததும் திட்டத்தை புதுப்பிப்போம்.",
+        ]
+        return "\n".join(lines)
 
-        if result.expected_change != 0:
-            if result.expected_change > 0:
-                explanation += f" இது தற்போதைய {base} இலிருந்து சுமார் {change} ({change_pct:.0f}%) {dir_ta}."
-            else:
-                explanation += f" இது தற்போதைய {base} இலிருந்து சுமார் {change} ({change_pct:.0f}%) {dir_ta}."
-        else:
-            explanation += " போக்கு நிலையானதாக இருப்பதால், மதிப்பு மாறாமல் இருக்கும்."
-
-        # Add confidence range for lower confidence
-        if conf_level == 'low':
-            range_low = _format_number_indian(result.range_low)
-            range_high = _format_number_indian(result.range_high)
-            explanation += f" மதிப்பு {range_low} முதல் {range_high} வரை இருக்கலாம்."
-
-    else:
-        explanation = f"{conf_en}, {period} value would be around {projected}."
-
-        if result.expected_change != 0:
-            explanation += f" That's about {change} ({change_pct:.0f}%) {dir_en} from current."
-        else:
-            explanation += " The stable trend suggests values will remain similar."
-
-        # Add confidence range for lower confidence
-        if conf_level == 'low':
-            range_low = _format_number_indian(result.range_low)
-            range_high = _format_number_indian(result.range_high)
-            explanation += f" It could range from {range_low} to {range_high}."
-
-    return explanation
+    lines = [
+        f"{conf_en}, {period} value is likely around {projected}.",
+        f"The overall direction remains {dir_en}.",
+        "Keep focus on the segments that are already responding well.",
+        "Reduce spend on weak channels and underperforming offers each week.",
+        "Use this as a directional view and refresh the plan as new data comes in.",
+    ]
+    return "\n".join(lines)
